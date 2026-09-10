@@ -14,6 +14,7 @@
 [![Visit our Blog][badge-blog]][link-blog]
 [![Join us on Discord][badge-discord]][link-discord]
 [![PRs welcome][badge-prs]][link-prs]
+[![Join the XBOX Developer Program][badge-devprogram]][link-devprogram]
 
 # XBOX Godot NetRumble
 
@@ -248,3 +249,5 @@ third-party's policies.
 [link-discord]: https://aka.ms/msftgamedevdiscord
 [badge-prs]: https://img.shields.io/badge/PRs-welcome-d6336c
 [link-prs]: CONTRIBUTING.md
+[badge-devprogram]: https://img.shields.io/badge/XBOX%20Developer%20Program-0B5D0B?logo=xbox&logoColor=white
+[link-devprogram]: https://developer.microsoft.com/en-us/games/
