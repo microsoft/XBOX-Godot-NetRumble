@@ -1,0 +1,299 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/screens/lobby_screen.gd" id="1_lobby"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/starfield_background.tscn" id="2_stars"]
+
+[node name="LobbyScreen" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 1
+script = ExtResource("1_lobby")
+
+[node name="Background" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="BackgroundFill" type="ColorRect" parent="Background"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+color = Color(0.02, 0.03, 0.03, 1)
+
+[node name="StarfieldBackground" parent="Background" instance=ExtResource("2_stars")]
+
+[node name="StateLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 360.0
+offset_top = 60.0
+offset_right = 1560.0
+offset_bottom = 100.0
+theme_type_variation = &"LobbyStatus"
+text = ""
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="ShipTitle" type="Label" parent="."]
+layout_mode = 0
+offset_left = 156.0
+offset_top = 140.0
+offset_right = 516.0
+offset_bottom = 194.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "SPACESHIP"
+vertical_alignment = 2
+
+[node name="ShipBackground" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 142.0
+offset_top = 194.0
+offset_right = 762.0
+offset_bottom = 746.0
+modulate = Color(0.74, 0.78, 0.78, 0.66)
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="ShipTexture" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 356.0
+offset_top = 424.0
+offset_right = 548.0
+offset_bottom = 616.0
+pivot_offset = Vector2(96, 96)
+rotation = 0.6
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="ShipOverlay" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 356.0
+offset_top = 424.0
+offset_right = 548.0
+offset_bottom = 616.0
+pivot_offset = Vector2(96, 96)
+rotation = 0.6
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="ShipTabs" type="Control" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 142.0
+offset_top = 194.0
+offset_right = 762.0
+offset_bottom = 294.0
+mouse_filter = 2
+
+[node name="ColorTitle" type="Label" parent="."]
+layout_mode = 0
+offset_left = 156.0
+offset_top = 756.0
+offset_right = 516.0
+offset_bottom = 810.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "COLOR"
+vertical_alignment = 2
+
+[node name="ColorTabs" type="Control" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 142.0
+offset_top = 821.0
+offset_right = 742.0
+offset_bottom = 921.0
+mouse_filter = 2
+
+[node name="GameTypeTitle" type="Label" parent="."]
+layout_mode = 0
+offset_left = 826.0
+offset_top = 194.0
+offset_right = 1186.0
+offset_bottom = 255.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "GAME TYPE"
+vertical_alignment = 1
+
+[node name="GameTypePanel" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 826.0
+offset_top = 255.0
+offset_right = 1186.0
+offset_bottom = 316.0
+modulate = Color(0.74, 0.78, 0.78, 0.66)
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="GameTypeValue" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 846.0
+offset_top = 267.0
+offset_right = 1186.0
+offset_bottom = 316.0
+theme_type_variation = &"LobbyPanelBody"
+text = ""
+
+[node name="RulesTitle" type="Label" parent="."]
+layout_mode = 0
+offset_left = 826.0
+offset_top = 377.0
+offset_right = 1186.0
+offset_bottom = 438.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "RULES"
+vertical_alignment = 1
+
+[node name="RulesPanel" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 826.0
+offset_top = 438.0
+offset_right = 1186.0
+offset_bottom = 568.0
+modulate = Color(0.74, 0.78, 0.78, 0.66)
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="RulesLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 846.0
+offset_top = 450.0
+offset_right = 1166.0
+offset_bottom = 568.0
+theme_type_variation = &"LobbyPanelBody"
+text = ""
+autowrap_mode = 2
+
+[node name="JoinCodeTitle" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 826.0
+offset_top = 580.0
+offset_right = 1186.0
+offset_bottom = 641.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "JOIN CODE"
+vertical_alignment = 1
+
+[node name="JoinCodePanel" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 826.0
+offset_top = 641.0
+offset_right = 1186.0
+offset_bottom = 702.0
+modulate = Color(0.74, 0.78, 0.78, 0.66)
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="JoinCodeLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 846.0
+offset_top = 653.0
+offset_right = 1186.0
+offset_bottom = 702.0
+theme_type_variation = &"LobbyPanelBody"
+text = ""
+
+[node name="OpponentsTitle" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 826.0
+offset_top = 580.0
+offset_right = 1186.0
+offset_bottom = 641.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "OPPONENTS"
+vertical_alignment = 1
+
+[node name="OpponentsPanel" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 826.0
+offset_top = 641.0
+offset_right = 1186.0
+offset_bottom = 702.0
+modulate = Color(0.74, 0.78, 0.78, 0.66)
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="OpponentsValue" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 846.0
+offset_top = 653.0
+offset_right = 1046.0
+offset_bottom = 702.0
+theme_type_variation = &"LobbyPanelBody"
+text = ""
+
+[node name="OpponentsMinus" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 1056.0
+offset_top = 647.0
+offset_right = 1106.0
+offset_bottom = 696.0
+flat = true
+text = "-"
+
+[node name="OpponentsPlus" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 1116.0
+offset_top = 647.0
+offset_right = 1166.0
+offset_bottom = 696.0
+flat = true
+text = "+"
+
+[node name="RosterTitle" type="Label" parent="."]
+layout_mode = 0
+offset_left = 1293.0
+offset_top = 140.0
+offset_right = 1653.0
+offset_bottom = 194.0
+theme_type_variation = &"LobbyPanelHeader"
+text = "ROSTER"
+vertical_alignment = 2
+
+[node name="RosterList" type="Control" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 1279.0
+offset_top = 194.0
+offset_right = 1799.0
+offset_bottom = 706.0
+mouse_filter = 2
+
+[node name="HintLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 360.0
+offset_top = 985.0
+offset_right = 1560.0
+offset_bottom = 1025.0
+theme_type_variation = &"LobbyPanelBody"
+text = ""
+horizontal_alignment = 1
+vertical_alignment = 1

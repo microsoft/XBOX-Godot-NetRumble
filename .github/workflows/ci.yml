@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # NetRumble is the reference sample for Microsoft GDK and PlayFab integration
+  # in Godot. It must explain the platform on its own terms rather than by
+  # comparison to any previous implementation. This job keeps that true over
+  # time instead of relying on a one-time cleanup.
+  #
+  # Pure text analysis: no engine, no SDK, no secrets. It is the hard gate.
+  # ---------------------------------------------------------------------------
+  deport-lint:
+    name: Sample voice
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for port framing
+        shell: pwsh
+        run: .\tools\check-deport.ps1 -Detailed
+
+  # ---------------------------------------------------------------------------
+  # MicrosoftGame.config fails quietly. A malformed file makes GDK.initialize()
+  # return an HRESULT and nothing else: the game keeps running with every
+  # platform service unavailable, and Godot still exits 0 -- so the parse job
+  # below cannot catch it. The export-time hazards are just as quiet, producing
+  # a mis-named binary or an aborted package rather than an error.
+  #
+  # Each rule this runs mirrors a hazard documented in the config's own comment
+  # block, so the warnings there are enforced rather than merely written down.
+  #
+  # Pure text analysis: no engine, no SDK, no secrets. It is a hard gate.
+  # ---------------------------------------------------------------------------
+  game-config:
+    name: Game config
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate MicrosoftGame.config
+        shell: pwsh
+        run: .\tools\check-game-config.ps1
+
+  # ---------------------------------------------------------------------------
+  # Parses and imports every script and scene. This is the project's only
+  # automated regression signal against a broken reference, a renamed autoload
+  # or a scene that no longer resolves, so it is worth having even though it
+  # cannot exercise gameplay or networking.
+  #
+  # addons/ is gitignored build output, so this job has to build it first --
+  # the GDExtensions have to load for the project to import. -SkipConsoleRedist
+  # is required here: the addon build gets its GDK through vcpkg, but the GRDK
+  # console redistributables come from a Microsoft GDK *installation*, which a
+  # hosted runner does not have. Those two DLLs matter only to the Xbox export,
+  # which this job does not perform.
+  #
+  # Advisory for now. Whether a hosted runner can initialize the GDK runtime has
+  # not been confirmed. Once this has been observed passing on a runner, drop
+  # `continue-on-error` to make it a required gate. If a hosted runner turns out
+  # to be insufficient, move this job to a self-hosted runner that has the GDK
+  # installed rather than weakening the check.
+  # ---------------------------------------------------------------------------
+  godot-parse:
+    name: Parse and import
+    # The addon CMake presets target the Visual Studio 2022 generator.
+    runs-on: windows-2022
+    continue-on-error: true
+    env:
+      GODOT_VERSION: 4.6.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-win64
+
+      - name: Download Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $v = $env:GODOT_VERSION
+          $name = "Godot_v$v-stable_win64"
+          $url = "https://github.com/godotengine/godot/releases/download/$v-stable/${name}.exe.zip"
+          New-Item -ItemType Directory -Force -Path godot-bin | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile godot.zip
+          Expand-Archive -Path godot.zip -DestinationPath godot-bin -Force
+
+      # The whole build tree, including build/vcpkg_installed. A cold restore of
+      # the GDK and PlayFab SDKs dominates this job's runtime; a warm one makes
+      # the incremental rebuild cheap. Keyed on the submodule pin, because that
+      # is what decides the build output.
+      - name: Cache addon build
+        id: cache-addons
+        uses: actions/cache@v4
+        with:
+          path: external/xbox-godot-sample/build
+          key: addons-windows-2022-${{ hashFiles('.gitmodules') }}-${{ github.event.pull_request.base.sha || github.sha }}
+          restore-keys: addons-windows-2022-
+
+      - name: Build addons
+        shell: pwsh
+        run: .\tools\sync_addons.ps1 -Configuration Debug -SkipSubmoduleUpdate -SkipConsoleRedist
+
+      - name: Parse and import project
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path godot-bin -Filter '*_console.exe' -Recurse |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) {
+            $exe = Get-ChildItem -Path godot-bin -Filter '*.exe' -Recurse |
+                   Select-Object -First 1 -ExpandProperty FullName
+          }
+          Write-Host "Using $exe"
+
+          # .godot/ is gitignored, so a fresh checkout has no import cache. --import
+          # runs the editor's import pass and quits; without it, --quit would *run*
+          # the game against unimported resources instead.
+          $importOut = & $exe --headless --path . --import 2>&1 | Out-String
+          Write-Host $importOut
+          if ($LASTEXITCODE -ne 0) {
+            throw "Godot import exited with $LASTEXITCODE"
+          }
+
+          # Godot can report script parse failures on stderr while still
+          # exiting 0, so the output is inspected as well as the exit code.
+          $out = & $exe --headless --path . --quit 2>&1 | Out-String
+          Write-Host $out
+          $code = $LASTEXITCODE
+
+          if ($code -ne 0) {
+            throw "Godot exited with $code"
+          }
+          if (($importOut + $out) -match 'SCRIPT ERROR|Parse Error|Failed to load script|Cannot open file') {
+            throw 'Project imported but reported script or resource errors.'
+          }
+          Write-Host 'Parse and import clean.' -ForegroundColor Green

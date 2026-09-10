@@ -1,0 +1,21 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Known issues
+    url: https://github.com/microsoft/XBOX-Godot-NetRumble/blob/main/docs/known-issues.md
+    about: The problems we already know about. Please check here before filing a bug.
+
+  - name: Setup, build and sign-in problems
+    url: https://github.com/microsoft/XBOX-Godot-NetRumble/blob/main/docs/troubleshooting.md
+    about: Troubleshooting covers the failures that come up most often, keyed by symptom.
+
+  - name: Questions about using the sample
+    url: https://github.com/microsoft/XBOX-Godot-NetRumble/blob/main/SUPPORT.md
+    about: How to ask a question, and what to include so it can be answered.
+
+  - name: Microsoft Game Dev Discord
+    url: https://aka.ms/msftgamedevdiscord
+    about: Talk to the wider Microsoft game development community.
+
+  - name: Report a security vulnerability
+    url: https://aka.ms/security.md/msrc/create-report
+    about: Please do not open a public issue for security problems. Report them to MSRC instead.

@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="GameModeConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/tuning/game_mode_config.gd" id="1_mode"]
+
+[resource]
+script = ExtResource("1_mode")
+mode_type = 0
+display_name = "Deathmatch"
+player_count = 4
+target_score = 5
+time_limit = 600.0

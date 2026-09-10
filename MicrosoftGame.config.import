@@ -1,0 +1,14 @@
+[remap]
+
+importer="gdk_packaging.config_file"
+type="Resource"
+uid="uid://bhphcclx5dfnd"
+path="res://.godot/imported/MicrosoftGame.config-530921a3dc68f4304a51e3b267e2e901.res"
+
+[deps]
+
+source_file="res://MicrosoftGame.config"
+dest_files=["res://.godot/imported/MicrosoftGame.config-530921a3dc68f4304a51e3b267e2e901.res"]
+
+[params]
+

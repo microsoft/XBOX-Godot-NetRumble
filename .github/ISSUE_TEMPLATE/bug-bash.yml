@@ -1,0 +1,131 @@
+name: Bug bash report
+description: Report a problem found during a NetRumble playtest or bug bash.
+title: "[Bug Bash] "
+labels: ["bug", "bug-bash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping test NetRumble on Godot.
+
+        One issue per problem, please. A short report filed during the session is
+        far more useful than a detailed one written from memory afterwards.
+
+        Before filing, check the "Known issues" section of the bug bash guide.
+        A handful of things are already understood and do not need reporting.
+
+  - type: input
+    id: summary
+    attributes:
+      label: What happened
+      description: One sentence, in plain terms.
+      placeholder: Ship stops responding to input after rejoining a match
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Your platform
+      options:
+        - Windows PC
+        - XBOX Series X
+        - XBOX Series S
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host_platform
+    attributes:
+      label: Which platform was hosting
+      description: Required for any multiplayer or cross-play issue.
+      options:
+        - Not applicable (single player or Practice)
+        - Windows PC
+        - XBOX Series X
+        - XBOX Series S
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: input_device
+    attributes:
+      label: Input device
+      options:
+        - Mouse and keyboard
+        - Gamepad
+        - Both during the session
+    validations:
+      required: true
+
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The release tag you installed.
+      value: "9-4-checkpoint"
+    validations:
+      required: true
+
+  - type: input
+    id: sandbox
+    attributes:
+      label: Sandbox
+      value: "XDKS.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, starting from the main menu.
+      placeholder: |
+        1. From the main menu, select Host Match
+        2. Have a second player join by code
+        3. Start the match and let it run for 30 seconds
+        4. Second player hard-quits the game
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+
+  - type: input
+    id: player_count
+    attributes:
+      label: Players in the match
+      description: Total, and how many on each platform.
+      placeholder: 5 total, 3 on PC and 2 on XBOX
+    validations:
+      required: false
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or clip
+      description: |
+        Drag and drop here. On XBOX, use the XBOX button then capture.
+        On PC, use Game Bar with Win+G.
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Frequency, whether it reproduced, and anything else worth knowing.
+    validations:
+      required: false

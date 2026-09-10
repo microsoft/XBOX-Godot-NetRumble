@@ -1,0 +1,8 @@
+[gd_resource type="SystemFont" load_steps=1 format=3]
+
+[resource]
+resource_name = "SegoeUI"
+font_names = PackedStringArray("Segoe UI")
+font_weight = 400
+allow_system_fallback = true
+subpixel_positioning = 1

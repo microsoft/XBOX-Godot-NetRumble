@@ -1,0 +1,30 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/objects/asteroid.gd" id="1_asteroid"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Asteroids/Asteroid0.png" id="2_tex"]
+[ext_resource type="Material" path="res://assets/materials/space_object_lighting.tres" id="3_light"]
+
+[sub_resource type="PhysicsMaterial" id="PhysicsMaterial_elastic"]
+friction = 0.0
+bounce = 1.0
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_asteroid"]
+radius = 32.0
+
+[node name="Asteroid" type="RigidBody2D"]
+collision_layer = 2
+collision_mask = 19
+physics_material_override = SubResource("PhysicsMaterial_elastic")
+gravity_scale = 0.0
+can_sleep = false
+lock_rotation = true
+contact_monitor = true
+max_contacts_reported = 8
+script = ExtResource("1_asteroid")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_asteroid")
+
+[node name="Sprite" type="Sprite2D" parent="."]
+material = ExtResource("3_light")
+texture = ExtResource("2_tex")

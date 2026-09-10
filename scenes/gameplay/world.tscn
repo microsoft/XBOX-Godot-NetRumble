@@ -1,0 +1,26 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/world.gd" id="1_world"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/ship.tscn" id="2_ship"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/barrier.tscn" id="3_barrier"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/asteroid.tscn" id="4_asteroid"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/power_up.tscn" id="5_power_up"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/laser.tscn" id="6_laser"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/mine.tscn" id="7_mine"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/entities/rocket.tscn" id="8_rocket"]
+
+[node name="World" type="Node2D"]
+script = ExtResource("1_world")
+ship_scene = ExtResource("2_ship")
+barrier_scene = ExtResource("3_barrier")
+asteroid_scene = ExtResource("4_asteroid")
+power_up_scene = ExtResource("5_power_up")
+projectile_scenes = {
+0: ExtResource("6_laser"),
+1: ExtResource("7_mine"),
+2: ExtResource("8_rocket")
+}
+
+[node name="PowerUpSpawnTimer" type="Timer" parent="."]
+process_callback = 0
+one_shot = true

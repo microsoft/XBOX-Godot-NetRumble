@@ -1,0 +1,47 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/fx/one_shot_effect.gd" id="1_script"]
+[ext_resource type="Script" path="res://scripts/fx/explosion_light.gd" id="2_light"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Particles/Particle_Default.png" id="3_tex"]
+
+[sub_resource type="CanvasItemMaterial" id="CanvasItemMaterial_add"]
+resource_local_to_scene = true
+blend_mode = 1
+
+[sub_resource type="Gradient" id="Gradient_fade"]
+resource_local_to_scene = true
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_fade"]
+resource_local_to_scene = true
+gradient = SubResource("Gradient_fade")
+
+[node name="PickupBurst" type="CPUParticles2D"]
+script = ExtResource("1_script")
+amount = 34
+lifetime = 0.7
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("3_tex")
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 90.0
+initial_velocity_max = 260.0
+damping_min = 200.0
+damping_max = 200.0
+scale_amount_min = 0.4
+scale_amount_max = 1.2
+color = Color(1, 1, 1, 1)
+color_ramp = SubResource("GradientTexture1D_fade")
+material = SubResource("CanvasItemMaterial_add")
+
+[node name="PickupLight" type="PointLight2D" parent="."]
+script = ExtResource("2_light")
+peak_energy = 2.5
+attack = 0.04
+decay = 0.5
+light_radius = 220.0
+expansion = 0.5

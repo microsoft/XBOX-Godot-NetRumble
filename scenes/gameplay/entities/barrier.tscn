@@ -1,0 +1,87 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/barrier.gd" id="1_barrier"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Barriers/Barrier_Horizontal.png" id="2_horizontal"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Barriers/Barrier_Vertical.png" id="3_vertical"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Barriers/Barrier_End.png" id="4_end"]
+
+[sub_resource type="PhysicsMaterial" id="PhysicsMaterial_elastic"]
+friction = 0.0
+bounce = 1.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_top"]
+resource_local_to_scene = true
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_bottom"]
+resource_local_to_scene = true
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_left"]
+resource_local_to_scene = true
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_right"]
+resource_local_to_scene = true
+
+[node name="Barrier" type="StaticBody2D"]
+z_index = -10
+collision_layer = 16
+collision_mask = 0
+physics_material_override = SubResource("PhysicsMaterial_elastic")
+script = ExtResource("1_barrier")
+
+[node name="Walls" type="Node2D" parent="."]
+
+[node name="Top" type="Sprite2D" parent="Walls"]
+texture_repeat = 2
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("2_horizontal")
+region_enabled = true
+
+[node name="Bottom" type="Sprite2D" parent="Walls"]
+texture_repeat = 2
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("2_horizontal")
+region_enabled = true
+
+[node name="Left" type="Sprite2D" parent="Walls"]
+texture_repeat = 2
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("3_vertical")
+region_enabled = true
+
+[node name="Right" type="Sprite2D" parent="Walls"]
+texture_repeat = 2
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("3_vertical")
+region_enabled = true
+
+[node name="EndCaps" type="Node2D" parent="."]
+
+[node name="TopLeft" type="Sprite2D" parent="EndCaps"]
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("4_end")
+
+[node name="TopRight" type="Sprite2D" parent="EndCaps"]
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("4_end")
+
+[node name="BottomLeft" type="Sprite2D" parent="EndCaps"]
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("4_end")
+
+[node name="BottomRight" type="Sprite2D" parent="EndCaps"]
+scale = Vector2(1.65, 1.65)
+texture = ExtResource("4_end")
+
+[node name="ColliderTop" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_top")
+
+[node name="ColliderBottom" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_bottom")
+
+[node name="ColliderLeft" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_left")
+
+[node name="ColliderRight" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_right")
+
+[node name="CapAnimation" type="AnimationPlayer" parent="."]

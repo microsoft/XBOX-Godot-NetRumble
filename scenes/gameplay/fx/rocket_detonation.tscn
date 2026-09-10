@@ -1,0 +1,38 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/fx/one_shot_effect.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Particles/Particle_Spark.png" id="2_tex"]
+
+[sub_resource type="CanvasItemMaterial" id="CanvasItemMaterial_add"]
+resource_local_to_scene = true
+blend_mode = 1
+
+[sub_resource type="Gradient" id="Gradient_fade"]
+resource_local_to_scene = true
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_fade"]
+resource_local_to_scene = true
+gradient = SubResource("Gradient_fade")
+
+[node name="RocketDetonation" type="CPUParticles2D"]
+script = ExtResource("1_script")
+amount = 32
+lifetime = 0.8
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("2_tex")
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 84.0
+initial_velocity_max = 210.0
+damping_min = 168.0
+damping_max = 168.0
+scale_amount_min = 0.25
+scale_amount_max = 0.75
+color = Color(1.0, 0.647059, 0.0, 1.0)
+color_ramp = SubResource("GradientTexture1D_fade")
+material = SubResource("CanvasItemMaterial_add")

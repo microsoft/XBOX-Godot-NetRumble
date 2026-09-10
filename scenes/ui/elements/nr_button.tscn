@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/elements/nr_button.gd" id="1"]
+
+[node name="NRButton" type="Button"]
+custom_minimum_size = Vector2(0, 54)
+theme_type_variation = &"NRMenuButton"
+script = ExtResource("1")

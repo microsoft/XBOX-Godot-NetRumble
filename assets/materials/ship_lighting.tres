@@ -1,0 +1,20 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://assets/shaders/space_object.gdshader" id="1_space_light"]
+
+[resource]
+resource_name = "ShipLighting"
+shader = ExtResource("1_space_light")
+shader_parameter/light_direction = Vector2(0.55, 0.83)
+shader_parameter/light_elevation = 0.45
+shader_parameter/ambient = 0.62
+shader_parameter/shadow_tint = Color(0.45, 0.5, 0.68, 1)
+shader_parameter/sphericity = 0.5
+shader_parameter/specular_strength = 0.2
+shader_parameter/specular_power = 16.0
+shader_parameter/rim_strength = 0.25
+shader_parameter/rim_power = 3.0
+shader_parameter/rim_color = Color(1, 0.96, 0.88, 1)
+shader_parameter/dynamic_light_strength = 1.6
+shader_parameter/dynamic_light_ambient = 0.35
+shader_parameter/dynamic_light_height = 120.0

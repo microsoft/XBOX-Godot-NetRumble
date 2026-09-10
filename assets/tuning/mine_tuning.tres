@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="ProjectileTuning" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/tuning/projectile_tuning.gd" id="1_proj"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Projectiles/Projectile_Mine.png" id="2_tex"]
+
+[resource]
+script = ExtResource("1_proj")
+projectile_type = 1
+mass = 5.0
+radius = 10.0
+velocity = 80.0
+health = 150.0
+duration = 20.0
+damage_amount = 200.0
+damage_radius = 300.0
+can_damage_owner = false
+drag_per_second = 0.9
+minimum_velocity_squared = 100.0
+rotation_speed = 1.0
+texture = ExtResource("2_tex")
+sprite_rotation = 0.0

@@ -1,0 +1,150 @@
+[gd_scene load_steps=12 format=3]
+
+[ext_resource type="Script" path="res://scripts/fx/one_shot_effect.gd" id="1_script"]
+[ext_resource type="Script" path="res://scripts/fx/explosion_light.gd" id="2_light"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Particles/Particle_Spark.png" id="3_spark"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Particles/Particle_Smoke.png" id="4_smoke"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Particles/Particle_Default.png" id="5_default"]
+
+[sub_resource type="CanvasItemMaterial" id="CanvasItemMaterial_add"]
+resource_local_to_scene = true
+blend_mode = 1
+
+[sub_resource type="Gradient" id="Gradient_fade"]
+resource_local_to_scene = true
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_fade"]
+resource_local_to_scene = true
+gradient = SubResource("Gradient_fade")
+
+[sub_resource type="Gradient" id="Gradient_fireball"]
+resource_local_to_scene = true
+offsets = PackedFloat32Array(0, 0.25, 0.6, 1)
+colors = PackedColorArray(1, 1, 0.9, 1, 1, 0.85, 0.35, 1, 1, 0.35, 0.1, 0.85, 0.4, 0.1, 0.05, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_fireball"]
+resource_local_to_scene = true
+gradient = SubResource("Gradient_fireball")
+
+[sub_resource type="Curve" id="Curve_shockwave"]
+resource_local_to_scene = true
+_data = [Vector2(0, 1), 0.0, 0.0, 0, 0, Vector2(0.35, 0.55), 0.0, 0.0, 0, 0, Vector2(1, 0), 0.0, 0.0, 0, 0]
+point_count = 3
+
+[node name="ShipDestruction" type="CPUParticles2D"]
+script = ExtResource("1_script")
+amount = 140
+lifetime = 1.4
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("3_spark")
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 140.0
+initial_velocity_max = 620.0
+damping_min = 220.0
+damping_max = 420.0
+scale_amount_min = 0.35
+scale_amount_max = 1.4
+color = Color(1, 0.85, 0.35, 1)
+color_ramp = SubResource("GradientTexture1D_fireball")
+material = SubResource("CanvasItemMaterial_add")
+
+[node name="Fireball" type="CPUParticles2D" parent="."]
+amount = 36
+lifetime = 0.85
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("5_default")
+emission_shape = 1
+emission_sphere_radius = 26.0
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 10.0
+initial_velocity_max = 130.0
+damping_min = 180.0
+damping_max = 180.0
+scale_amount_min = 3.0
+scale_amount_max = 7.5
+color = Color(1, 0.95, 0.75, 1)
+color_ramp = SubResource("GradientTexture1D_fireball")
+material = SubResource("CanvasItemMaterial_add")
+
+[node name="Shockwave" type="CPUParticles2D" parent="."]
+amount = 64
+lifetime = 0.7
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("5_default")
+emission_shape = 1
+emission_sphere_radius = 8.0
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 900.0
+initial_velocity_max = 980.0
+damping_min = 900.0
+damping_max = 900.0
+scale_amount_min = 1.2
+scale_amount_max = 2.2
+scale_amount_curve = SubResource("Curve_shockwave")
+color = Color(1, 1, 1, 1)
+color_ramp = SubResource("GradientTexture1D_fade")
+material = SubResource("CanvasItemMaterial_add")
+
+[node name="Debris" type="CPUParticles2D" parent="."]
+amount = 40
+lifetime = 2.2
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("3_spark")
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 60.0
+initial_velocity_max = 260.0
+damping_min = 40.0
+damping_max = 90.0
+angular_velocity_min = -220.0
+angular_velocity_max = 220.0
+scale_amount_min = 0.2
+scale_amount_max = 0.6
+color = Color(0.9, 0.75, 0.55, 1)
+color_ramp = SubResource("GradientTexture1D_fade")
+
+[node name="Smoke" type="CPUParticles2D" parent="."]
+amount = 44
+lifetime = 2.4
+one_shot = true
+explosiveness = 1.0
+emitting = true
+texture = ExtResource("4_smoke")
+emission_shape = 1
+emission_sphere_radius = 20.0
+direction = Vector2(1, 0)
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 20.0
+initial_velocity_max = 140.0
+damping_min = 70.0
+damping_max = 70.0
+scale_amount_min = 1.0
+scale_amount_max = 3.0
+color = Color(0.35, 0.32, 0.32, 1)
+color_ramp = SubResource("GradientTexture1D_fade")
+
+[node name="ExplosionLight" type="PointLight2D" parent="."]
+script = ExtResource("2_light")
+peak_energy = 7.0
+attack = 0.05
+decay = 1.1
+light_radius = 460.0
+expansion = 0.7

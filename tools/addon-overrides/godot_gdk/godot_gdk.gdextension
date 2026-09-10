@@ -1,0 +1,19 @@
+[configuration]
+entry_symbol = "gdk_addon_init"
+compatibility_minimum = "4.5"
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/godot_gdk/bin/godot_gdk.windows.debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/godot_gdk/bin/godot_gdk.windows.release.x86_64.dll"
+scarlett.debug.x86_64 = "res://addons/godot_gdk/bin/godot_gdk.windows.debug.x86_64.dll"
+scarlett.release.x86_64 = "res://addons/godot_gdk/bin/godot_gdk.windows.release.x86_64.dll"
+
+[dependencies]
+
+scarlett.x86_64 = {
+"res://addons/godot_gdk/bin/GameChat2.dll": "",
+"res://addons/godot_gdk/bin/Microsoft.Xbox.Services.GDK.C.Thunks.dll": "",
+"res://addons/godot_gdk/bin/XCurl.dll": "",
+"res://addons/godot_gdk/bin/libHttpClient.GDK.dll": ""
+}

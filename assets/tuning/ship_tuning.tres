@@ -1,0 +1,29 @@
+[gd_resource type="Resource" script_class="ShipTuning" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/tuning/ship_tuning.gd" id="1_ship"]
+
+[resource]
+script = ExtResource("1_ship")
+speed_max = 400.0
+velocity_max = 400.0
+velocity_decay_rate = 0.7
+rotation_per_second = 6.0
+angle_threshold = 0.001
+thruster_velocity_threshold_squared = 100.0
+health_max = 25.0
+shield_max = 100.0
+shield_recharge_rate = 50.0
+shield_recharge_delay = 2.5
+invulnerable_timer_max = 4.0
+mass = 32.0
+radius = 24.0
+radius_no_shield = 20.0
+weapon_fire_rate = 0.15
+fire_rate_triple_laser = 0.3
+fire_rate_rocket = 0.5
+fire_threshold_squared = 0.25
+mine_deploy_rate = 3.0
+shield_alpha_max = 0.588
+texture_dimension = 64.0
+shield_texture_dimension = 162.0
+thruster_texture_dimension = 180.0

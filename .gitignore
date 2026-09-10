@@ -1,0 +1,38 @@
+# Godot 4 / editor
+.godot/
+*.import.tmp
+
+# Addon build output. `tools\sync_addons.ps1` rebuilds this from the
+# external\xbox-godot-sample submodule; the project's own copies of the
+# .gdextension manifests live in tools\addon-overrides\.
+/addons/
+
+# Build stamp written by tools\common.ps1 (Write-BuildStamp) on every export.
+# Describes the build, not the source, so it is never committed.
+/scripts/generated/
+
+# Build output
+build/
+dist/
+scarlett_build/
+scarlett_release/
+*.pck
+*.exe
+*.zip
+*.xvd
+
+# Native addon symbols
+*.pdb
+*.exp
+*.lib
+
+# Godot GDExtension hot-reload staging copies
+~*.dll
+*.TMP
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vs/
+.vscode/
+*.user

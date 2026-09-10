@@ -1,0 +1,22 @@
+[configuration]
+
+entry_symbol = "playfab_addon_init"
+compatibility_minimum = "4.5"
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/godot_playfab/bin/godot_playfab.windows.debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/godot_playfab/bin/godot_playfab.windows.release.x86_64.dll"
+scarlett.debug.x86_64 = "res://addons/godot_playfab/bin/godot_playfab.windows.debug.x86_64.dll"
+scarlett.release.x86_64 = "res://addons/godot_playfab/bin/godot_playfab.windows.release.x86_64.dll"
+
+[dependencies]
+
+scarlett.x86_64 = {
+"res://addons/godot_playfab/bin/Party.dll": "",
+"res://addons/godot_playfab/bin/PlayFabCore.dll": "",
+"res://addons/godot_playfab/bin/PlayFabGameSave.dll": "",
+"res://addons/godot_playfab/bin/PlayFabMultiplayer.dll": "",
+"res://addons/godot_playfab/bin/PlayFabServices.dll": "",
+"res://addons/godot_playfab/bin/libHttpClient.dll": ""
+}

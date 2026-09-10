@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="GameplayEventLibrary" load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/gameplay_event_library.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/laser_impact.tscn" id="2_laser_impact"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/ship_spawn.tscn" id="3_ship_spawn"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/ship_explosion.tscn" id="4_ship_explosion"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/mine_detonation.tscn" id="5_mine_detonation"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/rocket_detonation.tscn" id="6_rocket_detonation"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/power_up_burst.tscn" id="7_power_up_burst"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/asteroid_impact.tscn" id="8_asteroid_impact"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/ship_destruction.tscn" id="9_ship_destruction"]
+[ext_resource type="PackedScene" path="res://scenes/gameplay/fx/pickup_burst.tscn" id="10_pickup_burst"]
+
+[resource]
+script = ExtResource("1_script")
+effects = {
+1: ExtResource("2_laser_impact"),
+2: ExtResource("3_ship_spawn"),
+3: ExtResource("9_ship_destruction"),
+4: ExtResource("5_mine_detonation"),
+7: ExtResource("6_rocket_detonation"),
+8: ExtResource("7_power_up_burst"),
+9: ExtResource("7_power_up_burst"),
+10: ExtResource("8_asteroid_impact"),
+11: ExtResource("10_pickup_burst"),
+12: ExtResource("10_pickup_burst")
+}

@@ -1,0 +1,43 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/objects/power_up.gd" id="1_power_up"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/PowerUps/PowerUp_DoubleLaser.png" id="2_tex"]
+[ext_resource type="Material" path="res://assets/materials/space_object_lighting.tres" id="3_light"]
+
+[sub_resource type="LabelSettings" id="LabelSettings_pickup"]
+font_size = 14
+outline_size = 4
+outline_color = Color(0, 0, 0, 0.75)
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_pickup"]
+radius = 20.0
+
+[node name="PowerUp" type="RigidBody2D"]
+collision_layer = 8
+collision_mask = 1
+mass = 0.001
+gravity_scale = 0.0
+can_sleep = false
+lock_rotation = true
+contact_monitor = true
+max_contacts_reported = 4
+script = ExtResource("1_power_up")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_pickup")
+
+[node name="Sprite" type="Sprite2D" parent="."]
+material = ExtResource("3_light")
+texture = ExtResource("2_tex")
+
+[node name="Label" type="Label" parent="."]
+z_index = 1
+offset_left = -32.0
+offset_top = -9.0
+offset_right = 32.0
+offset_bottom = 15.0
+label_settings = SubResource("LabelSettings_pickup")
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="PulseAnimation" type="AnimationPlayer" parent="."]

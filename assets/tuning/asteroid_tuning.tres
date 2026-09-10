@@ -1,0 +1,29 @@
+[gd_resource type="Resource" script_class="AsteroidTuning" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/tuning/asteroid_tuning.gd" id="1_asteroid"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Asteroids/Asteroid0.png" id="2_a0"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Asteroids/Asteroid1.png" id="3_a1"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Asteroids/Asteroid2.png" id="4_a2"]
+
+[resource]
+script = ExtResource("1_asteroid")
+velocity_initial_min = 32.0
+velocity_initial_max = 96.0
+velocity_min_threshold = 25.0
+velocity_decay_rate = 0.15
+velocity_mass_ratio_to_rotation_scalar = 0.0017
+radius_tiny = 14.0
+radius_small = 24.0
+radius_medium = 40.0
+radius_large = 64.0
+radius_huge = 96.0
+radius_health_ratio = 1.5
+radius_mass_ratio = 0.5
+split_count = 2
+split_speed_min = 60.0
+split_speed_max = 140.0
+split_spawn_spread = 1.15
+split_angle_jitter = 0.5
+momentum_damage_scalar = 0.007
+texture_radius = 117.0
+textures = Array[Texture2D]([ExtResource("2_a0"), ExtResource("3_a1"), ExtResource("4_a2")])

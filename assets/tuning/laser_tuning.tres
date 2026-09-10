@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="ProjectileTuning" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/tuning/projectile_tuning.gd" id="1_proj"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Projectiles/Projectile_Laser.png" id="2_tex"]
+
+[resource]
+script = ExtResource("1_proj")
+projectile_type = 0
+mass = 0.5
+radius = 4.0
+velocity = 640.0
+health = 1.0
+duration = 5.0
+damage_amount = 20.0
+damage_radius = 0.0
+can_damage_owner = false
+texture = ExtResource("2_tex")
+sprite_rotation = 0.0

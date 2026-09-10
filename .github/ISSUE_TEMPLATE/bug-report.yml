@@ -1,0 +1,138 @@
+name: Bug report
+description: Report a problem with the NetRumble sample.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        Two quick checks first, because they resolve most reports:
+
+        - [Known issues](https://github.com/microsoft/XBOX-Godot-NetRumble/blob/main/docs/known-issues.md)
+          lists the problems we already know about.
+        - [Troubleshooting](https://github.com/microsoft/XBOX-Godot-NetRumble/blob/main/docs/troubleshooting.md)
+          covers the setup, build, export and sign-in failures that come up most often.
+
+        If your problem is still unexplained, please carry on. One issue per problem.
+
+  - type: input
+    id: summary
+    attributes:
+      label: What happened
+      description: One sentence, in plain terms.
+      placeholder: The game closes as soon as a second player joins the match
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Your platform
+      options:
+        - Windows PC
+        - XBOX Series X
+        - XBOX Series S
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how_run
+    attributes:
+      label: How you were running the sample
+      description: Problems that appear only in an exported build are usually different from problems in the editor.
+      options:
+        - From the Godot editor
+        - An exported PC build
+        - An exported console package
+    validations:
+      required: true
+
+  - type: input
+    id: godot_version
+    attributes:
+      label: Godot version
+      description: The exact version, from Help then About in the editor.
+      placeholder: "4.6"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: signed_in
+    attributes:
+      label: Were you signed in
+      description: Several features behave differently without an account.
+      options:
+        - Signed in to an XBOX account
+        - Running offline or not signed in
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host_platform
+    attributes:
+      label: Which platform was hosting
+      description: Needed for any multiplayer or cross-play problem.
+      options:
+        - Not applicable (single player or Practice)
+        - Windows PC
+        - XBOX Series X
+        - XBOX Series S
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, starting from a fresh launch of the game.
+      placeholder: |
+        1. Launch the game and select Host Match
+        2. Have a second player join using the lobby code
+        3. Start the match
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: For a multiplayer problem, say what each player saw. The host and the client often see different things.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output log
+      description: |
+        Anything the Godot Output panel printed, especially lines with an error code.
+        This is inserted as code, so no backticks are needed.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or clip
+      description: Drag and drop here. On PC, Game Bar with Win+G records a clip.
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: How often it happens, whether it reproduced on a second try, and anything else worth knowing.
+    validations:
+      required: false

@@ -1,0 +1,87 @@
+[gd_scene load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/objects/ship.gd" id="1_ship"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Ships/ShipShield/ShipShield_Move.png" id="2_thruster"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Ships/Ship0/Ship0_Base.png" id="3_base"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Ships/Ship0/Ship0_Overlay.png" id="4_overlay"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Ships/ShipShield/ShipShield_Base.png" id="5_shield"]
+[ext_resource type="Material" path="res://assets/materials/ship_lighting.tres" id="6_light"]
+
+[sub_resource type="PhysicsMaterial" id="PhysicsMaterial_elastic"]
+friction = 0.0
+bounce = 1.0
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_ship"]
+radius = 24.0
+
+[sub_resource type="Gradient" id="Gradient_contrail"]
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 1, 1, 0, 1, 1, 1, 1)
+
+[sub_resource type="Curve" id="Curve_contrail"]
+_data = [Vector2(0, 0.05), 0.0, 0.0, 0, 0, Vector2(1, 1), 0.0, 0.0, 0, 0]
+point_count = 2
+
+[node name="Ship" type="RigidBody2D"]
+collision_layer = 1
+collision_mask = 19
+mass = 32.0
+physics_material_override = SubResource("PhysicsMaterial_elastic")
+gravity_scale = 0.0
+can_sleep = false
+lock_rotation = true
+contact_monitor = true
+max_contacts_reported = 8
+script = ExtResource("1_ship")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_ship")
+
+[node name="Thruster" type="Sprite2D" parent="."]
+z_index = -1
+rotation = 3.1415927
+scale = Vector2(0.26666668, 0.26666668)
+texture = ExtResource("2_thruster")
+
+[node name="Contrail" type="Line2D" parent="."]
+top_level = true
+z_index = -2
+points = PackedVector2Array()
+width = 14.0
+width_curve = SubResource("Curve_contrail")
+gradient = SubResource("Gradient_contrail")
+joint_mode = 2
+begin_cap_mode = 2
+end_cap_mode = 2
+antialiased = true
+
+[node name="Base" type="Sprite2D" parent="."]
+material = ExtResource("6_light")
+scale = Vector2(0.75, 0.75)
+texture = ExtResource("3_base")
+
+[node name="Overlay" type="Sprite2D" parent="."]
+z_index = 1
+scale = Vector2(0.75, 0.75)
+texture = ExtResource("4_overlay")
+
+[node name="Shield" type="Sprite2D" parent="."]
+z_index = 2
+scale = Vector2(0.2962963, 0.2962963)
+texture = ExtResource("5_shield")
+
+[node name="FireCooldownTimer" type="Timer" parent="."]
+process_callback = 0
+one_shot = true
+
+[node name="MineCooldownTimer" type="Timer" parent="."]
+process_callback = 0
+one_shot = true
+
+[node name="ShieldRechargeTimer" type="Timer" parent="."]
+process_callback = 0
+one_shot = true
+
+[node name="InvulnerabilityTimer" type="Timer" parent="."]
+process_callback = 0
+one_shot = true

@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="PackedScene" path="res://scenes/ui/controller_disconnect_overlay.tscn" id="2_overlay"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_main")
+
+[node name="BackgroundContainer" type="CanvasLayer" parent="."]
+layer = -2
+
+[node name="WorldContainer" type="Node2D" parent="."]
+
+[node name="ScreenContainer" type="CanvasLayer" parent="."]
+
+[node name="ControllerDisconnectOverlay" parent="." instance=ExtResource("2_overlay")]

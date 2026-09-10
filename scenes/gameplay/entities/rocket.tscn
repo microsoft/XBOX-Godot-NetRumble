@@ -1,0 +1,59 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/objects/rocket_projectile.gd" id="1_script"]
+[ext_resource type="Resource" path="res://assets/tuning/rocket_tuning.tres" id="2_tuning"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Projectiles/Projectile_Rocket.png" id="3_tex"]
+[ext_resource type="Texture2D" path="res://assets/textures/Gameplay/Particles/Particle_Smoke.png" id="4_smoke"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_body"]
+radius = 8.0
+
+[sub_resource type="Gradient" id="Gradient_trail_fade"]
+resource_local_to_scene = true
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_trail_fade"]
+resource_local_to_scene = true
+gradient = SubResource("Gradient_trail_fade")
+
+[node name="Rocket" type="RigidBody2D"]
+collision_layer = 4
+collision_mask = 23
+mass = 0.001
+gravity_scale = 0.0
+can_sleep = false
+lock_rotation = true
+contact_monitor = true
+max_contacts_reported = 8
+script = ExtResource("1_script")
+tuning = ExtResource("2_tuning")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_body")
+
+[node name="Sprite" type="Sprite2D" parent="."]
+texture = ExtResource("3_tex")
+
+[node name="Trail" type="CPUParticles2D" parent="."]
+show_behind_parent = true
+amount = 27
+lifetime = 0.45
+emitting = false
+texture = ExtResource("4_smoke")
+local_coords = false
+direction = Vector2(0, 1)
+spread = 25.0
+gravity = Vector2(0, 0)
+initial_velocity_min = 4.8
+initial_velocity_max = 12.0
+damping_min = 9.6
+damping_max = 9.6
+scale_amount_min = 0.25
+scale_amount_max = 0.75
+color = Color(0.827451, 0.827451, 0.827451, 1)
+color_ramp = SubResource("GradientTexture1D_trail_fade")
+
+[node name="DurationTimer" type="Timer" parent="."]
+process_callback = 0
+one_shot = true

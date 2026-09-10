@@ -1,0 +1,14 @@
+[remap]
+
+importer="gdk_packaging.config_file"
+type="Resource"
+uid="uid://creh68hb7ecu7"
+path="res://.godot/imported/export_presets.cfg-31fd2bd93ed61f291e0e5fc17fd06797.res"
+
+[deps]
+
+source_file="res://export_presets.cfg"
+dest_files=["res://.godot/imported/export_presets.cfg-31fd2bd93ed61f291e0e5fc17fd06797.res"]
+
+[params]
+
