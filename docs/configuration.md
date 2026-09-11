@@ -342,16 +342,18 @@ runtime override for a separate development PlayFab title, not a replacement pac
 
 | Setting | File | Value |
 |---|---|---|
-| PlayFab title id | `project.godot`, `[playfab]` → `runtime/title_id` | `1A9AB9` |
-| Package identity name | `MicrosoftGame.config`, `Identity/@Name` | `41336MicrosoftATG.NetRumble2` |
-| XBOX services title id | `MicrosoftGame.config`, `<TitleId>` | `76B1590E` |
-| MSA app id | `MicrosoftGame.config`, `<MSAAppId>` | `0000000044264AE3` |
-| Store id | `MicrosoftGame.config`, `<StoreId>` | `9PN64QJC8BKL` |
+| PlayFab title id | `project.godot`, `[playfab]` → `runtime/title_id` | `186CDB` |
+| Package identity name | `MicrosoftGame.config`, `Identity/@Name` | `41336MicrosoftATG.GodotNetRumble` |
+| XBOX services title id | `MicrosoftGame.config`, `<TitleId>` | `7C84AA93` |
+| MSA app id | `MicrosoftGame.config`, `<MSAAppId>` | `84983aff-dc3c-4cbb-8e88-aa51c4b0f5d9` |
+| Store id | `MicrosoftGame.config`, `<StoreId>` | `9P7KW6GFS17X` |
 
 > The **XBOX services** `TitleId` and the **PlayFab** title id (`runtime/title_id`) are separate
 > identifiers for separate services. Do not conflate them.
 
-> There is **no** title identifier in `export_presets.cfg`.
+> `export_presets.cfg` carries its own copies of the package identity, MSA app id, XBOX
+> services title id and store id, under `application/`. They must match the values above —
+> the export packages what is written there, not what is in `MicrosoftGame.config`.
 
 ### Set the sandbox to XDKS.1
 

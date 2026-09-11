@@ -370,7 +370,7 @@ shows "(test user)" so a custom-ID session is never mistaken for a real one.
    through the XBOX-linked path. A suppressed override logs a warning.
 
 2. **Requires a title that permits custom-ID account creation.** The sample's production title
-   (`1A9AB9`) does **not**. Custom-id login there returns
+   (`186CDB`) does **not**. Custom-id login there returns
    `E_PF_PLAYER_CREATION_DISABLED` (`0x892357BA`). Use a development title for this flow.
 
 3. **Party binds a UDP socket and by default pins a fixed port.** A second local instance would
