@@ -89,7 +89,10 @@ you file a bug.
 - **Windows**, for the GDK and PlayFab addons to load.
 - **Visual Studio 2022** with the vcpkg component, and a **Microsoft GDK** edition. These are
   needed once, to build the addons.
-- Exporting to XBOX Series X|S additionally requires a Middleware console fork of Godot.
+- Exporting to XBOX Series X|S additionally requires GDKX through an NDA XBOX developer
+  program, an authorized devkit and a Middleware console fork of Godot. Complete the
+  [XBOX Development Kit setup](https://learn.microsoft.com/en-us/gaming/gdk/docs/gdk-dev/console-dev/dev-kits/setup/setting-up-your-devkit?view=gdk-2604)
+  first (authorized access required).
 
 The registered-PC path also needs GDK PC tooling (`wdapp`), appropriate export templates,
 authorized access to the sample's **XDKS.1** sandbox/title, and an XBOX test account from that
@@ -140,8 +143,9 @@ Keep the committed sample title/package identifiers unchanged; see the
   **separate development PlayFab title** that permits custom-ID creation. This debug-only
   path bypasses XBOX checks; it cannot validate privacy, achievements or Game Save.
   See [local multiplayer setup](docs/multiplayer.md#testing-two-players-on-one-pc).
-- **Console:** use a Middleware console fork, an authorized devkit and
-  `.\tools\deploy-console.ps1 -Launch`; see [configuration](docs/configuration.md#running-with-gdk-identity).
+- **Console:** after completing the authorized GDKX and devkit setup, use a Middleware console
+  fork and `.\tools\deploy-console.ps1 -Launch`; see
+  [configuration](docs/configuration.md#running-with-gdk-identity).
 
 <a id="feature-index"></a>
 
