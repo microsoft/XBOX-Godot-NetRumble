@@ -95,30 +95,30 @@ Godot binary resolution: `-GodotExe` → `$env:GODOT_BIN` → `$env:GODOT` →
 
 ## `deploy-console.ps1`: XBOX Series X|S
 
-Uses the `Xbox Series X|S` preset. The export produces a loose layout in
-`scarlett_build\`: executable, `.pck`, GDK/PlayFab DLLs, `gameos.xvd` and the
-staged `MicrosoftGame.config`. `xbapp deploy` syncs that folder to the devkit
-and registers the apps declared in the config it finds at the folder root.
+Requires GDKX through an NDA XBOX developer program, an authorized XBOX Development Kit and a
+Middleware console fork of Godot. Complete the
+[XBOX Development Kit setup][devkit-setup] and configure the console for the sample's
+**XDKS.1** sandbox before testing online features.
 
 ```powershell
-.\tools\deploy-console.ps1                                 # default console
-.\tools\deploy-console.ps1 -ConsoleAddress 192.168.1.42
+.\tools\deploy-console.ps1 -Launch
+.\tools\deploy-console.ps1 -ConsoleAddress 192.168.1.42 -Launch
 .\tools\deploy-console.ps1 -SkipExport -SyncExact -Launch
 ```
 
-- **A Middleware console fork is required.** The `Xbox Series X|S` export
-  platform is absent from a stock Godot, so the export fails immediately.
-  Resolution order: `-ConsoleGodotExe` → `$env:GODOT_CONSOLE`. Set
-  `GODOT_CONSOLE` to the console fork's `godot.windows.editor.x86_64.exe` so you
-  do not have to pass the path each time.
-- **Target console.** Omit `-ConsoleAddress` to use the default console set with
-  `xbconnect`.
-- **`-SyncExact`** passes `/S`, deleting files on the console that are absent
-  from the local layout. Slower, but leaves nothing stale behind remotely.
-- The script warns when the layout contains an `.exe` that
-  `MicrosoftGame.config` does not declare, because `xbapp deploy` copies the
-  whole folder. `-Clean` rebuilds the layout from scratch (and re-stages the
-  ~330 MB `gameos.xvd`).
+The script exports NetRumble to `scarlett_build`, validates the sample layout, deploys it to the
+selected or default development console, and optionally launches it. Use `-SyncExact` when stale
+files must be removed from the target layout. `-Clean` rebuilds the layout from scratch.
+
+The `Xbox Series X|S` export platform is absent from stock Godot. Console Godot resolution is
+`-ConsoleGodotExe` → `$env:GODOT_CONSOLE`; set `GODOT_CONSOLE` to the Middleware fork's
+`godot.windows.editor.x86_64.exe` to avoid passing it each time.
+
+For console deployment syntax, console selection and troubleshooting, see the
+[xbapp reference][xbapp] (NDA XBOX developer access required).
+
+[devkit-setup]: https://learn.microsoft.com/en-us/gaming/gdk/docs/gdk-dev/console-dev/dev-kits/setup/setting-up-your-devkit?view=gdk-2604
+[xbapp]: https://learn.microsoft.com/en-us/gaming/gdk/docs/tools/tools-console/commandlinetools/xbapp?view=gdk-2604
 
 ## `export.ps1`: export without deploying
 

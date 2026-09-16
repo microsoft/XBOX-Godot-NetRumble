@@ -16,7 +16,9 @@ See also: [Architecture](architecture.md) · [Multiplayer](multiplayer.md) ·
   build needed). Tested with 4.6.2. `project.godot` declares the `4.6` feature tag, so 4.6 is
   this project's floor; the bundled GDExtensions declare a `compatibility_minimum` of 4.5, which
   is a different and lower claim.
-  Exporting to XBOX Series X|S additionally requires a Middleware console fork.
+  Exporting to XBOX Series X|S additionally requires GDKX through an NDA XBOX developer
+  program, an authorized devkit and a Middleware console fork. Complete the
+  [XBOX Development Kit setup][devkit-setup] first (authorized access required).
 - **Windows**: the GDK/PlayFab addons load only on Windows. Sign-in, multiplayer and
   achievements additionally need registered package identity, the PC in the **XDKS.1**
   sandbox, authorized access to that title/sandbox and a corresponding XBOX test account
@@ -24,8 +26,7 @@ See also: [Architecture](architecture.md) · [Multiplayer](multiplayer.md) ·
 - **Visual Studio 2022** with the vcpkg component, plus an installed **Microsoft GDK**, to build
   the addons. `addons/` is not committed; see [Addon maintenance](addon-maintenance.md).
 - **Export support for the chosen Godot build** and GDK PC tooling (`wdapp`) on the deployment
-  machine. The console path additionally requires a Middleware console fork and an authorized
-  devkit.
+  machine. The console path uses the authorized GDKX environment described above.
 
 ---
 
@@ -52,9 +53,12 @@ building them needs it present locally.
 
 1. Install **Visual Studio 2022** with the native desktop development workload and the
    **vcpkg** component.
-2. Install the GDK from [aka.ms/gdkdl](https://aka.ms/gdkdl), or take a specific version from
-   [github.com/microsoft/GDK/releases](https://github.com/microsoft/GDK/releases). Install it
-   after Visual Studio so its build integration registers.
+2. Install the public GDK from
+   [github.com/microsoft/GDK/releases](https://github.com/microsoft/GDK/releases). Authorized
+   XBOX development partners can instead use the secure
+   [XBOX download site](https://aka.ms/gdkdl), which also supplies GDKX and other NDA resources.
+   See [Access GDK development resources][gdk-resources] for the access distinction. Install the
+   selected edition after Visual Studio so its build integration registers.
 3. Open a *new* terminal and confirm the result:
 
    ```powershell
@@ -202,7 +206,7 @@ export and deployment steps for each:
 # PC: export, then `wdapp register` the loose package so it has an identity.
 .\tools\deploy-pc.ps1 -Launch
 
-# Console: export, then `xbapp deploy` the layout to the devkit.
+# Console: export, deploy to the selected devkit, then optionally launch.
 .\tools\deploy-console.ps1 -ConsoleAddress 192.168.1.42
 ```
 
@@ -212,7 +216,7 @@ preset still registers during export because `dev/register_loose` is enabled. Se
 [tools/README.md](../tools/README.md) for the full set. The console preset needs a Middleware
 console fork; point `$env:GODOT_CONSOLE` or `-ConsoleGodotExe` at it.
 
-The underlying commands, if you prefer to drive them by hand:
+The underlying export commands, if you prefer to drive export by hand:
 
 ```powershell
 # Console: the preset's export path pins the executable name.
@@ -378,20 +382,21 @@ Record the previous sandbox before changing it and restore that value when finis
 `XblPCSandbox /retail` is appropriate only if the prior state was retail.
 After setup, sign in to the XBOX app with the sandbox test account before registered launch.
 
-**On a devkit**, use [`xbconfig`][sandboxes] from the same GDK command prompt, then reboot:
+**On a devkit**, configure the console for **XDKS.1** by following
+[Setting up sandboxes][sandboxes] and the authorized [`xbconfig`][xbconfig] and
+[`xbreboot`][xbreboot] references. Obtain XDKS.1 authorization and an appropriate test account
+before changing the devkit. The detailed console tool references require NDA XBOX developer
+access.
 
-```cmd
-xbconfig sandboxid
-xbconfig sandboxid=XDKS.1
-xbreboot
-```
-
-Sandbox ids are case-sensitive.
 The repository's scripts do not provision accounts/services or prove those services are reachable.
 Treat unavailable title access, accounts or hardware as blocked walkthroughs, not successful setup.
 
 [pc-sandbox]: https://learn.microsoft.com/en-us/gaming/gdk/docs/tools/tools-services/live-pc-sandbox-switcher
 [sandboxes]: https://learn.microsoft.com/en-us/gaming/gdk/docs/services/fundamentals/sandboxes/live-setting-up-sandboxes
+[xbconfig]: https://learn.microsoft.com/en-us/gaming/gdk/docs/tools/tools-console/commandlinetools/xbconfig?view=gdk-2604
+[xbreboot]: https://learn.microsoft.com/en-us/gaming/gdk/docs/tools/tools-console/commandlinetools/xbreboot?view=gdk-2604
+[devkit-setup]: https://learn.microsoft.com/en-us/gaming/gdk/docs/gdk-dev/console-dev/dev-kits/setup/setting-up-your-devkit?view=gdk-2604
+[gdk-resources]: https://learn.microsoft.com/en-us/gaming/gdk/docs/gdk-dev/development-downloads/access-resources?view=gdk-2604
 
 ### Store tiles
 
