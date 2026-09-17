@@ -27,6 +27,9 @@ var elapsed_match_time: float = 0.0
 var starting_time_remaining: float = 0.0
 
 var _is_authority: bool = false
+## Each gameplay screen creates a fresh director. MATCH_COMPLETE can arrive as state
+## before its result payload, so it cannot also mean that the local result was reported.
+var _result_reported := false
 var _world_update_timer: float = 0.0
 var _clock_broadcast_timer: float = 0.0
 var _last_countdown_broadcast: int = -1
@@ -62,6 +65,9 @@ func setup(world_node: Node, mode: NRTypes.GameModeType) -> void:
 	world = world_node
 	game_mode_type = mode
 	_is_authority = NetManager.is_host()
+	# Defensive: a fresh director is built per match today, so this only matters if one
+	# is ever reused for a rematch.
+	_result_reported = false
 
 	if world != null and world.has_signal("ship_destroyed"):
 		world.ship_destroyed.connect(_on_ship_destroyed)
@@ -345,6 +351,8 @@ func _complete_match(reason: String) -> void:
 
 ## Writes match result stats and history when a match completes.
 func _report_result(payload: Dictionary) -> void:
+	if _result_reported:
+		return
 	if Services == null or not Services.has_method("report_match_result"):
 		return
 	var local := NetManager.local_player()
@@ -352,6 +360,7 @@ func _report_result(payload: Dictionary) -> void:
 		return
 	for entry in payload["standings"]:
 		if int(entry["peer_id"]) == local.peer_id:
+			_result_reported = true
 			Services.report_match_result({
 				"game_mode": payload["game_mode"],
 				# The display name is what the Match History screen shows; the enum is
@@ -609,7 +618,7 @@ func _on_remote_match_state_changed(state: NRTypes.MatchState) -> void:
 
 
 func _on_remote_match_completed(payload: Dictionary) -> void:
-	if _is_authority:
+	if _is_authority or _result_reported:
 		return
 	var previous := match_state
 	_exit_match_state(previous)

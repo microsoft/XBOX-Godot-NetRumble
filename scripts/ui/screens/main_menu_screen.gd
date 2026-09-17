@@ -4,9 +4,10 @@ extends NRScreen
 ## gamertag, and a vertical menu list. Sign-in belongs to the acquire-user screen,
 ## which runs before this one; this screen only reflects the resulting identity and
 ## offers a way back to it. Hosting and joining are driven through NetManager.
-## Menu entries: Host Match / Join Match / Practice / Match History / Options / Quit,
-## with Quit desktop-only — consoles leave the title through the platform. Join Match
-## opens a submenu (Join Friend / Lobby Code) in place of the top-level rows.
+## Menu entries: Host Match / Join Match / Practice / Match History / Leaderboards /
+## Options / Quit, with Quit desktop-only — consoles leave the title through the
+## platform. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
+## top-level rows.
 
 const _STARFIELD_SCENE := "res://scenes/gameplay/fx/starfield_background.tscn"
 const _JOIN_CODE_ENTRY_SCENE := preload("res://scenes/ui/elements/nr_join_code_entry.tscn")
@@ -44,7 +45,7 @@ var _sign_in_row_shown := false
 var _in_join_menu := false
 var _in_options := false
 
-## The two rows that need a connection, and the note that says why they are dark. Held so
+## The two multiplayer rows, and the note that says why they are dark. Held so
 ## connectivity can be applied in place rather than by rebuilding: a rebuild would drop
 ## the player's focus back to the top of the list every time the hint flickered, and on a
 ## controller that is far more disruptive than the two rows going grey.
@@ -150,6 +151,7 @@ func _build_menu() -> void:
 	_join_row = _menu_list.add_button("Join Match", _on_join_match)
 	_menu_list.add_button("Practice", _on_practice)
 	_menu_list.add_button("Match History", func() -> void: ScreenManager.push(ScreenManager.MATCH_HISTORY))
+	_menu_list.add_button("Leaderboards", func() -> void: ScreenManager.push(ScreenManager.LEADERBOARDS))
 	_menu_list.add_button("Options", _build_options_menu)
 	# Consoles have no in-title Quit: the platform owns leaving the game, and a
 	# second way out that behaves differently is exactly what certification flags.
@@ -267,8 +269,8 @@ func _multiplayer_denial() -> String:
 ## player can see that online play exists and is simply unavailable right now. Practice is
 ## untouched: it is the whole reason the offline case is still worth showing a menu for.
 ##
-## Only the two rows that need a connection are gated. Match History reads from a cache
-## and reports its own failures, and Options is local.
+## Only Host and Join are gated here. Match History and Options are local; Leaderboards
+## stays reachable and explains a missing sign-in or connection on its own screen.
 ##
 ## `announce` is false while building, because a menu that opens saying "Connection
 ## restored" is announcing a state the player never saw change.

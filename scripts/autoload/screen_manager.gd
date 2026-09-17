@@ -20,6 +20,7 @@ const LOBBY := "res://scenes/ui/screens/lobby_screen.tscn"
 const GAMEPLAY := "res://scenes/ui/screens/gameplay_screen.tscn"
 const GAME_MENU := "res://scenes/ui/screens/game_menu_screen.tscn"
 const MATCH_HISTORY := "res://scenes/ui/screens/match_history_screen.tscn"
+const LEADERBOARDS := "res://scenes/ui/screens/leaderboards_screen.tscn"
 const LOADING := "res://scenes/ui/screens/loading_screen.tscn"
 
 const DIALOG_BOX := "res://scenes/ui/dialog_box.tscn"

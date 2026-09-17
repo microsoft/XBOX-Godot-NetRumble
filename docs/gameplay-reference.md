@@ -35,9 +35,9 @@ scenes/
   ui/
     elements/    reusable controls (buttons, menu lists, spinners, roster rows,
                  chat lines, overlays)
-    screens/     one scene per screen (7: acquire-user, main menu, match history,
-                 lobby, gameplay, game menu, loading; Options is a row set built
-                 into the main and game menus, not a screen of its own)
+    screens/     one scene per screen (8: acquire-user, main menu, match history,
+                 leaderboards, lobby, gameplay, game menu, loading; Options is a
+                 row set built into the main and game menus, not a screen of its own)
 scripts/
   autoload/      Assets, AudioManager, PlayerProfile, Services, NetManager,
                  ScreenManager, InviteRouter (plus platform_session.gd, which
@@ -47,7 +47,7 @@ scripts/
     tuning/      Resource subclasses backing assets/tuning/*.tres
   fx/            particle dispatch and starfield
   services/      identity, device, privilege, privacy, moderation, social, activity, party,
-                 chat, achievement, game save, connectivity, profile
+                 chat, achievement, leaderboard, game save, connectivity, profile
   ui/            screen implementations and element library
 ```
 
