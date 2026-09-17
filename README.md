@@ -66,6 +66,7 @@ account policy still apply.
 | XBOX privileges, privacy, string verification, reporting | Yes | Yes | Bypassed / unavailable | Unavailable |
 | XBOX friends, activity, invites, recent players | Yes | Yes | Unavailable | Unavailable |
 | XBOX achievement reporting | Yes | Yes | Counters only; no XBOX award | Counters only |
+| GlobalScore standalone leaderboard | Online-match writes subject to title policy; top-10 reads | Online-match writes subject to title policy; top-10 reads | Same API and title-policy requirements | No submission or cached board; Practice stays local |
 | PlayFab Game Save roaming | Not used by this sample | Per-user synced folder | Not used | No cloud sync |
 | Settings, history and counters | Desktop local cache | Game Save when signed in | Local cache per token | Desktop cache; console memory only |
 | Lifecycle / controller detection | Focus and device detection | Suspend/resume, constrain, association detection | Desktop behavior | Platform-dependent |
@@ -165,6 +166,7 @@ Follow these source boundaries alongside the [Walkthroughs](docs/walkthroughs.md
 | Party voice and four-message typed-text display | `scripts/services/chat_service.gd`, `scripts/ui/elements/nr_chat_log.gd` | [Multiplayer](docs/multiplayer.md#voice-chat) |
 | One-shot and incremental achievement progress | `scripts/services/achievement_service.gd`, `scripts/services/achievement_tracker.gd` | [Platform services](docs/platform-services.md#achievements) |
 | Console Game Save: profile, history and counters | `scripts/services/game_save_service.gd` | [Platform services](docs/platform-services.md#game-saves) |
+| Standalone leaderboard submission and browsing | `scripts/services/leaderboard_service.gd`, `scripts/ui/screens/leaderboards_screen.gd` | [Leaderboard behavior and client-access policy](docs/leaderboards.md) |
 | Suspend, resume and constrain handling | `scripts/main.gd` | [Architecture](docs/architecture.md#process-lifecycle) |
 | Activity publishing and join-from-guide invites | `scripts/autoload/platform_session.gd`, `scripts/services/activity_service.gd`, `scripts/autoload/invite_router.gd` | [Multiplayer](docs/multiplayer.md) |
 | Connectivity detection before online play is offered | `scripts/services/connectivity_service.gd` | [Architecture](docs/architecture.md#connectivity-detection) |
@@ -202,6 +204,7 @@ Full detail: [Architecture](docs/architecture.md).
 | [Architecture](docs/architecture.md) | Platform ownership, identities, saves, lifecycle and connectivity |
 | [Multiplayer](docs/multiplayer.md) | Lobby discovery, Party connection/leave, voice and typed text |
 | [Platform services](docs/platform-services.md) | Sign-in, privileges, privacy, moderation, achievements, saves |
+| [Leaderboards](docs/leaderboards.md) | The standalone `GlobalScore` board, match submission and client-access policy |
 | [Configuration](docs/configuration.md) | Registered-PC setup, sandbox/accounts, fixed title configuration, alternate run paths |
 | [Walkthroughs](docs/walkthroughs.md) | Prerequisites → player action → API → observable outcome and failure |
 | [XBOX Requirements](docs/xr-compliance.md) | Each XR the sample has code for, and where that code is |
