@@ -28,6 +28,7 @@ const XboxBootstrap := preload("res://addons/godot_gdk/runtime/gdk_bootstrap.gd"
 var _identity: IdentityService = null
 var _achievements: AchievementService = null
 var _leaderboards: LeaderboardService = null
+var _matchmaking: MatchmakingService = null
 ## Notice ownership is separate from the service's per-entity write gate. An older
 ## completion cannot replace a newer attempt's notice or expose it to another session.
 var _leaderboard_submission: Dictionary = {}
@@ -73,6 +74,7 @@ func _ready() -> void:
 	_identity.platform_ready.connect(_connect_user_changed)
 	_achievements = AchievementService.new()
 	_leaderboards = LeaderboardService.new()
+	_matchmaking = MatchmakingService.new()
 	_achievement_tracker = AchievementTracker.new()
 	_achievement_tracker.progress_changed.connect(_on_achievement_progress)
 	_game_saves = GameSaveService.new()
@@ -807,6 +809,27 @@ func _clear_leaderboard_submission() -> void:
 	if _leaderboards != null:
 		_leaderboards.invalidate_pending_submissions()
 	leaderboard_submission_changed.emit()
+
+
+# --- Matchmaking ------------------------------------------------------------
+
+## PlayFab Matchmaking (Quick Match). Present but switched off: the addon cannot yet
+## configure an arranged lobby, so the search flow is deliberately unwritten rather than
+## half-working. See scripts/services/matchmaking_service.gd.
+func matchmaking() -> MatchmakingService:
+	return _matchmaking
+
+
+## Whether a Quick Match row should offer to run. False on this build.
+func quick_match_available() -> bool:
+	return _matchmaking != null and _matchmaking.is_available()
+
+
+## Why Quick Match cannot run, in words fit to show a player. Empty when it can.
+func quick_match_unavailable_reason() -> String:
+	if _matchmaking == null:
+		return "Matchmaking is unavailable in this build."
+	return _matchmaking.availability_reason()
 
 
 # --- Achievements -----------------------------------------------------------
