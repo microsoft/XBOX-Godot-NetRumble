@@ -2,7 +2,7 @@ extends Node
 
 ## Facade over the Microsoft GDK and PlayFab addons for the rest of the game.
 ##
-## Covers achievements, cloud saves, presence, voice chat and Party
+## Covers achievements, leaderboards, cloud saves, presence, voice chat and Party
 ## networking. The implementation is split across scripts/services/*; this file stays
 ## a thin, well-documented facade that the UI and gameplay code call.
 ##
@@ -13,6 +13,7 @@ signal sign_in_completed(success: bool)
 signal account_state_changed()
 signal account_lost()
 signal save_failed(reason: String)
+signal leaderboard_submission_changed()
 ## The step sign-in is currently on, in words fit to show the player. Forwarded from
 ## IdentityService and extended with the steps this facade owns, so the acquire-user
 ## screen can name the call it is waiting on.
@@ -26,6 +27,12 @@ const XboxBootstrap := preload("res://addons/godot_gdk/runtime/gdk_bootstrap.gd"
 
 var _identity: IdentityService = null
 var _achievements: AchievementService = null
+var _leaderboards: LeaderboardService = null
+## Notice ownership is separate from the service's per-entity write gate. An older
+## completion cannot replace a newer attempt's notice or expose it to another session.
+var _leaderboard_submission: Dictionary = {}
+var _leaderboard_submission_user: Variant = null
+var _leaderboard_submission_serial := 0
 var _achievement_tracker: AchievementTracker = null
 var _game_saves: GameSaveService = null
 var _party: PartyService = null
@@ -65,6 +72,7 @@ func _ready() -> void:
 	_identity.stage_changed.connect(_set_sign_in_stage)
 	_identity.platform_ready.connect(_connect_user_changed)
 	_achievements = AchievementService.new()
+	_leaderboards = LeaderboardService.new()
 	_achievement_tracker = AchievementTracker.new()
 	_achievement_tracker.progress_changed.connect(_on_achievement_progress)
 	_game_saves = GameSaveService.new()
@@ -441,10 +449,12 @@ func invalidate_saves_for_resume() -> void:
 	_account_generation += 1
 	_ready_owner = null
 	_game_saves.reset()
+	_clear_leaderboard_submission()
 	account_state_changed.emit()
 
 
 func _clear_player_state() -> void:
+	_clear_leaderboard_submission()
 	_history.clear()
 	_achievement_tracker.clear()
 	PlayerProfile.reset_to_defaults()
@@ -604,6 +614,7 @@ func is_shutting_down() -> bool:
 ## on its own -- taking it away mid-flight is the failure mode this exists to avoid.
 func begin_shutdown() -> void:
 	_shutting_down = true
+	_clear_leaderboard_submission()
 	if _signing_in:
 		_account_generation += 1
 		_game_saves.reset()
@@ -668,6 +679,8 @@ func report_match_result(payload: Dictionary) -> bool:
 	if not is_account_ready() or _shutting_down:
 		push_warning("[Services] Match result rejected: the account is not ready.")
 		return false
+	var generation := _account_generation
+	var online_match := not NetManager.is_offline()
 	_append_match_history(payload)
 	# Runs on every peer -- the host records its own result here and each client records
 	# theirs on the same path -- which is exactly the property the achievement counters
@@ -679,6 +692,11 @@ func report_match_result(payload: Dictionary) -> bool:
 		int(payload.get("human_count", 0)))
 	var history_ok := _save_history()
 	var stats_ok := _save_achievement_stats()
+	# Practice stays local even when signed in. Queuing/uploading must not hold the
+	# results flow, so this standalone coroutine call deliberately ignores its result.
+	if is_current_account(generation) and online_match:
+		@warning_ignore("return_value_discarded", "missing_await")
+		submit_leaderboard_score(int(payload["score"]))
 	return history_ok and stats_ok
 
 
@@ -688,6 +706,89 @@ func get_match_history() -> Array[Dictionary]:
 	if not is_account_ready():
 		return []
 	return _history.duplicate(true)
+
+
+# --- Leaderboards -----------------------------------------------------------
+
+## The live top ten, with status kept separate from an empty board. No cached history
+## is substituted when PlayFab cannot answer.
+func get_leaderboard() -> Dictionary:
+	if not is_account_ready():
+		return LeaderboardService.failure(
+			"The account is not ready.", "Sign in and load your saved data to view leaderboards.")
+	if _leaderboards == null:
+		return LeaderboardService.failure(
+			"Leaderboard service is unavailable.", "Leaderboards are unavailable right now.")
+	var user: Variant = playfab_user()
+	var generation := _account_generation
+	if user != null and _connectivity != null and not _connectivity.is_online():
+		return LeaderboardService.failure(
+			_connectivity.offline_reason(), "Connect to the internet to view leaderboards.")
+
+	var result: Dictionary = await _leaderboards.get_top_entries(user)
+	# Sign-out during the query would otherwise show another account's board.
+	if not is_current_account(generation) or user != playfab_user():
+		return LeaderboardService.failure(
+			"The PlayFab session changed during the query.", "Sign-in changed - reopen leaderboards.")
+	return result
+
+
+## Gameplay starts this without awaiting; a caller investigating the result can await
+## its own outcome without consulting mutable last-error state.
+func submit_leaderboard_score(score: int) -> Dictionary:
+	if not is_account_ready():
+		return LeaderboardService.score_failure("Sign in and load your saved data before submitting a score.")
+	var user: Variant = playfab_user()
+	var generation := _account_generation
+	_leaderboard_submission_serial += 1
+	var serial := _leaderboard_submission_serial
+	_leaderboard_submission_user = user
+	_leaderboard_submission = {
+		"ok": false,
+		"pending": true,
+		"attempted": false,
+		"skipped": false,
+		"message": "Score %d pending: queued, checking published best, or uploading." % score,
+	}
+	leaderboard_submission_changed.emit()
+
+	var result: Dictionary = await _submit_leaderboard_score(user, generation, score)
+	if not is_current_account(generation) or user != playfab_user():
+		return LeaderboardService.score_failure("Sign-in changed during leaderboard submission.")
+	if serial == _leaderboard_submission_serial:
+		_leaderboard_submission = result
+		leaderboard_submission_changed.emit()
+	return result
+
+
+func _submit_leaderboard_score(user: Variant, generation: int, score: int) -> Dictionary:
+	if _leaderboards == null:
+		return LeaderboardService.score_failure("Leaderboard service is unavailable.")
+	if user == null:
+		return LeaderboardService.score_failure("Sign in to submit a score.")
+	if not is_current_account(generation) or user != playfab_user():
+		return LeaderboardService.score_failure("The account is no longer ready; no new submission was started.")
+	if _connectivity != null and not _connectivity.is_online():
+		return LeaderboardService.score_failure(_connectivity.offline_reason())
+	var account_current := func() -> bool:
+		return is_current_account(generation) and user == playfab_user()
+	return await _leaderboards.submit_score(user, score, account_current)
+
+
+## An accepted update, skipped update and observed readback are different outcomes.
+func get_leaderboard_submission() -> Dictionary:
+	if not is_account_ready() or _leaderboard_submission_user != playfab_user():
+		return {}
+	return _leaderboard_submission.duplicate()
+
+
+func _clear_leaderboard_submission() -> void:
+	_leaderboard_submission_serial += 1
+	_leaderboard_submission_user = null
+	_leaderboard_submission.clear()
+	if _leaderboards != null:
+		_leaderboards.invalidate_pending_submissions()
+	leaderboard_submission_changed.emit()
 
 
 # --- Achievements -----------------------------------------------------------

@@ -20,6 +20,7 @@ docs/
 ├── architecture.md            platform ownership, identities, saves, lifecycle, connectivity
 ├── multiplayer.md             Lobby discovery, Party connect and leave, voice and typed text
 ├── platform-services.md       sign-in, privileges, privacy, moderation, achievements, saves
+├── leaderboards.md            GlobalScore submission, reads and title client-access policy
 ├── xr-compliance.md           each XBOX Requirement the sample has code for
 ├── manual-test-plan.md        integration acceptance and gameplay regression
 ├── addon-maintenance.md       building addons/ from the submodule and moving the pin
@@ -53,6 +54,8 @@ docs/
 - [**Platform services**](platform-services.md): GDK sign-in and the exchange for a PlayFab
   identity, privileges, privacy enforcement, string verification and reporting, achievements
   and account-owned Xbox XGameSaveFiles on PC and console
+- [**Leaderboards**](leaderboards.md): the standalone `GlobalScore` board, how a completed
+  online match submits its score, and the title API Features policy that governs client writes
 - [**XBOX Requirements**](xr-compliance.md): each XR the sample has code for and where that
   code is, so you can find the equivalent call site for your own title
 

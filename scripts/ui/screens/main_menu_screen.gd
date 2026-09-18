@@ -4,9 +4,10 @@ extends NRScreen
 ## gamertag, and a vertical menu list. Sign-in belongs to the acquire-user screen,
 ## which runs before this one; this screen only reflects the resulting identity and
 ## offers a way back to it. Hosting and joining are driven through NetManager.
-## Menu entries: Host Match / Join Match / Practice / Match History / Options / Quit,
-## with Quit desktop-only — consoles leave the title through the platform. Join Match
-## opens a submenu (Join Friend / Lobby Code) in place of the top-level rows.
+## Menu entries: Host Match / Join Match / Practice / Match History / Leaderboards /
+## Options / Quit, with Quit desktop-only — consoles leave the title through the
+## platform. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
+## top-level rows.
 
 const _STARFIELD_SCENE := "res://scenes/gameplay/fx/starfield_background.tscn"
 const _JOIN_CODE_ENTRY_SCENE := preload("res://scenes/ui/elements/nr_join_code_entry.tscn")
@@ -44,7 +45,7 @@ var _sign_in_row_shown := false
 var _in_join_menu := false
 var _in_options := false
 
-## The two rows that need a connection, and the note that says why they are dark. Held so
+## The two multiplayer rows, and the note that says why they are dark. Held so
 ## connectivity can be applied in place rather than by rebuilding: a rebuild would drop
 ## the player's focus back to the top of the list every time the hint flickered, and on a
 ## controller that is far more disruptive than the two rows going grey.
@@ -157,6 +158,7 @@ func _build_menu() -> void:
 	_join_row = _menu_list.add_button("Join Match", _on_join_match)
 	_menu_list.add_button("Practice", _on_practice)
 	_menu_list.add_button("Match History", _on_match_history)
+	_menu_list.add_button("Leaderboards", _on_leaderboards)
 	_menu_list.add_button("Options", _build_options_menu)
 	# Consoles have no in-title Quit: the platform owns leaving the game, and a
 	# second way out that behaves differently is exactly what certification flags.
@@ -287,6 +289,7 @@ func _multiplayer_denial() -> String:
 ## untouched: it is the whole reason the offline case is still worth showing a menu for.
 ##
 ## A ready account's History and Options remain usable without network connectivity.
+## Leaderboards stays reachable for that account and explains connection failures itself.
 ##
 ## `announce` is false while building, because a menu that opens saying "Connection
 ## restored" is announcing a state the player never saw change.
@@ -357,6 +360,11 @@ func _account_current() -> bool:
 func _on_match_history() -> void:
 	if _account_current():
 		ScreenManager.push(ScreenManager.MATCH_HISTORY)
+
+
+func _on_leaderboards() -> void:
+	if _account_current():
+		ScreenManager.push(ScreenManager.LEADERBOARDS)
 
 
 ## Party and Lobby both require a signed-in PlayFabUser, so an online failure is a dead

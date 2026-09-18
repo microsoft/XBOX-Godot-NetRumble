@@ -57,6 +57,7 @@ func _run() -> void:
 	await preload("res://tools/tests/review_storage.gd").new().run(self)
 	await preload("res://tools/tests/review_lifecycle.gd").new().run(self)
 	await preload("res://tools/tests/suspend_tests.gd").new().run(self)
+	await preload("res://tools/tests/leaderboard_tests.gd").new().run(self)
 	_source_guards()
 	for path: String in _legacy:
 		_check(FileAccess.get_file_as_bytes(path) == _legacy[path], "legacy file untouched: " + path)
