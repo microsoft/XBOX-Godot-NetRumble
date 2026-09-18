@@ -1,6 +1,11 @@
 extends "res://scripts/autoload/services.gd"
 
 const Doubles := preload("res://tools/tests/doubles.gd")
+var user_events_runtime: Variant = null
+
+
+func _user_events_gdk() -> Variant:
+	return user_events_runtime if user_events_runtime != null else super._user_events_gdk()
 
 
 func _ready() -> void:

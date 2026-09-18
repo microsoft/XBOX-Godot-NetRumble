@@ -49,6 +49,10 @@ Actual menu-button regressions cover failed Options Back with inline/deferred er
 retained values and stale-account guards. Lifecycle cases cover orphaned invite outcomes,
 newer buffered claims, owner-bound activity retirement outside Suspend, shutdown readiness
 revocation, shared drain timeout and serialized old/new session/account writes.
+PR-feedback regressions cover delayed resume Party/chat cleanup before readiness, actual
+stall Back/Quit actions, repeated resume, cold fallback initialization with early removal
+subscription, cancellation at acquisition stages, and social-group ownership/single-flight
+across delayed replacement-account loads.
 Source checks for forbidden desktop/token
 caches and migration code supplement behavior tests; they do not replace them.
 

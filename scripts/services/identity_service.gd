@@ -153,6 +153,7 @@ func sign_in() -> bool:
 ## rest of the non-multiplayer surface — a failure costs a nicer-looking profile, not
 ## the session, so it warns and lets sign-in succeed.
 func _publish_entity_display_name() -> void:
+	var generation := _generation
 	if display_name.is_empty() or playfab_user == null:
 		return
 	var pf: Variant = _playfab()
@@ -160,6 +161,8 @@ func _publish_entity_display_name() -> void:
 		return
 
 	_stage("Publishing your gamertag to PlayFab")
+	if not _current(generation):
+		return
 	var result: Variant = await pf.accounts.set_display_name_async(playfab_user, {
 		"entity": playfab_user.entity_key,
 		"display_name": display_name,
@@ -347,7 +350,6 @@ func _ensure_xbox_user() -> Variant:
 	if gdk == null:
 		last_error = "The Microsoft GDK extension is not installed in this build."
 		return null
-	platform_ready.emit()
 	if not _current(generation):
 		return null
 	if not gdk.is_initialized():
@@ -355,13 +357,22 @@ func _ensure_xbox_user() -> Variant:
 		if init == null or not init.ok:
 			last_error = "The Microsoft GDK could not start. Check that MicrosoftGame.config sits next to the executable.\n\n%s" % _reason(init)
 			return null
+	if not _current(generation):
+		return null
+	platform_ready.emit()
+	if not _current(generation):
+		return null
 
 	_stage("Looking for a signed-in Xbox account")
+	if not _current(generation):
+		return null
 	var primary: Variant = gdk.users.get_primary_user()
 	if primary != null and primary.signed_in:
 		return primary
 
 	_stage("Signing in to Xbox")
+	if not _current(generation):
+		return null
 	var silent: Variant = await gdk.users.add_default_user_async()
 	if not _current(generation):
 		return null
@@ -373,6 +384,8 @@ func _ensure_xbox_user() -> Variant:
 	# the simplified one, where interactive adds come back E_INVALIDARG and this
 	# falls through to last_error below.
 	_stage("Waiting for the Xbox sign-in screen")
+	if not _current(generation):
+		return null
 	var ui: Variant = await gdk.users.add_user_with_ui_async()
 	if not _current(generation):
 		return null
@@ -385,7 +398,7 @@ func _ensure_xbox_user() -> Variant:
 
 func _ensure_playfab_user(xbox_user: Variant) -> Variant:
 	var generation := _generation
-	if not _ensure_playfab():
+	if not _ensure_playfab() or not _current(generation):
 		return null
 
 	if xbox_user == null or not xbox_user.signed_in:
@@ -393,6 +406,8 @@ func _ensure_playfab_user(xbox_user: Variant) -> Variant:
 		return null
 
 	_stage("Signing in to PlayFab")
+	if not _current(generation):
+		return null
 	var result: Variant = await _playfab().users.sign_in_with_xuser_async(xbox_user)
 	if not _current(generation):
 		return null

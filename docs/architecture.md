@@ -128,6 +128,9 @@ The verified owner is the XboxUser, not the separate PlayFab authentication/mult
 There is no second desktop persistence backend, PlayFab save fallback or migration.
 
 Resume invalidates the old save binding and generation, then returns through account acquisition.
+Acquisition waits cancellably for pending Party/chat teardown before starting new account
+preparation and publishing readiness. It names the wait rather than handing off to a menu
+whose first gameplay request would be rejected as still finishing the previous session.
 `Services.sign_in()` reacquires the provider and reloads all three authoritative payloads before
 gameplay is ready again; authentication may be reused. This is required because the OS releases
 the XGameSaveFiles provider on suspend. No initialization or upload is started in Suspend.
@@ -140,7 +143,7 @@ behavior and detects incomplete buffered writes; it is not migration or a legacy
 A damaged candidate can be ignored when another intact slot exists; inaccessible slots,
 invalid payloads, or damage with no intact slot fail loading. Both slots absent means no save.
 
-`Services` coordinates `unbound -> authenticating -> loading saves -> ready`.
+`Services` coordinates `unbound -> waiting for prior teardown (if needed) -> authenticating -> loading saves -> ready`.
 Authentication alone is not readiness: Practice, host/join, friends and invites all require
 the identified account's initialized store and successful reads. The three payloads are staged,
 validated and published as one account state. Confirmed missing files in a valid folder supply

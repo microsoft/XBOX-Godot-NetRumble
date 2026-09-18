@@ -377,6 +377,13 @@ func _arm_drain_deadline() -> void:
 ## bounding it is that an exit must not be able to hang on it.
 func _quit_now() -> void:
 	AudioManager.stop_all()
+	if NetManager.is_account_teardown_pending():
+		_arm_drain_deadline()
+		NetManager.finish_suspend_teardown()
+		while NetManager.is_account_teardown_pending():
+			await get_tree().process_frame
+			if not _quit_pending:
+				return
 	if NetManager.has_session():
 		_arm_drain_deadline()
 		await NetManager.leave_match_and_wait()

@@ -181,7 +181,7 @@ renderer/rendering_method="gl_compatibility"
     if ($output -notmatch 'SAVE TESTS PASSED: \d+ assertions') {
         throw 'Godot exited without completing the behavioral suite.'
     }
-    Assert-SuspendDiagnostics $output 33
+    Assert-SuspendDiagnostics $output 39
     Write-Host 'CASE: suspend diagnostics contain only ordered category outcomes and measured elapsed time'
 }
 finally {

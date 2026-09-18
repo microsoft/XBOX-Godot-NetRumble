@@ -4,6 +4,7 @@ var quit_calls := 0
 
 
 func _ready() -> void:
+	add_to_group(&"app_root")
 	ScreenManager.set_container(_screen_container)
 	_connect_lifecycle_signals()
 

@@ -375,6 +375,8 @@ func sign_in() -> bool:
 
 
 func _prepare_account(generation: int) -> bool:
+	if not await _wait_for_session_teardown(generation):
+		return false
 	if not _identity.is_signed_in():
 		var authenticated: bool = await _identity.sign_in()
 		if not _attempt_current(generation) or not authenticated:
@@ -390,6 +392,8 @@ func _prepare_account(generation: int) -> bool:
 		return false
 	_set_sign_in_stage("Syncing your saved data")
 	var prepared := await _game_saves.prepare(user, generation)
+	if not await _wait_for_session_teardown(generation):
+		return false
 	if not _attempt_current(generation) or user != xbox_user() or not user.signed_in:
 		return false
 	if prepared.status != GameSaveService.Status.OK:
@@ -423,6 +427,16 @@ func _prepare_account(generation: int) -> bool:
 	_warm_account_state()
 	print("[SaveLoad] account preparation completed")
 	return is_current_account(generation)
+
+
+func _wait_for_session_teardown(generation: int) -> bool:
+	if NetManager.is_account_teardown_pending():
+		_set_sign_in_stage("Finishing the previous session")
+	while NetManager.is_account_teardown_pending():
+		if not _attempt_current(generation):
+			return false
+		await get_tree().process_frame
+	return _attempt_current(generation)
 
 
 func _attempt_current(generation: int) -> bool:
@@ -537,11 +551,15 @@ func _reset_account_state(notify: bool = true) -> void:
 func _connect_user_changed() -> void:
 	if _user_changed_connected:
 		return
-	var gdk: Variant = XboxBootstrap.find_singleton()
+	var gdk: Variant = _user_events_gdk()
 	if gdk == null or not gdk.is_initialized():
 		return
 	gdk.users.user_changed.connect(_on_user_changed)
 	_user_changed_connected = true
+
+
+func _user_events_gdk() -> Variant:
+	return XboxBootstrap.find_singleton()
 
 
 ## XboxUsers reports `privileges` when the account's privileges change and

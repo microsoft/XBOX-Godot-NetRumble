@@ -184,6 +184,11 @@ func _quit_account_replacement(test: Node) -> void:
 	if old_dialog == null:
 		await _dispose_main(test, app)
 		return
+	# Replacement readiness now waits for teardown. Retain the old signal explicitly
+	# across that frame rather than relying on a queued-for-deletion modal surviving.
+	ScreenManager._stack.erase(old_dialog)
+	old_dialog.reparent(test)
+	old_dialog.hide()
 	Services.cancel_sign_in()
 	await _ready_fault_account(test, "quit-new")
 	app.request_shutdown()
@@ -192,6 +197,7 @@ func _quit_account_replacement(test: Node) -> void:
 	# Complete the captured old modal before deferred routing removes it. This models
 	# a stale UI completion without pressing the new account's foreground buttons.
 	old_dialog.dismissed.emit(true)
+	old_dialog.free()
 	test._check(app.quit_calls == 0 and not Services.is_shutting_down()
 		and app._shutdown_save_pending and PlayerProfile.music_volume == 0.37,
 		"old Retry neither quits B nor releases B's single-flight guard")

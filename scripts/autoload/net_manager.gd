@@ -268,14 +268,18 @@ func _on_account_lost() -> void:
 	_finish_account_teardown.call_deferred()
 
 
+func is_account_teardown_pending() -> bool:
+	return _account_teardown_pending or _account_teardown_running
+
+
 func _finish_account_teardown() -> void:
 	if _account_teardown_running:
 		return
 	_account_teardown_running = true
 	var party := _party()
+	var chat := _chat()
 	if party != null:
 		await party.leave()
-	var chat := _chat()
 	if chat != null:
 		await chat.destroy_control()
 	_account_teardown_pending = false

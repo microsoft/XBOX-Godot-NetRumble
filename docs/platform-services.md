@@ -20,6 +20,7 @@ The first screen the game shows is the **acquire-user screen**
 
 | Stage | What the player sees |
 |---|---|
+| Previous session cleanup | **Finishing the previous session** while resume/account-change Party and chat teardown drains; not Ready |
 | Authenticating / loading saves | Progress while `Services` resolves identity and prepares/loads the account store |
 | Needs interaction | The failed stage/reason plus **Retry / Back** |
 | Ready | Signed-in account and complete saved state, then a hand-off to the main menu |
@@ -32,6 +33,11 @@ sample's simplified user model normally supplies the launching XBOX user.
 abandons acquisition without enabling play; late results cannot hand off to a menu or restore
 an old account's state. Retry reattempts save preparation even when authentication already
 succeeded. Repeated Retry must not start overlapping preparation operations.
+Acquisition cannot hand off before pending session teardown completes. If cleanup stalls,
+the existing watchdog exposes **Back** and PC **Quit**; Back abandons the readiness attempt,
+not the native cleanup or safety gate. Quit uses the existing shared shutdown deadline,
+including a chat destroy whose local control handle is already cleared. No timeout permits
+gameplay through an unfinished teardown.
 
 ### GDK → PlayFab identity exchange
 
@@ -46,6 +52,18 @@ The shipping sign-in path:
 4. `Services` prepares Game Saves and stages settings, history and counters for that account.
    Only successful, current-owner loading publishes ready state and permits gameplay and
    achievement reporting. Account policy and device association use the same identity.
+
+User-change events are subscribed before Xbox acquisition starts. If bootstrap has not
+initialized GDK, the identity fallback first initializes it successfully, then emits
+`platform_ready`; cancellation is checked before the next account API call. The later
+post-authentication subscription check remains idempotent, but is not relied on to catch
+removal during Xbox or PlayFab acquisition.
+
+Friends-group loads are single-flight per owner and generation. Clearing an account releases
+its load guard and waiting readers immediately, so a replacement account need not wait for
+the old SDK call. A late successful old group is destroyed rather than cached, and its
+completion cannot release the replacement's guard. Current read/load failures keep the
+existing warning-and-empty-result contract; no previous account's group is substituted.
 
 This requires a registered build of the game, a signed-in XBOX identity on the machine, and a
 title configured for XBOX authentication. For this sample use **XDKS.1** and an authorized test
