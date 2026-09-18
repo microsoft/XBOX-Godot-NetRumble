@@ -35,12 +35,14 @@ var _pending_since_msec := 0
 ## Set while a join is being routed, so a second invite arriving mid-flight is buffered
 ## rather than tearing down the join it is racing.
 var _joining := false
+var _joining_generation := -1
 
 
 func _ready() -> void:
 	if Services == null:
 		return
 	Services.sign_in_completed.connect(_on_sign_in_completed)
+	Services.account_lost.connect(_on_account_lost)
 	var activity := Services.activity()
 	if activity != null:
 		activity.join_requested.connect(_on_join_requested)
@@ -73,6 +75,18 @@ func _on_sign_in_completed(_success: bool) -> void:
 	_redeem_pending()
 
 
+func _on_account_lost() -> void:
+	_joining = false
+	_joining_generation = -1
+
+
+## Resume replaces awaited dialogs without dismissing them. Keep newer buffered invites,
+## but revoke the old generation's claim before acquisition can hand off again.
+func invalidate_for_resume() -> void:
+	_joining = false
+	_joining_generation = Services.account_generation()
+
+
 func _on_screen_changed(_screen: NRScreen) -> void:
 	_redeem_pending()
 
@@ -86,7 +100,7 @@ func _on_screen_changed(_screen: NRScreen) -> void:
 func _ready_to_join() -> bool:
 	if _pending_request.is_empty() or _joining:
 		return false
-	if Services == null or not Services.is_online():
+	if Services == null or Services.is_shutting_down() or not Services.is_account_ready():
 		return false
 	# Nothing to return to yet; the join's own screens would be the whole stack.
 	if ScreenManager.current_screen() == null:
@@ -114,14 +128,11 @@ func has_pending_invite() -> bool:
 	return not _pending_request.is_empty() and not _is_pending_stale()
 
 
-## Drops a buffered activation because the player chose to carry on without signing in.
-## Continuing offline is them declining the invite, not deferring it: without an
-## identity it can never be redeemed, and holding it means a sign-in twenty minutes
-## later pulls them into a match they have long since forgotten accepting.
+## Back declines a buffered activation rather than redeeming it on a later sign-in.
 func decline_pending_invite() -> void:
 	if _pending_request.is_empty():
 		return
-	print("[Invite] Continuing offline; the buffered activation was discarded.")
+	print("[Invite] Account acquisition abandoned; the buffered activation was discarded.")
 	_clear_pending()
 
 
@@ -146,30 +157,37 @@ func _clear_pending() -> void:
 ## join code would, including the entry-point privilege check that keeps a restricted
 ## account from being seated by a platform activation that skipped the menu.
 func _join(request: Dictionary) -> void:
+	if not Services.is_account_ready():
+		return
+	var generation: int = Services.account_generation()
 	# Claimed before the first await, not after: the confirmation prompt and the activity
 	# lookup are both awaits, and an invite arriving inside either would otherwise start
 	# a second join alongside this one.
 	_joining = true
+	_joining_generation = generation
 
 	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
 	var denial := await _multiplayer_denial()
 	ScreenManager.remove(checking)
+	if not Services.is_current_account(generation):
+		_finish_join(generation)
+		return
 	if not denial.is_empty():
 		await ScreenManager.show_dialog("Cannot Join", denial, "error", false)
-		_finish_join()
+		_finish_join(generation)
 		return
 
 	# Accepting an invite while already playing means abandoning the current match, so
 	# it is the player's call rather than ours.
-	if not NetManager.is_offline() and NetManager.local_player() != null:
+	if NetManager.has_session():
 		var confirmed: bool = await ScreenManager.show_dialog(
 			"Join Match",
 			"Leave the current match and join your friend's match?",
 			"warning",
 			true,
 		)
-		if not confirmed:
-			_finish_join()
+		if not Services.is_current_account(generation) or not confirmed:
+			_finish_join(generation)
 			return
 
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Joining match"})
@@ -179,6 +197,10 @@ func _join(request: Dictionary) -> void:
 	var connection_string := String(request.get("connection_string", ""))
 	if connection_string.is_empty():
 		connection_string = await Services.connection_string_for_xuid(String(request.get("xuid", "")))
+	if not Services.is_current_account(generation):
+		ScreenManager.remove(loading)
+		_finish_join(generation)
+		return
 	if connection_string.is_empty():
 		# Removed by name rather than popped: the lookup above is an await, and anything
 		# pushed over this screen in the meantime is not this flow's to take down.
@@ -189,23 +211,26 @@ func _join(request: Dictionary) -> void:
 			"error",
 			false,
 		)
-		_finish_join()
+		_finish_join(generation)
 		return
 
 	var join_request := NetManager.join_by_invite(connection_string)
 	await join_request.wait()
 	ScreenManager.remove(loading)
+	if not Services.is_current_account(generation):
+		_finish_join(generation)
+		return
 	# Another join replaced this one and owns the screen and the outcome, so this flow
 	# leaves quietly: no dialog for a join the player themselves moved on from.
 	if join_request.was_superseded():
-		_finish_join()
+		_finish_join(generation)
 		return
 	# Checked together: a join reports success once the host admits this player, and the
 	# session can still end between that and this navigation.
 	if not NetManager.joined_session_is_live(join_request):
 		if not join_request.was_cancelled():
 			await ScreenManager.show_dialog("Join Failed", NetManager.join_failure_reason(join_request), "error", false)
-		_finish_join()
+		_finish_join(generation)
 		return
 	ScreenManager.replace_all(ScreenManager.LOBBY, {"option": "join", "code": NetManager.join_code})
 	# A duplicate of the invite just redeemed — a friend pressing send twice, or the
@@ -213,21 +238,23 @@ func _join(request: Dictionary) -> void:
 	# the match they have this moment landed in.
 	if _same_request(_pending_request, request):
 		_clear_pending()
-	_finish_join()
+	_finish_join(generation)
 
 
 ## The live multiplayer denial for a routed activation. Empty includes the deliberate
 ## XR-074 fail-open cases where the privilege service could not answer.
 func _multiplayer_denial() -> String:
-	if Services == null:
-		return "Online services are unavailable in this build."
+	if Services == null or not Services.is_account_ready():
+		return NetManager.ACCOUNT_NOT_READY
 	return await Services.resolve_multiplayer_denial_reason()
 
 
 ## Releases the join claim and gives an activation that arrived mid-flight its turn.
 ## Called after the dialogs rather than before them, so the claim covers the whole
 ## outcome the player is still reading.
-func _finish_join() -> void:
+func _finish_join(generation: int) -> void:
+	if generation != _joining_generation:
+		return
 	_joining = false
 	_redeem_pending()
 

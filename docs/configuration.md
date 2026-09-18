@@ -91,8 +91,8 @@ the switch itself, see [Set the sandbox to XDKS.1](#set-the-sandbox-to-xdks1).
 
 ### A development PlayFab title for custom-ID testing
 
-The [debug custom-ID path](#debug-custom-id-multiplayer) signs in two local instances without
-XBOX. The committed sample title refuses it and returns `0x892357BA`
+The [debug custom-ID diagnostic](#debug-custom-id-diagnostics) authenticates without XBOX;
+it does not enable gameplay. The committed sample title refuses it and returns `0x892357BA`
 (`E_PF_PLAYER_CREATION_DISABLED`), because client-side account creation is disabled there. A
 title you own can permit it.
 
@@ -108,8 +108,9 @@ title you own can permit it.
    godot.exe --path . -- --pf-title=<dev-title-id> --pf-user=alice
    ```
 
-Keep this title out of your shipping path. It exists so two windows on one desk can reach the
-same lobby, and it deliberately relaxes an account-creation control to do that.
+Keep this title out of your shipping path. It deliberately relaxes an account-creation control
+for authentication diagnostics only. A custom-ID user has no signed-in XboxUser,
+so cannot initialize the game's saves or enter Practice, host/join or invite flows.
 
 ### Running the PowerShell scripts
 
@@ -135,9 +136,13 @@ with `git` instead of downloading a zip, and the `Unblock-File` step is unnecess
 
 | You have | You can run |
 | --- | --- |
-| Godot only, addons not built | Editor exploration and **Continue Offline** practice mode |
-| Steps 1 and 2 | The above, plus the two-instance custom-ID lobby on your own development title |
-| Steps 1, 2 and 3 | The full demonstration: XBOX sign-in, friends, invites, achievements |
+| Godot only, addons not built | Source/scene inspection; missing extensions may prevent import, and gameplay is unavailable |
+| Steps 1 and 2 | Build/import checks and debug custom-ID authentication diagnostics; no gameplay without account/save readiness |
+| Steps 1, 2 and 3 | Registered demonstration after account acquisition and Game Saves loading succeed; service/policy requirements still apply |
+
+Practice also requires ready account-owned saves. A valid identified account with a usable
+platform-managed offline folder may play Practice; an unconfigured launch cannot. Cold offline
+launch is not guaranteed to acquire identity/store. Failures offer **Retry / Back**.
 
 Achievement definitions must match the service side. The ten ids this sample reports, and the
 conditions that unlock them, are listed in
@@ -161,7 +166,7 @@ verifies registration and launches the registered AUMID. Check the acquire-user 
 and outcome, then follow the [Walkthroughs](walkthroughs.md). Keep the committed title/package
 identifiers unchanged.
 
-### Editor and offline exploration
+### Editor exploration
 
 After addon setup, open the folder in Godot and press F5, or run:
 
@@ -169,22 +174,49 @@ After addon setup, open the folder in Godot and press F5, or run:
 godot.exe --path .
 ```
 
-Choose **Continue Offline** for Practice. GDK initialization may succeed here, but F5/direct
-project launch is not a registered process and does not demonstrate XBOX sign-in or invites.
-No online session is offered without a PlayFab identity.
+GDK initialization may succeed here, but F5/direct project launch is not a registered process
+and does not demonstrate XBOX sign-in or invites. It is useful for source/front-end inspection
+and diagnostics, not unsigned Practice. All gameplay requires an identified account and
+successfully initialized/loaded Game Saves; authentication alone is insufficient.
 
-### Debug custom-ID multiplayer
+<a id="debug-custom-id-multiplayer"></a>
 
-Use the [two-instance instructions](multiplayer.md#testing-two-players-on-one-pc) with distinct
-`--pf-user` tokens and `--pf-title=<dev-title-id>` (or `PF_CUSTOM_ID` / `PF_TITLE_ID`).
+### Debug custom-ID diagnostics
+
+Authentication diagnostics may use `--pf-user=<token>` and `--pf-title=<dev-title-id>`
+(or `PF_CUSTOM_ID` / `PF_TITLE_ID`).
 This requires a **separate development PlayFab title** permitting custom-ID creation; the
 committed sample title does not. Overrides affect runtime settings in debug desktop/editor
 builds only, never console or exported release builds. Do not edit committed identifiers to
 enable this path.
 
-This is Party/Lobby/UI development coverage, **not XBOX policy coverage**: XBOX sign-in,
-privilege/privacy checks and string verification are bypassed, and XBOX friends/invites,
-achievement reporting and Game Save roaming are unavailable. Desktop caches remain local.
+This is **not a two-instance multiplayer workaround**. The custom-ID user lacks the signed-in
+XboxUser required by XGameSaveFiles, so cannot pass readiness or play. No token-based
+settings/history/counter files substitute for the account store. XBOX sign-in/policy,
+friends/invites, achievement awards and roaming are not covered by these diagnostics.
+Use [registered multiplayer prerequisites](multiplayer.md#testing-two-players-on-one-pc).
+
+### Game Saves prerequisites
+
+Registered PC and console both use `GameSaveService` through `GDK.game_save.get_folder_async`
+(`XGameSaveFilesGetFolderWithUiAsync`) with the signed-in XboxUser, not the PlayFab user.
+The addon resolves the SCID from initialized Xbox services. The title/sandbox/SCID must match
+the authorized Partner Center configuration, with **Connected Storage** enabled under
+**Gameplay settings > Title Storage**. See Microsoft's
+[Game Saves debugging guidance](https://learn.microsoft.com/gaming/gdk/docs/features/common/game-save/game-saves-debugging).
+This backend does not require PlayFab Game Saves onboarding. PlayFab login, Party and Lobby
+configuration are still required for their existing features.
+
+Verify initial synchronization and returned `{path: String}` folder access rather than treating
+registration or authentication as save success. Resume requires fresh folder acquisition and
+all three loads; a cached folder from before suspend is not sufficient. Missing SDK/SCID,
+canceled sync, inaccessible paths and invalid saves remain blocking Retry/Back errors.
+
+`profile.json`, `history.json` and `stats.json` belong only in that resolved folder.
+No shared `settings.cfg`/history/stats or `--pf-user` cache is read or imported, and historical
+files are not moved or deleted. There is no migration setup step or alternate save backend.
+See [Game Saves behavior](platform-services.md#game-saves) and
+[PC/console acceptance](manual-test-plan.md#account-owned-saves-pc-and-console).
 
 ---
 
@@ -337,8 +369,8 @@ See [connection flows](multiplayer.md#connection-flows). No Matchmaking queue/ti
 ## Configuration checklist
 The registered sample uses the committed configuration below; **do not change these values**
 for the demonstration. XBOX authentication and achievement definitions must agree with the
-sample's provisioned services. The debug custom-ID path is the deliberate exception: it uses a
-runtime override for a separate development PlayFab title, not a replacement package identity.
+sample's provisioned services. Debug custom-ID authentication diagnostics use a runtime override
+for a separate development PlayFab title, not a replacement package identity or gameplay bypass.
 
 | Setting | File | Value |
 |---|---|---|

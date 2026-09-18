@@ -6,7 +6,7 @@ prerequisites for reading the platform lessons, but still apply to gameplay/netw
 
 The acceptance tables contain **expected outcomes, not recorded passes**. Use [Walkthroughs](walkthroughs.md)
 for source/API entry points and [record every run](#recording-a-run). Static import success,
-microphone icons, desktop caches and custom-ID sessions cannot substitute for live-service,
+microphone icons, local file presence and custom-ID diagnostics cannot substitute for live-service,
 audio, roaming and XBOX policy observations.
 
 ## Known cleanup blocker
@@ -57,16 +57,15 @@ passing unless it was actually observed.
 
 | Tier | Needs |
 | --- | --- |
-| 1: Local | Godot 4.6+ (baseline 4.6.2), built addons and imported resources. No service account needed for Practice. |
-| 2: XBOX services | Registered launch, **XDKS.1**, authorized sample title/sandbox access and an XBOX test account signed in. |
-| 3: Multiplayer | Two registered XBOX players on separate machines for full coverage; alternatively a separate **development PlayFab title** permitting custom-ID for transport/UI only. Two audio endpoints for voice. |
-| 4: Console | Authorized devkit(s), a Middleware console fork and accounts; two consoles for save roaming. |
+| 1: Local | Godot 4.6+ (baseline 4.6.2), built addons and imported resources; setup and readiness-failure checks only, not unsigned Practice. |
+| 2: XBOX services | Registered launch, **XDKS.1**, authorized sample title/sandbox access and an XBOX test account with initialized/loaded Game Saves. Dedicated A/B accounts for isolation, a second PC for PC roaming. |
+| 3: Multiplayer | Two registered XBOX players on separate machines with ready saves. Two audio endpoints for voice. |
+| 4: Console | Authorized devkit(s), a Middleware console fork and accounts with ready saves; two consoles for console roaming and registered PC for supported cross-platform roaming. |
 
-> **Tier 3 cannot use the title this sample ships with.** Custom-ID login against it returns
-> `0x892357BA` (`E_PF_PLAYER_CREATION_DISABLED`), because custom-ID account creation is disabled
-> there. Use a development title of your own for custom-ID, or two registered XBOX identities.
-> Without either environment, multiplayer acceptance is blocked. Custom-ID alone cannot cover
-> XBOX privilege/privacy, moderated strings, invites or achievements.
+> **Custom-ID is not a Tier 3 alternative.** Even when authentication succeeds on a development
+> title, it lacks the signed-in XboxUser required by XGameSaveFiles and cannot enter gameplay.
+> The committed sample title additionally refuses custom-ID account creation with `0x892357BA`
+> (`E_PF_PLAYER_CREATION_DISABLED`). Use registered XBOX identities, not token caches or a bypass.
 
 Do not change committed title/package ids. Obtain authorization before switching a machine-wide
 sandbox, provisioning/changing accounts/services, deploying to a device or altering network state.
@@ -74,7 +73,7 @@ See [configuration](configuration.md) and the [capability matrix](../README.md#w
 
 ## Static checks
 
-The existing CI checks are pure-text rules plus a Godot import/parse job (currently advisory).
+Start with the repository text checks and Godot import/parse checks.
 With addons already built, run in this order:
 
 ```powershell
@@ -88,12 +87,18 @@ Check both Godot exit codes **and both outputs** for `SCRIPT ERROR`, `Parse Erro
 `Failed to load script` and `Cannot open file`. A zero exit code alone is not a pass.
 Import must precede `--quit` on a fresh checkout. These checks do not exercise services.
 
+For save changes, also run focused account-save behavioral tests with fake identity/Game Saves
+objects and disposable folders, with live platform bootstrap disabled. They must exercise the
+production load/write/readiness behavior without reading or modifying real account saves.
+See [repository checks](../tools/repository-checks.md). A mocked pass does not establish the
+live PC/console cases below.
+
 ---
 
-## Tier 1: Local, no platform services
+## Tier 1: Local setup and readiness failures
 
-After addon setup/import, run the separate editor/debug path and choose Continue Offline.
-This is not registered XBOX on PC acceptance.
+After addon setup/import, run the editor/debug path to inspect the front end and refusal
+behavior. This is not registered XBOX on PC or Practice acceptance.
 
 ```powershell
 godot.exe --path .
@@ -101,23 +106,23 @@ godot.exe --path .
 
 | # | Check | Expected |
 | --- | --- | --- |
-| 1.1 | Launch to first screen with sign-in unavailable | Acquire-user screen shows the failed stage/reason and offers Continue Offline |
-| 1.2 | Continue offline → main menu | Menu renders on the starfield; no error spam in Output |
-| 1.3 | Start a practice match | World spawns: barrier, asteroids, your ship |
-| 1.4 | Request typed text in Practice | Unavailable action explains that chat needs an online match; no successful echo |
-| 1.5 | Change options, reopen, then desktop relaunch | Local settings persist; no cloud-roaming claim |
-| 1.6 | Match History before/after completion | Empty note before history exists; completed match adds a row |
-| 1.7 | Gamepad-only menu/options navigation | Focus remains visible, scroll follows focus, focus restores on closing overlays |
-| 1.8 | Alt-tab away/back during Practice | Game audio mutes/restores and local simulation/clock pauses/resumes; not suspend |
-| 1.9 | Pause menu → leave → quit | No orphaned world or hanging process |
+| 1.1 | Launch with sign-in unavailable | Acquire-user screen shows failed stage/reason and Retry/Back; no gameplay |
+| 1.2 | Back during acquisition | Attempt abandoned; no delayed hand-off or stale account state |
+| 1.3 | Attempt Practice without a ready account/store | Refused, including direct session entry; no world or unsaved match |
+| 1.4 | Attempt host/join/friend/invite without ready saves | Refused or buffered for acquisition; authentication alone does not admit play |
+| 1.5 | Custom-ID authentication on an authorized development title | Authentication may succeed; missing XboxUser prevents save readiness and gameplay; no token files |
+| 1.6 | Inspect history/options before account readiness | No prior account's settings, history or counters exposed |
+| 1.7 | Gamepad-only acquisition/failure navigation | Focus remains visible and returns correctly from overlays; Retry/Back reachable |
+| 1.8 | Retry an unavailable service repeatedly | Clear error, one effective preparation operation, no bypass or duplicate hand-off |
+| 1.9 | Quit during acquisition/loading | No new initialization, no hanging process; existing bounded drain applies |
 
 **Output panel must be clean** of `SCRIPT ERROR`, `Parse Error` and unexpected `push_error`.
 Warnings for unavailable live services can be expected here; missing bootstrap scripts or
-unimported resources are setup failures, not successful offline coverage.
+unimported resources are setup failures, not successful readiness coverage.
 
 ## Tier 2: Identity and single-player services
 
-Needs a registered build and a signed-in XBOX user.
+Needs a registered build, an identified XBOX user and ready Game Saves for playable cases.
 
 ```powershell
 .\tools\deploy-pc.ps1 -Launch
@@ -125,38 +130,98 @@ Needs a registered build and a signed-in XBOX user.
 
 | # | Check | Expected |
 | --- | --- | --- |
-| 2.1 | Sign-in completes on launch | Gamertag shown; stage text advances rather than stalling |
-| 2.2 | Fail/decline sign-in, then choose Continue Offline | Practice reachable by explicit choice; later Sign In reopens the acquire screen |
+| 2.1 | Account acquisition completes on launch | Authentication and save loading finish before menu/gameplay readiness; gamertag alone is insufficient |
+| 2.2 | Fail/decline sign-in or save loading | Reason plus Retry/Back; no Practice or multiplayer |
 | 2.3 | Play a match to completion | Match history gains a row |
 | 2.4 | Earn an unearned achievement / incremental condition | Correct account's XBOX progress changes when service accepts it; an already-earned award does not unlock again |
-| 2.5 | Desktop relaunch | Settings, history and counters survive through local caches, not console Game Save |
-| 2.6 | Quit during sign-in | Exits within the shutdown drain window instead of hanging |
+| 2.5 | Registered-PC relaunch as the same account | Settings, history and counters load from that account's Game Saves, not desktop files |
+| 2.6 | Quit during authentication or save synchronization | Exits within the shared shutdown drain window instead of hanging; no fresh preparation |
 | 2.7 | Known multiplayer denial, including an invite path | All entry paths refuse with a reason; resolvable denial uses system UI and re-checks |
 | 2.8 | Multiplayer allowed, communications denied | Session works without a local chat control; voice/text unavailable, not falsely successful |
-| 2.9 | Observe sign-in/config labels | Distinguish GDK initialization/registration from XBOX acquisition and PlayFab authentication |
+| 2.9 | Observe sign-in/config labels | Distinguish GDK initialization/registration, XBOX acquisition, PlayFab authentication and save readiness |
+| 2.10 | Start Practice with ready saves | World spawns; Match History changes from empty note to a row after completion |
+| 2.11 | Request typed text in Practice | Unavailable action explains that chat needs an online match; no successful echo |
+| 2.12 | Change options, reopen and relaunch | Same account's settings persist through Game Saves; no focus loss |
+| 2.13 | Alt-tab away/back during Practice | Game audio and local simulation/clock pause and restore; not suspend |
+| 2.14 | Pause menu, leave and quit | No orphaned world or hanging process; writes remain bound to the same account |
 
 Achievement/reporting observations need real XBOX service results. Cached counters and a visible
 gamertag are not substitutes. The current privilege-query fail-open behavior is a documented
 limitation; record failures rather than treating an unchecked verdict as demonstrated policy.
+
+## Account-owned saves: PC and console
+
+These are **required expectations, not recorded runtime passes**. Use dedicated authorized
+test accounts with known state; never clear a user's cloud saves to manufacture a fresh account.
+Record A's and B's own settings/history/counters before and after each run. Create A's progress
+through the account-owned store in this build, not by importing historical shared files.
+
+**Original PC reproduction:** On the registered PC, launch as A, complete Practice matches and
+close normally. Switch the launching XBOX account to fresh B, then relaunch the same registered
+package. B must display **`No match history yet.`**, default settings and zero counters.
+Complete a match as B, close and alternate A/B relaunches: both accounts must retain only their
+own progress. Repeat with a B that already has nonempty Game Saves.
+
+| Case | Required result |
+|---|---|
+| Original A -> fresh B reproduction, then alternate A/B | B starts empty/default; A's own Game Saves remain recoverable; neither account overwrites the other |
+| B has existing settings/history/counters | B loads exactly B's state, with no A rows, preferences, counters or achievement reports |
+| Both integrity slots missing in an initialized folder; valid empty history | Defaults/empty history/zero counters as applicable are authoritative, not previous memory |
+| Shared `settings.cfg`, `match_history.json`, `achievement_stats.json` and token variants pre-seeded in isolated fixtures | Never read, imported, copied, modified, moved or deleted; no migration, old-wrapper reader or compatibility path |
+| New profile and explicitly saved music `0.7` | New profile defaults to `0.25`; explicit `0.7` stays `0.7`, with no value remapping |
+| Initialization/folder failure, unreadable slot, neither slot intact or wrong current-schema payload shape | Specific reason plus Retry/Back; no gameplay, partial account publication or default overwrite of existing files |
+| Interrupted, truncated or corrupt inactive slot with an intact committed slot | Load the newest intact record; do not destroy the committed record or silently supply defaults |
+| Retry after authentication succeeded but save preparation failed | Actually prepares/loads saves and can become ready; no authentication-only early success |
+| Repeated Retry or stalled preparation | One effective `GDK.game_save.get_folder_async` operation; no duplicate native request, stale hand-off or unsaved-play option |
+| Missing Xbox services/SCID, native failure/cancel, malformed result or inaccessible path | Xbox folder preparation fails with a safe code/HRESULT when available; no PlayFab save fallback or default overwrite |
+| Distinct XboxUser and PlayFabUser objects; PF local-user handle absent | Saves bind only to XboxUser; PlayFab identity cannot read/write that binding; existing PlayFab authentication is still required |
+| Resume with successful sync, failed sync then Retry, or a different synchronized folder | Old provider/generation cannot save or enable gameplay; reacquire folder and reload all three before readiness, without replaying pre-suspend memory |
+| Resume with valid synchronized settings/history but invalid counters | No partial publication or gameplay; Retry reloads all three after the failure is resolved |
+| Resume an abandoned match through acquisition; repeat from a menu only | One Match Ended notice after successful handoff for the abandoned match; none for menu-only resume |
+| Accept an invite while resumed acquisition is pending | Invite waits for readiness and acquisition handoff, then owns the front end without a competing Match Ended notice |
+| Resume while a save-error or failed-Quit dialog is open | Old modal is removed; late answers cannot save/quit the new generation; new failures can still open their dialog and Retry/Back |
+| Resume while Cannot Join/Join Failed awaits dismissal, with a newer invite buffered | Old join claim is revoked; buffered invitation drains after acquisition; stale dialog answers cannot release the replacement claim |
+| Remove the account while resumed synchronization is pending | Late completion cannot restore data/readiness or show that account's abandoned-match notice |
+| Back/cancel, user removal or account replacement during an awaited load | Late completion cannot publish settings/history/counters, restore the old folder or enable gameplay |
+| User removed during an active session | Blocks new work, clears account/session state; surviving process reacquires an account rather than continuing the match as another user |
+| Direct Practice/host/join, code/friend/invite, existing-user and fallback branches | All require current account/save readiness; buffered invites cannot bypass failed or pending loads |
+| No account, missing SDK or custom-ID without XboxUser | No gameplay and no substitute persistence backend |
+| Network loss with an identified account and usable platform offline folder | Practice retains same-owner persistence; connectivity hint alone does not erase readiness |
+| Cold offline launch | Play only if platform identity and store resolve successfully; otherwise Retry/Back, with no offline identity guarantee |
+| Write failure, then retry | Failure is visible; prior valid file remains intact; current data retries only for the same owner and is not falsely reported saved |
+| Appearance write fails; restore storage and suspend/quit without another edit | Current ship/color is written without requiring a dirty-marking call |
+| Repeated explicit saves with unchanged values | Each request attempts all relevant payloads; no dirty flags or equality-based skipping |
+| Buffered write/flush fault or writer-process termination | Close/reopen verification rejects incomplete bytes; prior intact slot remains readable. This is not a hard-power-loss durability claim |
+| Final save fails during ordinary Quit/window close | Retry/Back before shutdown begins; repeated close requests do not bypass the pending save decision |
+| Options Back fails to save, including unchanged settings and in-match Options | Save error remains visible, but Back returns to main/pause actions; dismissing it leaves Resume/Leave reachable, and later explicit saves retry current values |
+| A's delayed activity write finishes after B hosts | Ignore A's result and reconcile B's queued advertisement instead of stranding it |
+| Published lobby suspends, then resumes | No native activity call during Suspend; owner-bound delete starts on resume without waiting for save readiness; only confirmation records cleared |
+| Suspend/resume overlaps a pending publish/delete, then a new session or account | Serialized writes converge on the newest session; stale completion cannot confirm/delete a replacement owner's activity or strand its publication |
+| Normal Quit with a published activity, including delayed/failed deletion | Still-authenticated owner is used after readiness is revoked; deletion drains inside the shared deadline; timeout/failure is not recorded as cleared |
+| Options/appearance, match completion, suspend and shutdown | Same account store/checks; explicit requests attempt relevant payloads and report individual outcomes; deadline-bound handlers remain synchronous |
+| Quit during authentication or save sync | Existing bounded drain covers preparation; no fresh initialization or hanging exit |
+| More than 50 completed matches | Newest 50 history rows retained in order with current payload shapes and UI formatting |
+| Same account on a second registered PC after close/sync | Settings, history and counters observed there; a local file or relaunch alone is not roaming evidence |
+| Equivalent console A/B, empty/default, failure, Retry and lifecycle cases | Same ownership, readiness and save policy as PC; record actual platform outcomes |
+| Console-to-console and supported PC/console roaming | Same linked account/title sees synchronized settings/history/counters on the other device; verify both directions and preserve each account's own state |
+
+Malformed/read/write-failure and timing races belong in isolated focused tests first. Use only
+authorized development diagnostics to reproduce live failures; do not damage real saves or add
+shipping fault-injection/bypass flags. Record unobservable races or missing hardware/service
+prerequisites as blocked/not exercised. Mocked tests and source inspection cannot establish
+full PC/console parity or roaming.
 
 ## Tier 3: Multiplayer
 
 The regression gate for anything touching `net_manager.gd`, `platform_session.gd`, `world.gd`,
 `world_network_sync.gd`, `party_service.gd`, `chat_service.gd` or `match_director.gd`.
 
-Prefer two registered builds/accounts for end-to-end XBOX coverage. The alternative below uses
-debug desktop custom-ID and covers only Lobby/Party/UI:
-
-```powershell
-# terminal 1, host
-godot.exe --path . -- --pf-user=alice --pf-title=<dev-title-id>
-# terminal 2, client
-godot.exe --path . -- --pf-user=bob   --pf-title=<dev-title-id>
-```
+Use two registered builds/accounts with ready Game Saves. Custom-ID authentication lacks
+the required XboxUser and cannot supply playable Lobby/Party/UI coverage.
 
 | # | Check | Expected |
 | --- | --- | --- |
-| 3.1 | Both players sign in distinctly | XBOX accounts on registered builds, or distinct names marked "(test user)" on custom-ID |
+| 3.1 | Both players acquire their accounts and saves | Distinct XBOX accounts on registered builds; each store loaded before joining |
 | 3.2 | Host Match → lobby | Five-character join code displayed |
 | 3.3 | Client: Join → Lobby Code → type the code | Client lands in the host's lobby |
 | 3.4 | Roster on both sides | Both players listed, correct names, no flicker on updates |
@@ -169,7 +234,7 @@ godot.exe --path . -- --pf-user=bob   --pf-title=<dev-title-id>
 | 3.11 | Cancel join, retry, and allow an attempt to time out | Code remains editable after failure; no delayed join after abandonment; code timeout is 45 seconds |
 | 3.12 | Wrong/newly-created code | One search, then success or readable failure with explicit editable retry; no automatic backoff |
 | 3.13 | Try joining after start or with incompatible protocol | Readable refusal; existing match/roster remains valid; the refused client never sees the lobby, empty or otherwise |
-| 3.14 | Join Friend and accepted invite while warm/cold | Registered XBOX path reaches lobby; cold activation survives acquire-user, Continue Offline declines it |
+| 3.14 | Join Friend and accepted invite while warm/cold | Registered XBOX path waits for account/save readiness before lobby; Back abandons acquisition without joining |
 | 3.15 | Lobby voice, then in-match typed text | Hear real speech both directions; complete typed-text acceptance below |
 | 3.16 | Constrain/alt-tab host and client separately | Local director pauses without a global pause RPC; constrained host stops advancing authoritative simulation |
 | 3.17 | Repeated host/join/leave | No duplicate text handlers/echoes, stale activity, prior-match rows or retained controls |
@@ -197,14 +262,14 @@ It does **not** replace text/privacy/audio acceptance for communication changes.
 > node path, so a relocated `@rpc` fails silently at runtime rather than at parse time. The parse
 > gate cannot catch it and only a real two-instance join will.
 
-On one desktop, focusing one instance constrains the other. Use two focused machines
-for reliable simultaneous gameplay/audio observation; do not record unfocused-host behavior as
+Use two focused registered machines for simultaneous gameplay/audio observation;
+do not record unfocused-host behavior as
 a Party latency defect. See the [sample latency limits](gameplay-reference.md#netcode-model-and-latency-limits).
 
 ### Typed-text acceptance
 
-Use an online match, not a lobby. Cases involving XBOX policy/moderation require registered
-XBOX accounts; run permitted transport/UI cases on custom-ID only, with that limitation recorded.
+Use an online match, not a lobby, with registered XBOX accounts and ready saves.
+Lower-level custom-ID diagnostics are not playable transport/UI or XBOX policy coverage.
 
 | Case | Expected |
 |---|---|
@@ -220,7 +285,7 @@ XBOX accounts; run permitted transport/UI cases on custom-ID only, with that lim
 | Text denied but voice allowed | No outgoing target/ReceiveText/display for denied peer; allowed voice unchanged |
 | Voice denied or muted but text allowed | Voice stays restricted; typed text still works |
 | Pending privacy, missing/unknown sender or departed peer | No unauthorized new row; sender must resolve through PartyService.entity_key_for and current roster, never the replicated fallback |
-| Missing/failed XBOX text permission batch | Text denied; voice fallback unchanged; custom-ID without XBOX privacy still permits authenticated current-roster peers |
+| Missing/failed XBOX text permission batch | Text denied; voice fallback unchanged; no custom-ID gameplay substitute |
 | Failed/missing text query followed by a successful evaluation | Failure is not cached as a permanent denial; new text follows the resolved verdict, with no old-content replay |
 | User/account-cache invalidation | Text privacy re-evaluated; no retained text while pending and no replay afterward |
 | Late privilege/privacy/list responses after cache invalidation | Abandoned responses cannot repopulate the cleared service-owned caches |
@@ -246,28 +311,59 @@ behavior. Receiving typed text never requires transcription flags.
 | --- | --- | --- |
 | 4.1 | `.\tools\deploy-console.ps1 -ConsoleAddress <ip> -Launch` | Title launches on the devkit |
 | 4.2 | `python tools\pckdiff.py scarlett_build\NetRumbleConsole.pck` | Shader cache present |
-| 4.3 | Sign-in with the console account | Gamertag shown |
+| 4.3 | Acquire the console account and saves | Gamertag shown and saved state loaded before gameplay |
 | 4.4 | Guide/constrain and unconstrain | Game audio/local simulation pause and restore, session retained; not evidence of suspend |
 | 4.5 | Actual platform suspend, confirmed by notification | Synchronous persistence, session abandonment and text clear; no deferred save dependence |
-| 4.6 | Resume after 4.5, or relaunch if terminated | Resume routes to menu with notice when applicable; no resumed match; termination/relaunch recorded separately |
+| 4.6 | Resume after 4.5, or relaunch if terminated | Resume invalidates the old provider and reacquires/loads through the acquire-user screen before gameplay; no resumed match; termination/relaunch recorded separately |
 | 4.7 | Controller disconnect/reconnect | Overlay shows/hides automatically; match continues; no exclusive input-filtering claim |
 | 4.8 | Other controller disconnects with platform associations available | Account-scoped detection does not mistake another account's device for the active user's |
 | 4.9 | Same-console relaunch after setting/history/counter changes | State loads for that user; local persistence observation only |
 | 4.10 | Close/sync, then same account on a second console | Settings/history/counters observed on the second console: actual Game Save roaming evidence |
-| 4.11 | Signed-in-user removal, then another account | Synchronous commit and account/chat cleanup; no previous account's history/counters/settings exposed |
+| 4.11 | Signed-in-user removal, then another account | Deadline-safe account/chat cleanup; writes only while access remains valid; session ends and no previous account state is exposed |
 | 4.12 | Full multiplayer/audio/text pass against registered PC | Same-title compatible peers; XBOX policy tested separately from custom-ID |
-| 4.13 | Sustained offline hint and terminal Party/host loss | Online session ends with a reason; hint grace is eight seconds; Practice remains available |
+| 4.13 | Sustained offline hint and terminal Party/host loss | Online session ends with a reason; hint grace is eight seconds; Practice requires the identified account's still-ready store |
 | 4.14 | Brief hint loss restored before grace expires | No hint-only session teardown if Party survives; endpoint failures may still end it |
 
-Read [Game Save](walkthroughs.md#console-game-save-and-account-isolation) and
+Read [Game Saves](walkthroughs.md#game-saves-and-account-isolation), the
+[account-save matrix](#account-owned-saves-pc-and-console) and
 [lifecycle](walkthroughs.md#lifecycle-connectivity-and-controllers) before these cases.
 One console cannot demonstrate cross-console roaming. An icon cannot demonstrate audible voice.
+
+### Xbox Guide Quit and suspend saves
+
+Use an authorized test account and record the build, changed data, connectivity and whether
+the observation is on the same console or another device. Exercise **Constrain -> Suspend ->
+Terminate** through Xbox Guide -> Quit. Saving belongs on Suspend; merely opening/closing
+Guide is not the termination test. Do not delete or corrupt real account saves to manufacture
+a failure.
+
+| Case | Expected |
+| --- | --- |
+| Change an Options value but do not press Back; Guide -> Quit | The current setting is written on Suspend and reloads on the same console/account |
+| Earn lifetime counters during an unfinished match; Guide -> Quit | Counters written on Suspend reload; no fabricated completed-match row or resumed match |
+| Complete a match, then Guide -> Quit before/after acknowledging results | The completed history reloads once |
+| Current settings, history retry and counters together in an isolated fixture | All three writes are attempted before teardown and before the actual main-script suspend notification returns, even if an earlier payload fails |
+| Constrain only | No Constrain writes, timer or SDK initialization |
+| Repeated Suspend with unchanged values | Each Suspend attempts settings, history and counters with no new SDK initialization |
+| Inject write failures or unavailable/lost account in isolated tests | Explicit per-stage/payload outcome; prior valid data preserved; no cross-account write or success claim |
+| Terminate an isolated child immediately after the actual suspend handler returns | Fresh process reloads the successful checkpoint without a normal Quit call, resume or another frame |
+
+Capture suspend entry, account/store readiness, per-payload outcomes, elapsed save time and
+handler exit. On console, verify that the packaged engine delivers Suspend to the title and
+does not complete suspension before the synchronous handler finishes. Compare the observed
+duration with the applicable platform deadline; do not substitute a guessed budget.
+
+First verify same-console reload. If that succeeds but another device is stale, investigate
+cloud synchronization separately. A completed local write is not an upload receipt.
+Isolated notification/process-termination tests do not establish real Xbox notification
+delivery, roaming, or hard-power-loss durability.
 
 ## Secondary gameplay regression
 
 Keep this coverage for simulation, tuning, RPC and presentation changes. Source/behavior detail
 is in [gameplay reference](gameplay-reference.md) and [protocol](protocol.md). Use both focused
-peers in a low-latency setup; record conditions instead of asserting a WAN latency guarantee.
+peers in a low-latency setup, with ready account saves for all modes including Practice;
+record conditions instead of asserting a WAN latency guarantee.
 
 | Check | Expected |
 |---|---|
@@ -281,7 +377,7 @@ peers in a low-latency setup; record conditions instead of asserting a WAN laten
 | Mines and rockets | Spawn/detonation events agree; trajectory visuals checked under recorded network conditions |
 | Match layout/countdown/end | Layout created once before countdown; both peers reach results and return to lobby coherently |
 | Every mode and loading barrier | Existing readiness, loaded flags and win conditions remain intact; no late admission |
-| Options and display settings | Every setting survives close/reopen; correct storage path for platform; no lost focus |
+| Options and display settings | Every setting survives close/reopen in the same account's Game Saves on PC/console; no lost focus |
 | HUD/camera/effects | Camera follows/clamps, UI remains readable, starfield/effects render; text panel does not obstruct essential HUD |
 | Menus/overlays | Gamepad focus is visible and scroll follows it across roster, options, chat entry and failure dialogs |
 | Exit and repeated matches | No orphaned world, stale physics bodies, duplicate audio/events or prior-match UI state |
@@ -297,6 +393,6 @@ raw account identifiers in shared logs.
 
 Mark each case **passed**, **failed**, **blocked** or **not exercised**, with evidence/reason.
 Separate local file persistence from observed roaming, a submitted text echo from remote display,
-icons from audio, constrain from suspend, and custom-ID transport from registered XBOX policy.
+icons from audio, constrain from suspend, and custom-ID diagnostics from registered gameplay/XBOX policy.
 Written walkthroughs and static checks establish none of those live outcomes. A networking
 change checked only at Tier 1 has not completed multiplayer acceptance.

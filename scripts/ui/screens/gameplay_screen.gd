@@ -49,6 +49,7 @@ var _screen_flash: ColorRect = null
 var _flash_tween: Tween = null
 
 var _match_finished := false
+var _account_generation := -1
 
 
 func _init() -> void:
@@ -57,6 +58,10 @@ func _init() -> void:
 
 func _ready() -> void:
 	super._ready()
+	_account_generation = Services.account_generation()
+	if not Services.is_account_ready() or not NetManager.has_session():
+		ScreenManager.replace_all.call_deferred(ScreenManager.ACQUIRE_USER if not Services.is_account_ready() else ScreenManager.MAIN_MENU)
+		return
 
 	_health_bar.max_value = SHIP_TUNING.health_max
 	_shield_bar.max_value = SHIP_TUNING.shield_max
@@ -446,11 +451,13 @@ func _apply_overlay_visibility() -> void:
 
 
 func _on_match_completed(payload: Dictionary) -> void:
-	if _match_finished:
+	if _match_finished or not _account_current():
 		return
 	_match_finished = true
 	_countdown_label.text = ""
 	await _show_results(payload)
+	if not _account_current():
+		return
 	# The host can leave, or the network drop, while the results are being read. The
 	# session-loss handlers stand down once _match_finished is set — deliberately, so a
 	# host departure does not talk over the scoreboard — which leaves this the place that
@@ -461,6 +468,8 @@ func _on_match_completed(payload: Dictionary) -> void:
 			"Disconnected",
 			reason if not reason.is_empty() else "The match ended.",
 			"error", false)
+		if not _account_current():
+			return
 		ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 		return
 	if NetManager.is_host():
@@ -489,24 +498,32 @@ func _show_results(payload: Dictionary) -> void:
 
 
 func _on_match_canceled() -> void:
-	if _match_finished:
+	if _match_finished or not _account_current():
 		return
 	_match_finished = true
 	await ScreenManager.show_dialog("Match Canceled", "A player failed to finish loading.", "warning", false)
+	if not _account_current():
+		return
 	NetManager.leave_match()
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 
 
 func _on_server_disconnected() -> void:
-	if _match_finished:
+	if _match_finished or not _account_current():
 		return
 	_match_finished = true
 	await ScreenManager.show_dialog("Disconnected", NetManager.last_disconnect_reason, "error", false)
+	if not _account_current():
+		return
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 
 
+func _account_current() -> bool:
+	return is_inside_tree() and not is_queued_for_deletion() and Services.is_current_account(_account_generation)
+
+
 func _unhandled_input(event: InputEvent) -> void:
-	if not is_active:
+	if not is_active or not _account_current():
 		return
 	if event.is_action_pressed("toggle_game_menu"):
 		get_viewport().set_input_as_handled()

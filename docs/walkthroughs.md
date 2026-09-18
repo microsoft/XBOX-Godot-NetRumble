@@ -30,30 +30,32 @@ and a corresponding XBOX test account signed in to the XBOX app. The console equ
 requires its authorized devkit/account. Direct editor launch is not this path.
 
 **Action:** Launch with `.\tools\deploy-pc.ps1 -Launch`. Follow the acquire-user stages until
-the menu appears. On failure, read the reason, try again after fixing setup or choose
-Continue Offline and start Practice.
+the menu appears after save loading. On failure, read the stage/reason and choose Retry after
+fixing setup, or Back to abandon acquisition. Neither Practice nor multiplayer bypasses saves.
 
 **Source / addon API:** `scripts\ui\screens\acquire_user_screen.gd` calls `Services.sign_in()`.
 `scripts\services\identity_service.gd` uses `gdk.users.get_primary_user()` or
 `add_default_user_async()`, then **`PlayFab.users.sign_in_with_xuser_async(xbox_user)`**.
 `PlayFab.accounts.set_display_name_async()` publishes the entity display name. `Services`
-then loads applicable saves and warms policy/device state.
+then prepares and validates the account's saves before publishing ready state, and warms
+policy/device state.
 
-**Observable outcome:** The stages distinguish XBOX acquisition from PlayFab authentication;
-the menu shows the gamertag. A successful host/join in the next lesson exercises that PlayFab
+**Observable outcome:** The stages distinguish XBOX acquisition, PlayFab authentication and
+save loading; the menu shows the gamertag only after readiness. A successful host/join exercises that PlayFab
 identity. A title/sandbox label alone is not proof of sign-in.
 
 **Unavailable / failure:** Registration does not grant title access. Wrong sandbox, absent
 launching user, missing addons or failed PlayFab authentication produces a reason on the acquire
 screen. Under the simplified user model, do not expect the interactive-add fallback to supply
-a second account. Continue Offline preserves Practice, not online access.
+a second account. An initialization/read failure after authentication still blocks all
+gameplay and must be retried; a displayed identity is not save-readiness evidence.
 
 ## Host and join by code
 
 **Prerequisites:** Two distinct signed-in players on compatible builds using the same title,
-network access and allowed multiplayer privilege. Registered XBOX players need separate
-machines/accounts. Debug-only transport coverage may instead use two custom-ID tokens on a
-separate development title; see [setup](multiplayer.md#testing-two-players-on-one-pc).
+network access, ready account saves and allowed multiplayer privilege. Use separate registered
+machines/accounts. Custom-ID users without a signed-in XboxUser cannot pass readiness;
+see [testing prerequisites](multiplayer.md#testing-two-players-on-one-pc).
 
 **Action:** Host a match, read the five-character code and enter it through Join Match's code
 entry on the other machine. Observe both rosters before readying both players. Repeat with a
@@ -99,7 +101,7 @@ and exercise the leave-current-match confirmation.
 `ActivityService.set_activity()` and `gdk.multiplayer_activity.set_activity_async()`;
 `show_invite_ui_async()` opens the system invite picker.
 `ActivityService` normalizes `gdk.activation` events and `InviteRouter` buffers them until
-identity and the front end are ready. `NetManager.join_by_invite()` calls the sample
+account identity, saves and the front end are ready. `NetManager.join_by_invite()` calls the sample
 `PartyService.join_by_connection_string()`; addon `join_lobby_async()` still runs before
 `PlayFab.party.join_network_async()`, but code search is skipped.
 
@@ -107,20 +109,27 @@ identity and the front end are ready. `NetManager.join_by_invite()` calls the sa
 the acquire-user flow and reaches that lobby, without asking for a code. During actual play,
 `PlatformSession` reports encounters via `update_recent_players()` /
 `flush_recent_players_async()` and updates XBOX presence. Normal leave retires the activity.
+Suspend retains an owner-bound retirement without starting SDK work; resume sends the delete
+through the same serialized writer. Normal Quit waits for retirement within its existing
+shutdown deadline, even after gameplay readiness is revoked. Failed or unavailable deletion
+is not recorded as success. See Microsoft's
+[multiplayer activities guidance](https://learn.microsoft.com/gaming/gdk/docs/services/multiplayer/mpa/concepts/live-mpa-activities).
 
 **Unavailable / failure:** Missing activity/relationships, a full or ended lobby, privilege
 denial or incompatible builds can refuse the join. A match that has started locks its lobby
 membership and every member retires its activity, so the joinable row disappears rather than
 offering a Join that would be refused; a cached activity or invite still reaches the host's
 door, which refuses it. Pending requests expire after five minutes;
-Continue Offline declines them. Record whether a real cold activation arrived, not merely
+Back abandons acquisition without joining, and failed save loading offers Retry/Back rather
+than bypassing readiness. Resume revokes an orphaned outcome-dialog join claim but preserves
+newer buffered invitations for the next ready acquisition handoff. Record whether a real cold activation arrived, not merely
 whether a warm code join worked.
 
 ## Two-way voice and typed text
 
 **Prerequisites:** Two permitted online peers, distinct microphone/headset endpoints and an
-active Party connection. Use registered XBOX identities for moderated/policy-aware coverage;
-custom-ID only covers development transport/UI. Check actual audio routing and avoid acoustic
+active Party connection. Use registered XBOX identities with ready saves;
+custom-ID diagnostics cannot enter these gameplay flows. Check actual audio routing and avoid acoustic
 feedback between nearby devices.
 
 **Action:** In the lobby, microphones start **muted**. Use `T` / gamepad Y to unmute and exchange
@@ -188,7 +197,8 @@ accepted feedback, not that a moderation action occurred.
 **Unavailable / failure:** Privilege-query failure currently fails open; missing/failed XBOX text
 privacy answers fail closed without caching query failures as permanent denials; existing
 voice fallback is unchanged. XBOX string verification
-failure with an available user/service blocks publication. Custom-ID bypasses those XBOX checks.
+failure with an available user/service blocks publication. Lower-level custom-ID diagnostics
+skip those XBOX checks, but cannot bypass the title's account/save gate.
 Policy is refreshed through roster/account events, not a claimed continuous privacy feed.
 No live network reconfiguration is supplied for restored communications privilege.
 Gamercards/reporting are available from the lobby, not every name-bearing surface; see
@@ -207,42 +217,68 @@ XBOX achievement/progress UI. Repeat a condition already earned and compare beha
 **Source / addon API:** Gameplay feeds `AchievementTracker`; `Services._on_achievement_progress()`
 calls `AchievementService.update_progress()` and
 `gdk.achievements.update_achievement_async(user, id, percent)`. Each peer reports its own
-local player. Sign-in merges persisted counters and calls `resync()`.
+local player. Account loading replaces counters with that account's saved state before
+resynchronizing reports; it never merges unsigned or another account's progress.
 
 **Observable outcome:** The platform records progress or an unlock for the correct local
 account. Reporting 100 means unlock; lower percentages report incremental progress. Replaying
 an already-earned condition does not create another unlock. The title has no achievement browser.
 
-**Unavailable / failure:** Offline/custom-ID counters are not XBOX awards. Missing/unpublished
+**Unavailable / failure:** Locally advanced counters are not XBOX awards. Missing/unpublished
 ids, account/title access or service failures can prevent reporting; inspect warnings and record
 the actual platform outcome. Committed XML definitions are not evidence of current service state.
 
-## Console Game Save and account isolation
+<a id="console-game-save-and-account-isolation"></a>
 
-**Prerequisites:** Authorized console builds/accounts, working PlayFab Game Save and **two
-consoles** for roaming. Same-console relaunch is only local persistence coverage. Desktop,
-including registered XBOX on PC, uses local caches instead of this sample's console save path.
+## Game Saves and account isolation
 
-**Action:** On console A, sign in, change an identifiable setting and finish a match. Close
-normally and allow synchronization to complete; relaunch to check same-console persistence.
-Close again, then launch on console B with the **same account** and observe the setting/history.
-Finally use a different authorized account and check isolation. Record sync prompts/errors.
+**Prerequisites:** Registered PC or authorized console builds, linked XBOX accounts and working
+Xbox XGameSaveFiles with the configured SCID. Use dedicated A/B accounts with known state; use a second PC/console for
+roaming. Do not clear cloud saves or import old shared files to manufacture test state.
 
-**Source / addon API:** `Services.sign_in()` calls `GameSaveService.load*()`.
-`PlayFab.game_saves.add_user_with_ui_async(user)` performs initial synchronization, and
-`get_folder(user)` resolves the user folder. `profile.json`, `history.json` and `stats.json`
-are written there using `FileAccess`; suspend/removal use cached-folder `write_now()`.
-There is no explicit `upload_with_ui_async()` call on this path.
+**Action:** Reproduce the reported PC case: launch as A, change an identifiable setting and
+complete Practice matches. Close normally, switch the launching XBOX account to fresh B and
+relaunch the same registered package. B must show **`No match history yet.`**, default settings
+and zero counters. Complete a match as B and alternate A/B relaunches, preserving each account's
+own saves. Repeat with nonempty B saves. New music defaults to `0.25`; explicitly save `0.7`
+and confirm it remains `0.7`.
 
-**Observable outcome:** Same-console persistence is visible first; **only observing the state
-on console B proves roaming in this run**. A different account must not inherit A's settings,
-history or counters. The platform handles synchronization after title close; a local write
-does not acknowledge remote upload.
+Close and allow synchronization, then launch on a **second PC with the same account** and
+observe settings/history/counters. Repeat the isolation, failure and roaming cases on console,
+and verify supported PC/console roaming in both directions with the configured linked
+identity/title. Record sync prompts/errors rather than assuming completion.
 
-**Unavailable / failure:** No local user handle, unavailable folder, failed initial sync or a
-write failure means there may be no durable save. Console does not fall back to account files
-in `user://`; pre-sign-in/offline state is in memory. Missing console B blocks roaming evidence.
-A desktop relaunch is never a substitute.
+**Source / addon API:** `Services` coordinates owner-bound preparation and loading through
+the title's single `GameSaveService`, using `GDK.game_save.get_folder_async(xbox_user)` /
+native `XGameSaveFilesGetFolderWithUiAsync`. One asynchronous operation performs initial
+synchronization/system UI and returns dictionary data `{path: String}` on both platforms.
+The XboxUser and generation own the binding; the initialized Xbox services supply the SCID.
+`profile.json`,
+`history.json` (newest 50 rows) and `stats.json` are read/validated before ready state is
+published, then written only for their current owner. Synchronous lifecycle writes do not
+start initialization or issue upload calls. Resume invalidates the old provider binding and
+repeats synchronization plus all three loads before allowing gameplay.
+
+**Observable outcome:** A/B never inherit each other's state or achievement reports; returning
+to A recovers A's own Game Saves. Confirmed missing files and valid empty history replace memory
+with defaults/empty state. Only observing synchronized state on another device demonstrates
+roaming. These steps specify expectations, not a live parity result; local writes are not
+remote upload acknowledgments.
+
+**Unavailable / failure:** Missing signed-in XboxUser/SCID, initialization/folder/read failures or
+malformed payloads block all gameplay, including Practice, with Retry/Back and no default
+overwrite. Retry after successful authentication must retry saves. Cancel/Back or account loss
+during loading invalidates late completions. Write failures remain visible; current values stay
+in memory for same-owner retry without damaging valid files. Explicit saves write their relevant
+payloads regardless of whether values changed. There is no desktop/token cache, shared-file
+import, legacy wrapper reader, migration or music remap; historical files are never read,
+modified, moved or deleted.
+
+An identified account with a ready platform-managed offline folder may play Practice.
+Cold offline identity/store resolution is not guaranteed. Missing devices/service access block
+parity/roaming evidence; mark them accordingly. Use the
+[full acceptance matrix](manual-test-plan.md#account-owned-saves-pc-and-console) for failed and
+stale loads, write retry, 50-row retention and no-migration fixtures.
 
 ## Lifecycle, connectivity and controllers
 
@@ -255,6 +291,12 @@ Separately invoke a real platform suspend, verify the suspend notification, then
 relaunch as the platform permits. Exercise host departure and sustained connectivity loss.
 Disconnect/reconnect the associated controller; separately exercise signed-in-user removal.
 
+For the termination case, change a setting without leaving Options or earn in-match counters,
+then use **Guide -> Quit**. Observe **Constrain -> Suspend -> Terminate**, with saving on
+Suspend, and relaunch as the same account on the same console. Record the suspend save
+outcomes before interpreting a later cross-device result as a cloud synchronization issue.
+See the [suspend-save matrix](manual-test-plan.md#xbox-guide-quit-and-suspend-saves).
+
 **Source / addon API:** `scripts\main.gd` receives Godot notifications from the console
 display server. Suspend calls `Services.persist_for_suspend()` then
 `NetManager.abandon_for_suspend()` synchronously. Connectivity comes from
@@ -264,10 +306,12 @@ display server. Suspend calls `Services.persist_for_suspend()` then
 
 **Observable outcome:** Constrain mutes game audio and freezes the local director without a
 global pause RPC. Actual suspend commits state, abandons the session and clears chat; resume
-returns to the menu with a notice when applicable, not into a resumed match. Host loss ends
+reacquires the Xbox save provider and reloads through the acquire-user screen, not into a resumed match. Host loss ends
 clients' sessions. An offline hint sustained beyond eight seconds ends online play; Practice
-remains available. Controller loss shows a reconnect overlay without pausing the match;
-reconnection hides it. User removal clears identity/chat/account caches.
+remains available only with the identified account's ready, usable store. Controller loss
+shows a reconnect overlay without pausing the match; reconnection hides it. User removal
+invalidates pending account operations, clears all account/chat state and ends the departing
+session. A surviving process reacquires an account before allowing more gameplay.
 
 **Unavailable / failure:** Guide/focus alone is not suspend coverage; game-audio mute is not
 Party microphone mute. Connectivity hints are not endpoint reachability tests. Detection does

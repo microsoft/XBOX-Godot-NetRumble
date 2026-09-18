@@ -18,7 +18,7 @@ of a submission outcome. It describes implemented paths and known gaps, not comp
 requirement coverage. Use the [README environment matrix](../README.md#what-works-where),
 [Walkthroughs](walkthroughs.md) and [Manual test plan](manual-test-plan.md) to distinguish
 what can be demonstrated from what was actually observed. Custom-ID success is not XBOX
-privilege/privacy coverage; desktop persistence is not console save roaming.
+privilege/privacy coverage; local persistence alone is not PC/console save-roaming evidence.
 
 Scope is the game code under `scripts/`, plus `project.godot`, `MicrosoftGame.config`
 and `export_presets.cfg`. The `addons/` tree (`godot_gdk`, `godot_playfab`) is a
@@ -65,16 +65,16 @@ Products must start up promptly, keep running, stay responsive, and shut down
 gracefully. In practice this is the game life cycle: suspend, resume and constrain.
 
 `main.gd` `_notification()` handles all four lifecycle notifications plus the close
-request. On XBOX these arrive from `DisplayServerGDK`, which registers for
-`RegisterAppStateChangeNotification` and `RegisterAppConstrainedChangeNotification` and
-mirrors them onto the Godot scene tree as ordinary notifications, so a Godot title
-handles them the same way it handles any other engine notification.
+request. The deployed Xbox engine must deliver Suspend before acknowledging the platform
+transition. Engine delivery and acknowledgment timing require live verification; title-side
+notification tests do not establish that integration.
 
 - **Suspend** calls `Services.persist_for_suspend()`, then
   `NetManager.abandon_for_suspend()`, then stops audio. The handler is straight-line:
-  no `await`, no `call_deferred`, no timers, because the process is frozen the instant
-  it returns and the platform commonly terminates rather than resumes.
-- **Resume** restarts music and, if the session was dropped, returns to the main menu.
+  no `await`, no `call_deferred`, no timers: persistence cannot depend on another frame
+  or a later resume.
+- **Resume** restarts music, invalidates the old XGameSaveFiles provider binding and returns
+  through account acquisition for folder synchronization and all three loads before gameplay.
 - **Constrain** (`NOTIFICATION_APPLICATION_FOCUS_OUT` / `_IN`) mutes audio through
   `AudioManager.set_system_muted()` and freezes the match through
   `MatchDirector.set_externally_paused()`, so the match clock cannot expire behind an
@@ -107,13 +107,15 @@ accounts with `PlayFab.users.sign_in_with_xuser_async(xbox_user)`, which exchang
 GDK `XUser` for a PlayFab identity through XSTS. The title never presents a login form
 and never handles a credential.
 
-A `--pf-user` / `PF_CUSTOM_ID` flag enables `sign_in_with_custom_id_async` so two
-instances can run on one desktop for testing. That path bypasses XBOX sign-in, so it is
+A `--pf-user` / `PF_CUSTOM_ID` flag enables `sign_in_with_custom_id_async` for debug
+authentication diagnostics. That path bypasses XBOX sign-in, so it is
 disabled by a runtime build-feature guard on console and exported release builds:
 `IdentityService.developer_overrides_allowed()` returns `false` when
 `OS.has_feature("scarlett")` is true or the build is not a debug build, and both
 `resolve_custom_id_token()` and the `--pf-title` handler consult it. It requires a separate
 development PlayFab title permitting custom-ID creation, not a change to committed identifiers.
+It lacks the signed-in XboxUser required by XGameSaveFiles and cannot enter gameplay,
+including Practice, even after authentication succeeds.
 
 **Code:** `scripts/services/identity_service.gd` (`sign_in`,
 `developer_overrides_allowed`, `resolve_custom_id_token`).
@@ -133,21 +135,20 @@ by the whole title, so a settings
 file written there outlives the account that wrote it and is readable by the next
 account signed in on that console.
 
-`IdentityService.has_protected_storage()` is the single predicate that decides where
-state goes. On console, `profile.json`, `history.json` and `stats.json` are written only to the
-PlayFab Game Save synced folder, which the platform scopes per user and protects at
-rest; nothing is written to `user://` at all. On desktop, where there is no synced
-folder, a plain `ConfigFile` at `user://settings.cfg` is used instead. Registered XBOX on PC
-uses this same desktop path. It is not a protected per-XBOX-user store.
+`GameSaveService` uses the Xbox XGameSaveFiles account-scoped folder on both
+registered XBOX on PC and console. `profile.json`, `history.json` and `stats.json` are stored
+only there, never in shared or debug-token `user://` caches. The signed-in XboxUser and
+initialized Xbox services SCID select the store; no console-only policy selects a different
+backend. Account boundaries clear in-memory settings/history/counters as well.
+Historical shared files are left untouched, not imported or assigned to a new account.
 Typed-text history stays in the in-match UI only, with at most four rows; it is not saved.
 
 `IdentityService._publish_entity_display_name()` writes the gamertag to the PlayFab
 entity profile so PlayFab surfaces show a name rather than a raw entity id. An entity
 id is an account identifier and is not for display.
 
-**Code:** `scripts/services/identity_service.gd` (`has_protected_storage`,
-`_publish_entity_display_name`), `scripts/autoload/player_profile.gd`,
-`scripts/autoload/services.gd` (`_load_local_history`, `_save_local_history`),
+**Code:** `scripts/services/identity_service.gd` (`_publish_entity_display_name`),
+`scripts/autoload/player_profile.gd`, `scripts/autoload/services.gd`,
 `scripts/services/game_save_service.gd`.
 
 ---
@@ -186,8 +187,9 @@ ReceiveText does not require speech features to be enabled.
 
 The chat flags in `PartyService._make_party_config()` are derived from the
 communications privilege (XR-045) rather than hardcoded. A peer with no XUID on a
-session where privacy is available fails closed. Custom-ID bypasses XBOX privacy; it still
-admits text only for recognized session peers. The existing voice-query fail-open behavior
+session where privacy is available fails closed. Lower-level custom-ID diagnostics skip XBOX
+privacy and admit text only for recognized peers; they cannot bypass gameplay readiness.
+The existing voice-query fail-open behavior
 and account-event refresh coverage remain limitations to exercise, not certification guarantees.
 
 **Code:** `scripts/services/privacy_service.gd`,
@@ -209,7 +211,8 @@ Typed chat is the only content a player authors in this sample.
 `NetManager.send_chat_message()` is the single outgoing funnel and calls
 `Services.verify_chat_text()` before `ChatService.send_chat_text()`. With an XBOX user/GDK,
 verification failure or refusal prevents submission; the entry stays open with its text and a
-reason. Custom-ID bypasses XBOX string verification and cannot validate that protection.
+reason. Custom-ID diagnostics skip XBOX string verification and cannot validate that protection
+or provide a playable alternative to a ready XBOX account.
 Accepted sends produce one local echo after successful Party submission, not a delivery receipt.
 
 Reporting is available from `NRPlayerActions`, opened from an occupied lobby roster row.
@@ -348,25 +351,40 @@ answers were obtained with the departing account's credentials.
 Titles must associate saved state with the user who created it, must avoid saving state
 for a user who is no longer signed in, and save data must not depend on local storage.
 
-- **Per-user by construction.** On console, saves go exclusively to the PlayFab Game
-  Save synced folder, which the platform partitions per user and roams across consoles.
-  `IdentityService.has_protected_storage()` gates the choice.
-- **User removal commits state.** `Services._on_user_changed()` handles `removed` by
-  calling `persist_user_state()` when the removed user is the signed-in one: it writes
-  settings, history and achievement counters, clears identity/the Game Save handle, and
-  clears in-memory account/chat state. The whole path is synchronous, with no `await`
-  anywhere, because the process may be torn down on the next frame.
+- **One account store on PC and console.** `GameSaveService` uses `GDK.game_save.get_folder_async`
+  (`XGameSaveFilesGetFolderWithUiAsync`) and the signed-in XboxUser's resolved folder.
+  Resume reacquires the provider and reloads all three saves before restoring readiness.
+  Settings, history and counters never use a desktop or token cache.
+- **Ready account required.** `Services` stages and validates all account payloads before
+  allowing any gameplay, including Practice or invite joins. Missing files in a successfully
+  initialized folder mean defaults/empty state; malformed/unreadable files or failed setup
+  mean Retry/Back, no gameplay and no overwrite by defaults.
+- **Owner-bound lifetime.** Abandonment/removal invalidates pending preparation and late
+  results. User removal blocks new work, clears profile/history/counters/report caches and
+  ends the departing session; a surviving process reacquires an account. Deadline-bound
+  lifecycle handling stays synchronous and persists only while access remains valid, never
+  starting initialization or a save for an already-removed user.
+- **No migration.** Historical shared/token files are not read, imported, copied, modified,
+  moved or deleted. No old-wrapper reader or music-value remap exists: default music remains
+  `0.25`, while explicitly saved `0.7` stays `0.7`.
 
-Writing into the synced folder *is* the save; the platform flushes that folder after the
-title closes, which is why nothing calls `upload_with_ui_async` on this path.
-Folder resolution/writes can fail; console then has no desktop-cache fallback.
-A successful local write does not prove roaming. Observe the same account on a second console
-after synchronization, and a different account for isolation; see the
-[Game Save walkthrough](walkthroughs.md#console-game-save-and-account-isolation).
+The platform synchronizes the folder after title close; there is no title-side
+`upload_with_ui_async` call on this path. Write failures are visible, preserve valid files
+and retain current values for same-owner retry, not transfer to another account.
+Explicit saves do not depend on dirty flags; Suspend attempts settings, history and counters.
+Practice can use a platform-supported offline folder only with a valid identified account and
+ready store; cold offline acquisition is not guaranteed.
+
+These ownership rules are not runtime parity or certification evidence. Validate the reported
+registered-PC A-to-fresh-B reproduction, preserve both A/B saves, test nonempty B, failures,
+Retry/stale loads and the newest-50 history limit. Observe the same account on a second PC,
+console-to-console and supported PC/console roaming after sync. A local write alone proves
+none of those; see [Game Saves](walkthroughs.md#game-saves-and-account-isolation) and the
+[acceptance matrix](manual-test-plan.md#account-owned-saves-pc-and-console).
 
 **Code:** `scripts/services/game_save_service.gd`,
 `scripts/autoload/services.gd` (`_on_user_changed`, `persist_user_state`),
-`scripts/services/identity_service.gd` (`has_protected_storage`, `sign_out`).
+`scripts/autoload/player_profile.gd`, `scripts/services/identity_service.gd`.
 
 ---
 
@@ -416,11 +434,12 @@ converts them to a percentage; `AchievementService` calls
 `XblAchievementsManagerUpdateAchievement`. One-shot achievements report `100`;
 incremental ones report progress as the counters move.
 
-- Progress is reported per player, on that player's own console, against the local
+- Progress is reported per player, on that player's own PC or console, against the local
   signed-in user. The host never unlocks on a client's behalf.
-- The counters advance offline, including in practice matches with no identity at all,
-  and `resync()` re-reports them once sign-in resolves. The service keeps the highest
-  percentage it has been told, so a replayed report is harmless.
+- Counters advance only for the ready account, including Practice with a usable
+  platform-managed offline folder. Loading replaces counters with that account's saved state;
+  resynchronization never imports unsigned or another account's progress. The service keeps
+  the highest percentage it has been told, so repeating the same account's report is harmless.
 - The "every weapon" and "every buff" achievements track bitmasks over the `NRTypes`
   enums, so adding a weapon or buff moves the target instead of leaving the achievement
   reachable without it.
@@ -516,8 +535,8 @@ player appropriately, and must not blame the XBOX network for a partner service 
 
 - `ConnectivityService` subscribes to `XboxNetworking`'s `connectivity_hint_changed` and
   collapses the hint into one `connectivity_changed(online)` signal. The main menu grays
-  out Host and Join and shows "No connection, online play unavailable", leaving Practice
-  selectable.
+  out Host and Join and shows "No connection, online play unavailable". Practice remains
+  selectable only with an identified account and ready, usable save store.
 - `NetManager._on_connectivity_changed()` starts an 8-second grace period on loss and
   re-checks before acting, so a brief hint flap does not end a match Party would have
   survived.
@@ -528,7 +547,8 @@ player appropriately, and must not blame the XBOX network for a partner service 
 The gate **fails open** by design: only `network_initialized false` and connectivity
 level `NONE` count as offline. A false "offline" locks a player with a working
 connection out of online play with no recourse; a false "online" costs one failed
-attempt.
+attempt. This connectivity hint does not override account/save readiness or invalidate a
+still-usable platform offline folder. Cold offline identity/store acquisition is not guaranteed.
 
 **Code:** `scripts/services/connectivity_service.gd`,
 `scripts/autoload/net_manager.gd` (`_on_connectivity_changed`,
@@ -562,9 +582,12 @@ devices can still contribute input, so the detection path is not proof of exclus
 `controller_bound` hides it automatically. Loss does not pause or abandon the network match.
 Keyboard-only desktop startup does not count as losing a controller.
 
-When the platform removes the signed-in XBOX user, `Services.persist_user_state()` commits
-settings/history/counters synchronously and invalidates account/chat state. The simplified
-user model does not provide an in-game account-switching session.
+When the platform removes the signed-in XBOX user, `Services` invalidates pending loads,
+blocks new gameplay/writes and clears settings/history/counters, report caches and identity/chat
+state. Persistence is synchronous only while the platform still permits access; it must not
+initialize or save for an already-removed user. The departing session ends and a surviving
+process returns to account acquisition. The simplified user model does not transfer a running
+match to another account.
 
 **Partial.** Exercise account-scoped device events and user removal on authorized hardware.
 The overlay alone does not establish input filtering or full requirement compliance.
@@ -593,7 +616,8 @@ invite someone to, so a practice match, or a session that has not yet registered
 activity, does not offer an invite that would fail.
 
 The receiving side is XR-064: `ActivityService` normalizes `invite_accepted` and
-`pending_invite_received`, and `InviteRouter` turns them into a join.
+`pending_invite_received`, and `InviteRouter` waits for account/save and front-end readiness
+before turning them into a join.
 
 **Code:** `scripts/services/activity_service.gd` (`show_invite_ui`),
 `scripts/ui/screens/lobby_screen.gd` (`_can_invite`, `_on_invite_requested`),

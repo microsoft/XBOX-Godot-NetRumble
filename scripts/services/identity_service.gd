@@ -75,6 +75,7 @@ const _ENUMERATION_SCOPE_THIS_ONLY := 0
 ## one is otherwise indistinguishable from any other — the screen shows this under the
 ## spinner so a stall names itself without a debugger attached.
 signal stage_changed(stage: String)
+signal platform_ready()
 
 var gdk_user: Variant = null
 var playfab_user: Variant = null
@@ -92,6 +93,7 @@ var _title_identifiers: Dictionary = {}
 ## Set when the title is closing. The call in flight is left to land, but nothing new is
 ## started on the other side of it.
 var _shutting_down := false
+var _generation := 0
 
 
 ## Stops the sign-in chain going any further than the call already in flight. Nothing is
@@ -99,19 +101,17 @@ var _shutting_down := false
 ## would have followed it are skipped.
 func begin_shutdown() -> void:
 	_shutting_down = true
+	_generation += 1
 
 
 func is_signed_in() -> bool:
 	return playfab_user != null
 
 
-## True when this instance was launched with a custom-id override, i.e. it is a local
-## test client rather than a real Xbox sign-in.
-func is_custom_id_session() -> bool:
-	return not resolve_custom_id_token().is_empty()
-
-
 func sign_in() -> bool:
+	if _shutting_down:
+		return false
+	var generation := _generation
 	last_error = ""
 
 	var token := resolve_custom_id_token()
@@ -119,11 +119,12 @@ func sign_in() -> bool:
 		return await _sign_in_with_custom_id(CUSTOM_ID_PREFIX + token)
 
 	var xbox_user: Variant = await _ensure_xbox_user()
-	if xbox_user == null:
+	if not _current(generation) or xbox_user == null:
 		return false
-
+	gdk_user = xbox_user
+	xbox_user_id = String(xbox_user.xuid)
 	var pf_user: Variant = await _ensure_playfab_user(xbox_user)
-	if pf_user == null:
+	if not _current(generation) or pf_user == null or not xbox_user.signed_in:
 		return false
 
 	gdk_user = xbox_user
@@ -136,7 +137,7 @@ func sign_in() -> bool:
 	if _shutting_down:
 		return true
 	await _publish_entity_display_name()
-	return true
+	return _current(generation)
 
 
 ## Publishes the player's name as this account's PlayFab entity display name (XR-014).
@@ -168,6 +169,7 @@ func _publish_entity_display_name() -> void:
 
 
 func sign_out() -> void:
+	_generation += 1
 	gdk_user = null
 	playfab_user = null
 	display_name = ""
@@ -339,12 +341,15 @@ func _initialized_gdk() -> Variant:
 # --- Xbox (GDK) path --------------------------------------------------------
 
 func _ensure_xbox_user() -> Variant:
+	var generation := _generation
 	_stage("Starting the Microsoft GDK")
 	var gdk: Variant = _gdk()
 	if gdk == null:
 		last_error = "The Microsoft GDK extension is not installed in this build."
 		return null
-
+	platform_ready.emit()
+	if not _current(generation):
+		return null
 	if not gdk.is_initialized():
 		var init: Variant = gdk.initialize()
 		if init == null or not init.ok:
@@ -358,6 +363,8 @@ func _ensure_xbox_user() -> Variant:
 
 	_stage("Signing in to Xbox")
 	var silent: Variant = await gdk.users.add_default_user_async()
+	if not _current(generation):
+		return null
 	if silent != null and silent.ok and silent.data != null and silent.data.signed_in:
 		return silent.data
 
@@ -367,6 +374,8 @@ func _ensure_xbox_user() -> Variant:
 	# falls through to last_error below.
 	_stage("Waiting for the Xbox sign-in screen")
 	var ui: Variant = await gdk.users.add_user_with_ui_async()
+	if not _current(generation):
+		return null
 	if ui != null and ui.ok and ui.data != null and ui.data.signed_in:
 		return ui.data
 
@@ -375,6 +384,7 @@ func _ensure_xbox_user() -> Variant:
 
 
 func _ensure_playfab_user(xbox_user: Variant) -> Variant:
+	var generation := _generation
 	if not _ensure_playfab():
 		return null
 
@@ -384,6 +394,8 @@ func _ensure_playfab_user(xbox_user: Variant) -> Variant:
 
 	_stage("Signing in to PlayFab")
 	var result: Variant = await _playfab().users.sign_in_with_xuser_async(xbox_user)
+	if not _current(generation):
+		return null
 	if result == null or not result.ok:
 		last_error = "PlayFab rejected the Xbox sign-in.\n\n%s" % _reason(result)
 		return null
@@ -392,12 +404,15 @@ func _ensure_playfab_user(xbox_user: Variant) -> Variant:
 # --- Custom-id path (local multi-instance testing) --------------------------
 
 func _sign_in_with_custom_id(custom_id: String) -> bool:
+	var generation := _generation
 	if not _ensure_playfab():
 		return false
 
 	# create_account=true provisions the account on first run and reuses it after.
 	_stage("Signing in to PlayFab")
 	var result: Variant = await _playfab().users.sign_in_with_custom_id_async(custom_id, true)
+	if not _current(generation):
+		return false
 	if result == null or not result.ok:
 		last_error = "PlayFab custom-id sign-in failed for '%s'.\n\n%s" % [custom_id, _reason(result)]
 		return false
@@ -414,6 +429,8 @@ func _sign_in_with_custom_id(custom_id: String) -> bool:
 	# gamertag. Skipped when closing, for the same reason as there.
 	if not _shutting_down:
 		await _publish_entity_display_name()
+	if not _current(generation):
+		return false
 	print("[Services] Signed in as PlayFab custom id '%s' (%s override)." % [custom_id, USER_ARG])
 	return true
 
@@ -435,29 +452,9 @@ static func developer_overrides_allowed() -> bool:
 	return OS.is_debug_build()
 
 
-## True when the platform provides a protected, per-user store — the Game Save synced
-## folder — and personal data must therefore stay out of `user://`.
-##
-## `user://` on console is one storage area shared by the whole title, with no per-user
-## partition and no encryption, so anything written there outlives the account that wrote
-## it and is readable by the next one (XR-014, XR-052). The Game Save folder is neither:
-## the platform scopes it to the user it was resolved for and protects it at rest, which
-## is why it is the only store the console build uses.
-##
-## Desktop has no such folder — Game Saves reject a session with no local user handle —
-## so desktop keeps the plaintext files. That is the development configuration, it holds
-## no console account's data, and it is not what ships. Static for the same reason
-## `resolve_custom_id_token()` is: PlayerProfile answers this during its own `_ready()`,
-## before Services has finished constructing.
-static func has_protected_storage() -> bool:
-	return OS.has_feature(CONSOLE_FEATURE)
-
-
 ## Resolution order: --pf-user=<token> (or "--pf-user <token>", including user args
 ## passed after `--`), then PF_CUSTOM_ID. Empty means "use the Xbox path", which is the
-## only answer a console or release build can give. Static so callers such as
-## PlayerProfile can namespace per-instance state at startup without waiting for
-## Services to finish constructing.
+## only answer a console or release build can give.
 static func resolve_custom_id_token() -> String:
 	var token := _read_arg(USER_ARG)
 	if token.is_empty():
@@ -555,3 +552,7 @@ func _reason(result: Variant) -> String:
 ## names, so whatever is on screen when sign-in stops is the call that stopped.
 func _stage(stage: String) -> void:
 	stage_changed.emit(stage)
+
+
+func _current(generation: int) -> bool:
+	return generation == _generation and not _shutting_down

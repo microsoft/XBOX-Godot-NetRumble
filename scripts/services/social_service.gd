@@ -32,6 +32,7 @@ var _friends_group: Variant = null
 ## Guards the load, so two screens opening at once share one round trip instead of
 ## creating two groups for the same user.
 var _loading := false
+var _generation := 0
 
 
 ## Whether a real friends list can be produced on this machine. False on desktop, in a
@@ -79,6 +80,7 @@ func friends(user: Variant) -> Array[Dictionary]:
 ## Drops the tracked group. Called when the account changes: the graph belongs to the
 ## user it was started for, and a group left behind would keep reporting their friends.
 func clear() -> void:
+	_generation += 1
 	var social: Variant = _social()
 	if social != null and _friends_group != null:
 		social.destroy_social_group(_friends_group)
@@ -94,8 +96,13 @@ func _ensure_group(social: Variant, user: Variant) -> bool:
 	if _loading:
 		return false
 	_loading = true
+	var generation := _generation
 	var result: Variant = await social.get_friends_async(user)
 	_loading = false
+	if generation != _generation:
+		if result != null and result.ok and result.data != null:
+			social.destroy_social_group(result.data)
+		return false
 	if result == null or not result.ok or result.data == null:
 		push_warning("[Social] Loading the friends list failed: %s" % _reason(result))
 		return false

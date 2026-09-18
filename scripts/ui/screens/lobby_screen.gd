@@ -95,10 +95,15 @@ var _start_blocked: bool = false
 ## arriving while the host reads it would start closing the lobby underneath the choice
 ## they are being asked to make.
 var _recovering: bool = false
+var _account_generation := -1
 
 
 func _ready() -> void:
 	super._ready()
+	_account_generation = Services.account_generation()
+	if not Services.is_account_ready() or not NetManager.has_session():
+		ScreenManager.replace_all.call_deferred(ScreenManager.ACQUIRE_USER if not Services.is_account_ready() else ScreenManager.MAIN_MENU)
+		return
 
 	var local := NetManager.local_player()
 	if local != null:
@@ -250,6 +255,8 @@ func _build_ship_tabs() -> void:
 
 
 func _on_ship_tab_pressed(index: int) -> void:
+	if not _account_current():
+		return
 	_selected_style_id = index
 	NetManager.set_local_appearance(_selected_color_id, _selected_style_id)
 	_refresh_ship()
@@ -336,7 +343,7 @@ func _build_color_tabs() -> void:
 
 
 func _on_color_selected(color_id: int) -> void:
-	if _colors_taken_by_others().has(color_id):
+	if not _account_current() or _colors_taken_by_others().has(color_id):
 		return
 	_selected_color_id = color_id
 	NetManager.set_local_appearance(_selected_color_id, _selected_style_id)
@@ -440,14 +447,15 @@ func _refresh_opponents() -> void:
 
 ## Adds or removes one AI opponent. `direction` is -1 or 1.
 func _step_opponents(direction: int) -> void:
-	if not NetManager.is_offline():
+	if not _account_current() or not NetManager.is_offline():
 		return
 	var count := clampi(
 		PlayerProfile.practice_opponents + direction, 0, NRConst.MAX_PRACTICE_BOTS)
 	if count == PlayerProfile.practice_opponents:
 		return
 	PlayerProfile.practice_opponents = count
-	PlayerProfile.mark_dirty()
+	PlayerProfile.notify_settings_changed()
+	PlayerProfile.save_settings()
 	NetManager.sync_practice_bots(count)
 	_refresh_opponents()
 	_refresh_rules()
@@ -480,7 +488,7 @@ func _build_roster_slots() -> void:
 ## inert placeholders, as does a match that has closed to new players -- there is no
 ## activity to invite anyone to while it is shut.
 func _can_invite() -> bool:
-	if NetManager.is_offline() or Services == null:
+	if not _account_current() or NetManager.is_offline():
 		return false
 	if not NetManager.is_accepting_joins():
 		return false
@@ -488,12 +496,12 @@ func _can_invite() -> bool:
 
 
 func _on_invite_requested() -> void:
-	if Services == null:
+	if not _can_invite():
 		return
 	var activity := Services.activity()
 	if activity != null:
 		await activity.show_invite_ui(Services.xbox_user())
-		if is_inside_tree() and is_active:
+		if _account_current() and is_active:
 			_restore_lobby_focus()
 
 
@@ -501,7 +509,7 @@ func _on_invite_requested() -> void:
 ## NetManager owns which actions are possible for this player, and the overlay is what
 ## presents them — a report needs a reason, so it cannot be a one-press row activation.
 func _on_player_actions_requested(peer_id: int) -> void:
-	if _player_actions != null:
+	if not _account_current() or _player_actions != null:
 		return
 	var state: PlayerState = NetManager.players.get(peer_id)
 	if state == null:
@@ -547,6 +555,8 @@ func _refresh_roster() -> void:
 # --- Ready / start ----------------------------------------------------------
 
 func _toggle_ready() -> void:
+	if not _account_current():
+		return
 	var local := NetManager.local_player()
 	if local == null:
 		return
@@ -631,7 +641,7 @@ func _try_auto_start() -> void:
 ## different number is someone else's, and is_host() alone would wave it through --
 ## Godot's seeded offline peer reports as a server even with no session at all.
 func _still_hosting(session: int) -> bool:
-	if not is_inside_tree() or _transitioning:
+	if not _account_current() or _transitioning:
 		return false
 	return NetManager.session_id() == session and NetManager.has_session() and NetManager.is_host()
 
@@ -681,7 +691,7 @@ func _reopen_joins() -> void:
 ## match reset un-readies every human player, and readying up is a lobby shortcut, so a
 ## player still reading the results screen cannot satisfy this.
 func _can_start() -> bool:
-	if not NetManager.has_session():
+	if not _account_current() or not NetManager.has_session():
 		return false
 	if not NetManager.is_offline() and NetManager.players.size() < 2:
 		return false
@@ -689,7 +699,7 @@ func _can_start() -> bool:
 
 
 func _leave_to_menu() -> void:
-	if _transitioning:
+	if _transitioning or not _account_current():
 		return
 	_transitioning = true
 	NetManager.leave_match()
@@ -697,10 +707,14 @@ func _leave_to_menu() -> void:
 
 
 func _go_to_gameplay() -> void:
-	if _transitioning:
+	if _transitioning or not _account_current() or not NetManager.has_session():
 		return
 	_transitioning = true
 	ScreenManager.replace_all(ScreenManager.GAMEPLAY)
+
+
+func _account_current() -> bool:
+	return is_inside_tree() and not is_queued_for_deletion() and Services.is_current_account(_account_generation)
 
 
 # --- Status / hint ----------------------------------------------------------
@@ -814,17 +828,19 @@ func _on_server_disconnected() -> void:
 
 
 func _return_to_menu_with_dialog(title: String, message: String) -> void:
-	if _transitioning:
+	if _transitioning or not _account_current():
 		return
 	_transitioning = true
 	await ScreenManager.show_dialog(title, message, "error", false)
+	if not _account_current():
+		return
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 
 
 # --- Input / leave ----------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not is_active:
+	if not is_active or not _account_current():
 		return
 	# The player actions overlay is a modal child of this screen rather than a screen of
 	# its own, so the lobby's own shortcuts stand down while it is open — otherwise
@@ -856,6 +872,6 @@ func on_back_pressed() -> void:
 	if _transitioning:
 		return
 	var confirmed: bool = await ScreenManager.show_dialog("Leave Match", "Leave the current match?", "warning", true)
-	if not confirmed:
+	if not confirmed or not _account_current():
 		return
 	_leave_to_menu()

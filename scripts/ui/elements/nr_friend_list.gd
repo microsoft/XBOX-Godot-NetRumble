@@ -40,9 +40,12 @@ var _online_denial := ""
 ## The overlay is not a screen, so closing it never triggers ScreenManager's reveal
 ## hook. Without this a gamepad would be left with nothing focused underneath.
 var _previous_focus: Control = null
+var _account_generation := -1
 
 
 func _ready() -> void:
+	_account_generation = Services.account_generation()
+	Services.account_lost.connect(_on_account_lost)
 	_previous_focus = get_viewport().gui_get_focus_owner()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -64,13 +67,16 @@ func _refresh() -> void:
 	_cancel_button.call_deferred("grab_focus")
 
 	var friends: Array[Dictionary] = []
-	if Services != null:
+	if Services.is_current_account(_account_generation):
 		_online_denial = await Services.resolve_multiplayer_denial_reason()
+		if not _account_current():
+			_loading = false
+			return
 		if _online_denial.is_empty():
 			_show_status("Looking for friends to join…")
 			friends = await Services.joinable_friends()
 	_loading = false
-	if not is_inside_tree():
+	if not _account_current():
 		return
 
 	_clear_actions()
@@ -99,6 +105,8 @@ func _refresh() -> void:
 ## joinable_friends() returns an empty array for both. It is worded for the second, which
 ## is overwhelmingly the common one, and which does not read as a remark about the player.
 func _empty_reason() -> String:
+	if not Services.is_current_account(_account_generation):
+		return NetManager.ACCOUNT_NOT_READY
 	if not _online_denial.is_empty():
 		return _online_denial
 	if Services == null or not Services.social_available():
@@ -158,7 +166,18 @@ func _hide_status() -> void:
 ## The join itself belongs to the menu, which owns the loading screen and the failure
 ## dialog, so this closes behind the request rather than waiting underneath it.
 func _on_friend_chosen(connection_string: String) -> void:
-	join_requested.emit(connection_string)
+	if _account_current():
+		join_requested.emit(connection_string)
+	_close()
+
+
+func _account_current() -> bool:
+	return is_inside_tree() and not is_queued_for_deletion() and Services.is_current_account(_account_generation)
+
+
+func _on_account_lost() -> void:
+	_clear_actions()
+	hide()
 	_close()
 
 

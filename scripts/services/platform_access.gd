@@ -7,7 +7,7 @@ extends RefCounted
 ## native library has loaded. On a machine without them — any non-Windows development
 ## box, and any build where the addons were not shipped — every accessor here returns
 ## null, and the services above are written to degrade rather than fail when it does.
-## That is what lets Practice mode run on a clean clone with no platform at all.
+## Gameplay still requires a signed-in account and ready save storage.
 ##
 ## Everything is held and returned as Variant on purpose. Naming an addon class in a
 ## type position would make the file fail to parse where the extension is absent, which

@@ -37,7 +37,7 @@ docs/
 
 - [**Configuration**](configuration.md): machine and account prerequisites for the primary
   demonstration (an exported, registered XBOX on PC build), the fixed sample title
-  configuration, the secondary editor and custom-ID paths, and console export traps
+  configuration, editor/custom-ID diagnostics (not gameplay bypasses), and console export traps
 - [**Walkthroughs**](walkthroughs.md): prerequisites, player action, API and observable
   outcome for each platform demonstration, including what failure looks like. These are
   instructions and expected observations, not recorded test results
@@ -52,7 +52,7 @@ docs/
   display, and XBOX multiplayer activity for friends and invites
 - [**Platform services**](platform-services.md): GDK sign-in and the exchange for a PlayFab
   identity, privileges, privacy enforcement, string verification and reporting, achievements
-  and console Game Save
+  and account-owned Xbox XGameSaveFiles on PC and console
 - [**XBOX Requirements**](xr-compliance.md): each XR the sample has code for and where that
   code is, so you can find the equivalent call site for your own title
 
@@ -64,7 +64,7 @@ docs/
 - [**Addon maintenance**](addon-maintenance.md): `addons/` is build output, so this covers
   building it from the `external/xbox-godot-sample` submodule, moving the pin, and the
   project's `.gdextension` overrides
-- [**Repository checks**](../tools/repository-checks.md): the two CI text gates, what each
+- [**Repository checks**](../tools/repository-checks.md): the CI text gates, what each
   one enforces and how to run them locally before pushing
 
 ## When something goes wrong

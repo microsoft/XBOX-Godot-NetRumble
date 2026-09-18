@@ -51,10 +51,10 @@ jobs:
         run: .\tools\check-game-config.ps1
 
   # ---------------------------------------------------------------------------
-  # Parses and imports every script and scene. This is the project's only
-  # automated regression signal against a broken reference, a renamed autoload
-  # or a scene that no longer resolves, so it is worth having even though it
-  # cannot exercise gameplay or networking.
+  # Runs isolated account-save behavior tests, then parses/imports every script
+  # and scene. The full-project pass catches broken references, renamed autoloads
+  # and scenes that no longer resolve; neither check proves live SDK or networking
+  # behavior.
   #
   # addons/ is gitignored build output, so this job has to build it first --
   # the GDExtensions have to load for the project to import. -SkipConsoleRedist
@@ -98,6 +98,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path godot-bin | Out-Null
           Invoke-WebRequest -Uri $url -OutFile godot.zip
           Expand-Archive -Path godot.zip -DestinationPath godot-bin -Force
+
+      - name: Account-save behavioral tests
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path godot-bin -Filter '*_console.exe' -Recurse |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) { throw 'Godot console executable was not found.' }
+          .\tools\run-save-tests.ps1 -Godot $exe
 
       # The whole build tree, including build/vcpkg_installed. A cold restore of
       # the GDK and PlayFab SDKs dominates this job's runtime; a warm one makes
