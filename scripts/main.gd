@@ -33,6 +33,13 @@ var _constrained := false
 var _quit_pending := false
 ## When the deferred quit stops being deferred, whether the call landed or not.
 var _quit_deadline_msec := 0
+var _account_route_pending := false
+var _save_failure_pending := ""
+var _save_dialog_open := false
+## Normal quit stays cancellable until the current account's final save succeeds.
+## This is separate from the forced, deadline-bound platform drain.
+var _shutdown_save_pending := false
+var _resume_generation := -1
 
 
 func _ready() -> void:
@@ -55,14 +62,84 @@ func _ready() -> void:
 	# raising the prompt there would put an undismissable panel over every dev session.
 	# A console user who has no controller assigned is XR-112's picker, not this.
 	if Services != null:
+		_connect_lifecycle_signals()
 		var devices := Services.devices()
 		devices.controller_lost.connect(_on_controller_lost)
 		devices.controller_bound.connect(_on_controller_bound)
 
-	# The acquire-user screen signs in up front and then hands over to the main menu.
-	# It offers "Continue Offline", so this is a gate on the *menu*, not on the game:
-	# practice mode still needs no identity.
+	# Authentication and account-owned saved data must both be ready before the menu.
 	ScreenManager.push(ScreenManager.ACQUIRE_USER)
+
+
+func _connect_lifecycle_signals() -> void:
+	Services.account_lost.connect(_on_account_lost)
+	Services.save_failed.connect(_on_save_failed)
+	ScreenManager.screen_pushed.connect(_on_resume_screen_pushed)
+
+
+func _reset_account_dialogs() -> void:
+	_shutdown_save_pending = false
+	_save_failure_pending = ""
+	_save_dialog_open = false
+
+
+func _on_account_lost() -> void:
+	_reset_account_dialogs()
+	_resume_generation = -1
+	_match_dropped_by_suspend = false
+	# Stop the departing simulation and input immediately, without starting SDK work
+	# or awaiting UI inside a deadline-bound user-removal callback.
+	for container: Node in [_world_container, _screen_container]:
+		for child in container.get_children():
+			child.process_mode = Node.PROCESS_MODE_DISABLED
+			if child is CanvasItem:
+				child.hide()
+	AudioManager.stop_all()
+	if not _account_route_pending:
+		_account_route_pending = true
+		_route_after_account_loss.call_deferred()
+
+
+func _route_after_account_loss() -> void:
+	_account_route_pending = false
+	if Services.is_shutting_down():
+		return
+	_match_dropped_by_suspend = false
+	ScreenManager.replace_all(ScreenManager.ACQUIRE_USER)
+	AudioManager.play_music()
+
+
+## Save callers keep current data on failure. Only this deferred normal-interaction
+## handler presents UI; deadline-bound suspend and removal never wait for a dialog.
+func _on_save_failed(reason: String) -> void:
+	if Services.is_shutting_down() or not Services.is_account_ready():
+		return
+	if _save_failure_pending.is_empty():
+		_save_failure_pending = reason
+	elif not _save_failure_pending.contains(reason):
+		_save_failure_pending += "\n" + reason
+	if _shutdown_save_pending:
+		return
+	_show_save_failure.call_deferred(Services.account_generation())
+
+
+func _show_save_failure(generation: int) -> void:
+	if _shutdown_save_pending or _save_dialog_open or _save_failure_pending.is_empty():
+		return
+	if Services.is_shutting_down() or not Services.is_current_account(generation):
+		return
+	_save_dialog_open = true
+	var reason := _save_failure_pending
+	_save_failure_pending = ""
+	await ScreenManager.show_dialog(
+		"Could Not Save",
+		"%s\n\nYour changes have not been saved. Try saving again before leaving this account." % reason,
+		"error", false)
+	if not Services.is_current_account(generation):
+		return
+	_save_dialog_open = false
+	if not _save_failure_pending.is_empty():
+		_show_save_failure.call_deferred(generation)
 
 
 ## The player's controller went away (XR-115). Nothing is paused and nothing is torn
@@ -78,11 +155,9 @@ func _on_controller_bound() -> void:
 
 ## Process lifecycle, alongside the window close request (XR-001).
 ##
-## On the Xbox platforms these four arrive from `DisplayServerGDK`, which registers for
-## the platform's app-state and constrained notifications and mirrors them onto the scene
-## tree as ordinary Godot notifications -- there is no GDK-specific signal for them. On
-## desktop only the focus pair fires, which is why the constrain path is written to be
-## harmless when it turns out to be nothing more than an alt-tab.
+## The Xbox engine must deliver APPLICATION_PAUSED before acknowledging suspend.
+## Delivery and acknowledgment timing need verification on the deployed engine.
+## Focus loss alone only constrains the title; it is not a persistence trigger.
 func _notification(what: int) -> void:
 	match what:
 		NOTIFICATION_WM_CLOSE_REQUEST:
@@ -99,22 +174,22 @@ func _notification(what: int) -> void:
 
 ## The suspend handler. Everything it does, it does now.
 ##
-## This runs on the main thread inside the display server's window procedure, inside the
-## platform's suspend deadline, and the process is frozen the instant it returns. So there
-## is no `await` here, no `call_deferred`, no timer and no signal round trip: work parked
-## behind any of those does not run before the freeze, and if the platform chooses to
-## terminate the title rather than resume it -- which is the common outcome, not the rare
-## one -- it never runs at all. Straight-line code only, cheapest-first.
+## Persistence cannot depend on another frame or on resume: the process may terminate
+## after this handler returns. Measure the synchronous work rather than assume a budget.
 func _on_suspending() -> void:
+	var started_usec := Time.get_ticks_usec()
+	print("[Lifecycle] Suspend entry")
 	# First, because it is the only part that must survive a terminate-without-resume.
+	var saved := false
 	if Services != null:
-		Services.persist_for_suspend()
+		saved = Services.persist_for_suspend()
 	# Then drop the session. Holding an open Party network and a bound MultiplayerPeer
 	# across a suspend leaves a peer that never reconnects and an RPC storm against a
 	# dead network; the match is not worth either.
 	_match_dropped_by_suspend = NetManager.abandon_for_suspend()
 	AudioManager.stop_all()
-	print("[Lifecycle] Suspending; state committed%s." % (", match abandoned" if _match_dropped_by_suspend else ""))
+	print("[Lifecycle] Suspend exit save_completed=%s match_abandoned=%s elapsed_ms=%.3f" % [
+		saved, _match_dropped_by_suspend, (Time.get_ticks_usec() - started_usec) / 1000.0])
 
 
 ## The resume handler. Unlike suspend this is not deadline-bound, so it may defer -- and
@@ -122,20 +197,47 @@ func _on_suspending() -> void:
 ## awaiting them.
 func _on_resumed() -> void:
 	print("[Lifecycle] Resumed.")
+	if Services.is_shutting_down():
+		return
+	Services.invalidate_saves_for_resume()
+	InviteRouter.invalidate_for_resume()
+	_reset_account_dialogs()
+	_resume_generation = Services.account_generation()
+	NetManager.finish_suspend_teardown()
 	# Restarted rather than merely unmuted: the streams were playing into a device the
 	# platform took away, so they are started again from a known state.
 	AudioManager.play_music()
-	if _match_dropped_by_suspend:
-		_match_dropped_by_suspend = false
-		_route_after_suspend.call_deferred()
+	_route_after_suspend.call_deferred(_resume_generation)
 	# The constrain state is deliberately left alone. A resume arrives while the title is
 	# still constrained -- the Guide is what suspended it and is still up -- so the
 	# unconstrain notification is what ends the pause, not this.
 
 
 ## Puts the player back somewhere that makes sense after a suspend took their match away.
-func _route_after_suspend() -> void:
+func _route_after_suspend(generation: int) -> void:
+	if Services.is_shutting_down() or _account_route_pending or generation != Services.account_generation():
+		return
+	if not Services.is_account_ready():
+		ScreenManager.replace_all(ScreenManager.ACQUIRE_USER)
+		return
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
+
+
+func _on_resume_screen_pushed(screen: NRScreen) -> void:
+	if _resume_generation < 0 or screen.scene_file_path != ScreenManager.MAIN_MENU:
+		return
+	var generation := _resume_generation
+	_resume_generation = -1
+	var match_dropped := _match_dropped_by_suspend
+	_match_dropped_by_suspend = false
+	if match_dropped:
+		_show_resume_notice.call_deferred(screen, generation)
+
+
+func _show_resume_notice(screen: NRScreen, generation: int) -> void:
+	if not Services.is_current_account(generation) or not is_instance_valid(screen) \
+			or ScreenManager.current_screen() != screen:
+		return
 	# An invite accepted while the title was suspended is why the player came back. It
 	# redeems off the screen change above, and it is a better answer to "what now" than a
 	# dialog about a match they have already moved on from, so it gets the front end.
@@ -180,20 +282,40 @@ func is_constrained() -> bool:
 ## this is the other, and the one that does not depend on the call being cancellable: keep
 ## the frames coming until it lands, and quit on the far side of it.
 func request_shutdown() -> void:
+	# Repeated close requests cannot accept a failed save on the player's behalf.
+	if _shutdown_save_pending:
+		return
 	# Asked twice. The player is done waiting, and a close button that ignores the second
 	# press is the same bug wearing a different hat.
 	if _quit_pending:
 		_quit_immediately()
 		return
 
-	if PlayerProfile.has_pending_changes():
-		PlayerProfile.save_settings()
-
+	if Services != null and Services.is_account_ready():
+		var generation := Services.account_generation()
+		_shutdown_save_pending = true
+		while not Services.persist_for_suspend():
+			var reason := _save_failure_pending
+			_save_failure_pending = ""
+			var retry := await ScreenManager.show_dialog(
+				"Could Not Save",
+				"%s\n\nYour changes have not been saved. Retry saving before quitting, or go back to the game." % reason,
+				"error", true, "Retry", "Back")
+			# Account removal also releases the guard. A stale dialog must not quit a
+			# replacement account or release that account's own pending quit.
+			if not Services.is_current_account(generation):
+				return
+			if not retry:
+				_shutdown_save_pending = false
+				return
+		_shutdown_save_pending = false
+		_save_failure_pending = ""
+	if Services != null:
+		Services.begin_shutdown()
 	if Services != null and Services.is_signing_in():
 		# Unwinds the sign-in chain at its next opportunity rather than letting it run on
 		# into the post-sign-in work, so the wait is only as long as the call already in
 		# flight and not the whole pipeline behind it.
-		Services.begin_shutdown()
 		_arm_drain_deadline()
 		if not Services.sign_in_completed.is_connected(_on_shutdown_drain_finished):
 			Services.sign_in_completed.connect(_on_shutdown_drain_finished, CONNECT_ONE_SHOT)
@@ -255,6 +377,13 @@ func _arm_drain_deadline() -> void:
 ## bounding it is that an exit must not be able to hang on it.
 func _quit_now() -> void:
 	AudioManager.stop_all()
+	if NetManager.is_account_teardown_pending():
+		_arm_drain_deadline()
+		NetManager.finish_suspend_teardown()
+		while NetManager.is_account_teardown_pending():
+			await get_tree().process_frame
+			if not _quit_pending:
+				return
 	if NetManager.has_session():
 		_arm_drain_deadline()
 		await NetManager.leave_match_and_wait()
@@ -264,6 +393,10 @@ func _quit_now() -> void:
 			return
 	else:
 		NetManager.leave_match()
+	_arm_drain_deadline()
+	await NetManager.retire_activity_and_wait()
+	if not _quit_pending:
+		return
 	var chat := Services.chat() if Services != null else null
 	if chat != null and chat.has_control():
 		_arm_drain_deadline()

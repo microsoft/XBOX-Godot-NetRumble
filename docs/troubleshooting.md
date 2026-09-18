@@ -132,16 +132,96 @@ project already does this in `PartyService`; see
 
 ### E_PF_PLAYER_CREATION_DISABLED / 0x892357BA
 
-**Symptom**: The two-instance custom-ID flow fails with `E_PF_PLAYER_CREATION_DISABLED`
+**Symptom**: Debug custom-ID authentication fails with `E_PF_PLAYER_CREATION_DISABLED`
 (`0x892357BA`).
 
 **Cause**: The committed production PlayFab title does not permit custom-ID account creation.
-The debug custom-ID multiplayer path requires a separate development PlayFab title that enables
+The debug custom-ID authentication diagnostic requires a separate development PlayFab title that enables
 that flow.
 
-**Fix**: Pass `--pf-title=<dev-title-id>` with distinct `--pf-user` values, or set the matching
+**Fix**: For authentication diagnostics, pass `--pf-title=<dev-title-id>` with a `--pf-user` token, or set the matching
 environment variables, against a development title you control. Do not change committed title or
-package identifiers. See
-[Testing two players on one PC](multiplayer.md#testing-two-players-on-one-pc),
-[Debug custom-ID multiplayer](configuration.md#debug-custom-id-multiplayer) and
+package identifiers. Successful custom-ID authentication still cannot enter gameplay: it lacks
+the signed-in XboxUser required by XGameSaveFiles. Use registered XBOX accounts with ready saves
+for Practice and multiplayer, not custom-ID as a workaround. See
+[Testing prerequisites](multiplayer.md#testing-two-players-on-one-pc),
+[Debug custom-ID diagnostics](configuration.md#debug-custom-id-diagnostics) and
 [manual test prerequisites](manual-test-plan.md#prerequisites).
+
+### Signed in, but save loading fails
+
+**Symptom**: Authentication succeeds but acquisition reports a save initialization, folder or
+read error and gameplay remains unavailable.
+
+**Cause**: An authenticated PlayFab user alone is not account/save readiness. PC and console
+both require a signed-in XboxUser, initialized Xbox services with the correct SCID,
+successful XGameSaveFiles folder synchronization and valid reads.
+Unreadable slots, invalid current-schema payloads or damage with no intact slot are errors,
+not an empty account. Each logical save has a named file and an `.alt` integrity slot;
+an incomplete candidate can be ignored when the other slot is intact. Both slots absent
+means a new save. Do not manually replace either slot with bare JSON.
+
+**Action**: Record the failed stage/reason and inspect registration, account/title access and
+the platform sync result. After resolving the cause, choose **Retry** to reload the store;
+**Back** abandons the attempt without enabling play. Do not overwrite existing saves with
+defaults or copy shared/token files into the folder. No migration/compatibility reader exists,
+and historical files are left untouched. A custom-ID user cannot resolve this by retrying
+authentication alone. See [Game Saves](platform-services.md#game-saves).
+
+`GameSaveService` calls `GDK.game_save.get_folder_async(xbox_user)` on both platforms.
+It does not use PlayFab Game Saves or require that service's onboarding. For built-in cloud
+sync failures, verify the configured title/sandbox/SCID and Partner Center **Connected Storage**
+setting, not PlayFab save enrollment. Microsoft's
+[debugging guidance](https://learn.microsoft.com/gaming/gdk/docs/features/common/game-save/game-saves-debugging)
+describes SCID/access failures including `0x80830002`; a sync dialog alone does not prove the cause.
+
+Capture `[SavePrepare]` entry, the `GDK.game_save.get_folder_async` calling/returned/completed
+lines, folder access result and exit status. Completion logs retain recognized addon error
+codes and numeric HRESULTs without account identifiers, raw paths, payloads or native messages.
+`[SaveLoad]` then records each logical payload's load status. A returned call still awaiting its
+Signal is not a completed sync. Retry repeats a failed folder operation; there is no AddUser
+session-lifetime rule in this backend. Resume invalidates the cached provider and reloads.
+
+If an explicit Options save fails, **Back** still returns to the main-menu or pause-menu
+actions and shows **Could Not Save**. Dismiss the error to use Resume/Leave or other menu
+actions; current settings remain in memory for a later explicit save. This is not an
+account-load bypass, and unsaved values are not guaranteed to survive termination.
+
+**Check the packaged build before interpreting missing diagnostics.** `deploy-pc.ps1 -Launch
+-SkipExport` reuses staged scripts and binaries; it cannot include new source changes. After
+coordinating deployment, re-export and register without launching:
+
+```powershell
+.\tools\deploy-pc.ps1 -Configuration release -GodotExe 'C:\path\to\Godot_console.exe'
+```
+
+This command changes the staged package and registration. Omit `-SkipExport`; add `-Launch`
+only when the live run is authorized. Do not change title identifiers or clear cloud saves
+to work around a synchronization error.
+
+### Progress missing after Xbox Guide Quit
+
+**Required flow**: Constrain -> Suspend -> Terminate, with synchronous saving on Suspend.
+Do not use the desktop Quit dialog or a Constrain-only test as evidence for this path.
+
+**Action**: Establish which setting, completed-history row or lifetime counter is missing,
+then compare same-account/same-console state before and after Guide Quit. Capture suspend
+entry, account/store readiness, individual write outcomes and handler exit.
+No suspend entry suggests an engine/notification integration issue; entry without completion
+needs callback-duration/order investigation; a failed payload needs storage/readiness
+diagnosis. Do not solve those failures by moving saving to Constrain or adding a timer.
+
+The log sequence starts with `[Lifecycle] Suspend entry`, contains `[SaveCommit]`
+readiness fields and ordered payload results, and ends with `[Lifecycle] Suspend exit`.
+Commit outcomes distinguish `success`, `no_ready_account` and
+`failed_writes`. Both commit and handler exit report `elapsed_ms`; no fixed suspend deadline
+is implied by those measurements. Keep the whole block when reporting a failure.
+
+Suspend attempts all three current payloads without dirty flags. A prior failed appearance or
+settings write is retried at the next explicit save boundary even if no further value changes.
+Do not add a marking call or a change-detection workaround to make persistence run.
+
+If local state reloads but another device is stale, inspect platform cloud synchronization.
+Background upload cannot persist in-memory values the title never wrote. Run the
+[Guide Quit cases](manual-test-plan.md#xbox-guide-quit-and-suspend-saves) with authorized test
+accounts and retain old valid data; do not erase or manually alter cloud files.

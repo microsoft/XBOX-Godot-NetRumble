@@ -66,6 +66,7 @@ var _rejected: Dictionary = {}
 ## racing it, so eight players joining at once costs one round of lookups.
 var _running := false
 var _queued := false
+var _generation := 0
 
 
 ## Whether verification can run at all. False on desktop, in a build without the
@@ -91,14 +92,19 @@ func resolve(pf_user: Variant, xbox_user: Variant, claims: Array[Dictionary]) ->
 		return
 
 	_running = true
+	var generation := _generation
 	var changed := _prune(claims)
 	var pending := _pending_claims(claims)
 
 	if not pending.is_empty():
 		if await _map_xuids_to_entities(pf_user, _unmapped_xuids(pending)):
+			if generation != _generation:
+				return
 			var verified := _verified_xuids(pending)
 			if not verified.is_empty():
 				await _load_gamertags(xbox_user, verified)
+		if generation != _generation:
+			return
 		if _apply(pending):
 			changed = true
 
@@ -113,6 +119,9 @@ func resolve(pf_user: Variant, xbox_user: Variant, claims: Array[Dictionary]) ->
 ## Forgets everything. Called when the session ends or the account changes: verified
 ## names belong to the session they were proven in, and peer ids are reused.
 func clear_session() -> void:
+	_generation += 1
+	_running = false
+	_queued = false
 	_gamertag_by_peer.clear()
 
 
@@ -200,9 +209,12 @@ func _map_xuids_to_entities(pf_user: Variant, xuids: PackedStringArray) -> bool:
 	if accounts == null:
 		return false
 
+	var generation := _generation
 	var result: Variant = await accounts.get_title_players_from_xbox_live_ids_async(pf_user, {
 		"xbox_live_ids": xuids,
 	})
+	if generation != _generation:
+		return false
 	if result == null or not result.ok:
 		push_warning("[Profile] Resolving title players from XUIDs failed: %s" % _reason(result))
 		return false
@@ -222,7 +234,10 @@ func _load_gamertags(xbox_user: Variant, xuids: PackedStringArray) -> void:
 	if profile == null:
 		return
 
+	var generation := _generation
 	var result: Variant = await profile.get_profiles_async(xbox_user, xuids)
+	if generation != _generation:
+		return
 	if result == null or not result.ok or result.data == null:
 		push_warning("[Profile] Xbox profile lookup failed: %s" % _reason(result))
 		return

@@ -372,10 +372,11 @@ func ensure_control(user: Variant, cfg: Variant, still_current: Callable = Calla
 			await _destroy_control_now()
 		return
 	if _chat_user != null:
-		# Retained from an earlier match. Reusing it is the point of keeping it: a chat
-		# control is per-user, this title has exactly one user for its whole lifetime,
-		# and nothing about the control changed when the previous session ended.
-		return
+		if _chat_user == user:
+			return
+		await _destroy_control_now()
+		if generation != _control_generation or not _still_current(still_current):
+			return
 	_control_operation_pending = true
 	var result: Variant = await chat.create_local_chat_control_async(user, cfg)
 	if generation != _control_generation or not _still_current(still_current):
@@ -426,6 +427,8 @@ func _destroy_control_now() -> void:
 	var user: Variant = _chat_user
 	_chat_user = null
 	_muted_ids.clear()
+	_self_muted = true
+	last_text_error = ""
 	if chat == null:
 		chat_changed.emit()
 		return

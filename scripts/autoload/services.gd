@@ -6,42 +6,20 @@ extends Node
 ## networking. The implementation is split across scripts/services/*; this file stays
 ## a thin, well-documented facade that the UI and gameplay code call.
 ##
-## Two tiers, deliberately different. Multiplayer is NOT optional-online: PlayFab Party
-## is the transport and PlayFab Lobby is the matchmaking, both of which need a signed-in
-## PlayFabUser, so hosting and joining are gated on sign_in() succeeding (see
-## PartyService and NetManager). Everything else here — achievements,
-## cloud saves, presence, leaderboards — is best-effort and degrades to a working no-op / empty result
-## when an extension is missing or a call fails, so the single-player practice match and
-## the whole front end still run on an unconfigured dev machine. Those failures are
-## logged with push_warning (never push_error) to keep the console readable.
+## Authentication and all three Game Saves loads form one readiness transaction.
+## No gameplay or account persistence is permitted before that transaction succeeds.
 
 signal sign_in_completed(success: bool)
 signal account_state_changed()
+signal account_lost()
+signal save_failed(reason: String)
 signal leaderboard_submission_changed()
 ## The step sign-in is currently on, in words fit to show the player. Forwarded from
 ## IdentityService and extended with the steps this facade owns, so the acquire-user
 ## screen can name the call it is waiting on.
 signal sign_in_stage_changed(stage: String)
 
-## Match history, newest first. Held in memory as the working copy and persisted to the
-## PlayFab Game Save synced folder (`history.json`), which is the record: it follows the
-## account across devices and is the only per-user protected store the console has.
-##
-## On desktop, where there is no synced folder, it is cached at MATCH_HISTORY_PATH so the
-## Match History screen still works between runs. That file carried an owner XUID to keep
-## one console user from reading another's rows; both the stamp and the console-side file
-## are gone, because on console nothing is written outside the Game Save folder now and
-## there is nothing left to scope. See `IdentityService.has_protected_storage()`.
-const MATCH_HISTORY_PATH := "user://match_history.json"
 const MATCH_HISTORY_LIMIT := 50
-## Desktop cache of the lifetime achievement counters, the counterpart of
-## MATCH_HISTORY_PATH and namespaced the same way. On console nothing is written here;
-## the Game Save folder is the only copy.
-const ACHIEVEMENT_STATS_PATH := "user://achievement_stats.json"
-## Wrapper key used by files written before the store moved. Read, never written: the
-## desktop cache is a bare JSON array now, and this only keeps an existing dev file from
-## reading as empty.
-const HISTORY_ENTRIES_KEY := "entries"
 
 ## Resolves the GDK singleton the same way the services below do, so the privilege
 ## cache can be invalidated from XboxUsers.user_changed.
@@ -68,10 +46,11 @@ var _profiles: ProfileService = null
 var _devices: DeviceService = null
 var _connectivity: ConnectivityService = null
 
-## The working copy of the match history, newest first. Loaded from the Game Save folder
-## at sign-in (or the desktop cache at boot) and written back on every append, so the
-## suspend and user-removed paths can persist it synchronously without a file read.
+## The current account's working copy, newest first.
 var _history: Array[Dictionary] = []
+var _account_generation := 0
+var _ready_owner: Variant = null
+var _save_error := ""
 
 var _signing_in: bool = false
 ## The step sign-in is on, in words fit to show the player. Kept as state as well as a
@@ -91,6 +70,7 @@ var _shutting_down := false
 func _ready() -> void:
 	_identity = IdentityService.new()
 	_identity.stage_changed.connect(_set_sign_in_stage)
+	_identity.platform_ready.connect(_connect_user_changed)
 	_achievements = AchievementService.new()
 	_leaderboards = LeaderboardService.new()
 	_achievement_tracker = AchievementTracker.new()
@@ -107,19 +87,13 @@ func _ready() -> void:
 	_social = SocialService.new()
 	_profiles = ProfileService.new()
 	_devices = DeviceService.new()
-	# Started before sign-in, and with no user, so that a player who chose "Continue
-	# Offline" is covered too: their pad dying mid-practice is the same problem. The
-	# account-scoped restart happens in _warm_account_state() once there is a user.
 	_devices.start(null)
 	# Not account-scoped: connectivity is a property of the console, so this is started
 	# once here and never restarted for a user. It reads the platform's hint, so it costs
 	# nothing on a machine that cannot answer and stays optimistic there.
 	_connectivity = ConnectivityService.new()
 	_connectivity.start()
-	# Desktop only: on console this returns nothing and the history arrives from the Game
-	# Save folder once sign-in resolves.
-	_history = _load_local_history()
-	_achievement_tracker.apply_dict(_load_local_stats())
+	_connect_user_changed()
 	# NetManager is autoloaded *after* this one, so it does not exist yet. Deferring puts
 	# the subscription at the end of the frame, by which point every autoload is up.
 	_connect_match_signals.call_deferred()
@@ -213,14 +187,15 @@ func social_available() -> bool:
 ## activities need XUIDs to ask about — so they are joined here rather than in the UI.
 func joinable_friends() -> Array[Dictionary]:
 	var joinable: Array[Dictionary] = []
-	if _social == null or _activity == null:
+	if not is_account_ready() or _social == null or _activity == null:
 		return joinable
+	var generation := _account_generation
 	var user: Variant = xbox_user()
 	if user == null:
 		return joinable
 
 	var friends: Array[Dictionary] = await _social.friends(user)
-	if friends.is_empty():
+	if not is_current_account(generation) or friends.is_empty():
 		return joinable
 
 	var xuids := PackedStringArray()
@@ -228,6 +203,8 @@ func joinable_friends() -> Array[Dictionary]:
 		xuids.append(String(friend.get("xuid", "")))
 
 	var activities: Dictionary = await _activity.joinable_activities(user, xuids)
+	if not is_current_account(generation):
+		return []
 	for friend in friends:
 		var friend_activity: Dictionary = activities.get(String(friend.get("xuid", "")), {})
 		if friend_activity.is_empty():
@@ -242,9 +219,11 @@ func joinable_friends() -> Array[Dictionary]:
 ## this to turn a platform activation — which names the host, not the session — into
 ## something joinable.
 func connection_string_for_xuid(xuid: String) -> String:
-	if _activity == null:
+	if not is_account_ready() or _activity == null:
 		return ""
-	return await _activity.connection_string_for_xuid(xbox_user(), xuid)
+	var generation := _account_generation
+	var connection: String = await _activity.connection_string_for_xuid(xbox_user(), xuid)
+	return connection if is_current_account(generation) else ""
 
 
 ## Verifies one player-authored string before it is published. Returns a
@@ -297,9 +276,14 @@ func can_communicate() -> Dictionary:
 ## fundamental problem: an account without the multiplayer privilege still cannot fix
 ## anything until the console is back on a network.
 func resolve_multiplayer_denial_reason() -> String:
+	if not is_account_ready():
+		return "Sign in and load your saved data before starting a match."
+	var generation := _account_generation
 	if _connectivity != null and not _connectivity.is_online():
 		return _connectivity.offline_reason()
 	var verdict: Dictionary = await can_play_multiplayer()
+	if not is_current_account(generation):
+		return "The signed-in account changed. Please try again."
 	if bool(verdict.get("granted", true)):
 		return ""
 	return String(verdict.get("message", ""))
@@ -336,6 +320,8 @@ func playfab_user() -> Variant:
 
 ## Player-facing reason the last sign-in attempt failed. Empty when it succeeded.
 func sign_in_error() -> String:
+	if not _save_error.is_empty():
+		return _save_error
 	return _identity.last_error if _identity != null else "Services are unavailable."
 
 
@@ -361,87 +347,150 @@ func title_identifiers() -> Dictionary:
 	return _identity.get_title_identifiers()
 
 
-## The raw --pf-user / PF_CUSTOM_ID token, or empty. Safe to call before _ready().
-func custom_id_token() -> String:
-	return IdentityService.resolve_custom_id_token()
-
-
 ## GDK (check -> silent -> UI) then PlayFab sign-in. Idempotent and safe to await from
 ## several callers at once. Returns false — without erroring — when it cannot complete;
 ## read sign_in_error() for the reason.
 func sign_in() -> bool:
-	if _identity.is_signed_in():
+	if _shutting_down:
+		return false
+	if is_account_ready():
 		return true
-
+	var generation := _account_generation
 	if _signing_in:
 		while _signing_in:
 			await get_tree().process_frame
-		return _identity.is_signed_in()
-
+		return is_current_account(generation)
+	if _ready_owner != null:
+		cancel_sign_in()
+		generation = _account_generation
 	_signing_in = true
+	_save_error = ""
 	_set_sign_in_stage("Starting")
-	var success: bool = await _identity.sign_in()
+	var success := await _prepare_account(generation)
 	_signing_in = false
-
-	# The title started closing while that was in flight. It has landed, which is all the
-	# shutdown path was waiting for, so stop here rather than running the rest of the
-	# chain into a runtime that is on its way out.
-	if _shutting_down:
-		_set_sign_in_stage("")
-		sign_in_completed.emit(false)
-		return false
-
-	# IdentityService loads the GDK extension and initializes the runtime on its way
-	# through, so this is the first moment a singleton that was absent at boot is
-	# guaranteed to have had its chance. That absence is ActivityService's one
-	# unrecoverable subscription failure — it has no signal to wait on — so the retry
-	# has to be driven from outside. Runs on failure too: sign-in can fail at the
-	# PlayFab half long after the GDK came up.
-	if _activity != null:
-		_activity.ensure_activation_subscribed()
-
-	if success:
-		PlayerProfile.set_identity(_identity.display_name, _identity.entity_id, _identity.xbox_user_id)
-		# Clear whatever the previous session left in memory before the cloud payload
-		# lands over the top; on desktop this also re-reads the settings file.
-		PlayerProfile.adopt_local_cache()
-		# Pull the cloud profile so settings follow the player across devices. Best-effort:
-		# stays empty when Game Saves is unavailable, leaving local settings untouched.
-		_set_sign_in_stage("Syncing your saved profile")
-		var cloud: Dictionary = await _game_saves.load(_identity.playfab_user)
-		if not cloud.is_empty():
-			PlayerProfile.apply_dict(cloud)
-		# History comes from the same folder, and on console that folder is the only place
-		# it was ever written. Kept behind an is_empty() guard so a desktop session where
-		# Game Saves is unavailable keeps the cache it loaded at boot rather than being
-		# emptied by a read that never reached a folder.
-		var cloud_history: Array = await _game_saves.load_history(_identity.playfab_user)
-		if not cloud_history.is_empty():
-			_history = _rows_to_history(cloud_history)
-			_save_local_history()
-		# Achievement counters come from that folder too, but are merged rather than
-		# replaced: the local copy may be ahead after a session played offline, the cloud
-		# copy may be ahead after a session played on another console, and per counter the
-		# higher of the two is the one that was actually earned.
-		var cloud_stats: Dictionary = await _game_saves.load_stats(_identity.playfab_user)
-		if not cloud_stats.is_empty():
-			_achievement_tracker.merge_dict(cloud_stats)
-		# Nothing earned before this point reached the service -- there was no identity to
-		# award it to -- so the whole set is re-reported now that there is one.
-		_achievement_tracker.resync()
-		_save_achievement_stats()
-		# Privileges and the privacy lists belong to the account that just signed in, so
-		# anything cached for a previous one is dropped and the new answers are warmed.
-		# Host/join and the chat config re-check at the point of use; this only makes
-		# that check instant. It runs *after* the sign-in chain rather than alongside it:
-		# Game Saves' add-user performs the initial cloud sync behind system UI, and
-		# platform calls left in flight across it are one way to stall that sync.
-		_warm_account_state()
-
 	_set_sign_in_stage("")
-	print("[Services] Sign-in: finished (success=%s)." % success)
+	success = success and is_current_account(generation)
 	sign_in_completed.emit(success)
 	return success
+
+
+func _prepare_account(generation: int) -> bool:
+	if not await _wait_for_session_teardown(generation):
+		return false
+	if not _identity.is_signed_in():
+		var authenticated: bool = await _identity.sign_in()
+		if not _attempt_current(generation) or not authenticated:
+			return false
+	if not _attempt_current(generation):
+		return false
+	_connect_user_changed()
+	if _activity != null:
+		_activity.ensure_activation_subscribed()
+	var user: Variant = xbox_user()
+	if user == null or not user.signed_in or playfab_user() == null:
+		_save_error = "Game Saves requires a signed-in Xbox account. Custom-ID authentication cannot start gameplay."
+		return false
+	_set_sign_in_stage("Syncing your saved data")
+	var prepared := await _game_saves.prepare(user, generation)
+	if not await _wait_for_session_teardown(generation):
+		return false
+	if not _attempt_current(generation) or user != xbox_user() or not user.signed_in:
+		return false
+	if prepared.status != GameSaveService.Status.OK:
+		_save_error = String(prepared.reason)
+		return false
+	var staged: Dictionary = {}
+	for file_name: String in [GameSaveService.SAVE_FILE_NAME, GameSaveService.HISTORY_FILE_NAME, GameSaveService.STATS_FILE_NAME]:
+		var read_started := Time.get_ticks_msec()
+		print("[SaveLoad] reading %s" % file_name)
+		var loaded := _game_saves.read(user, generation, file_name)
+		print("[SaveLoad] read %s status=%s elapsed_ms=%d" % [file_name, GameSaveService.Status.keys()[loaded.status], Time.get_ticks_msec() - read_started])
+		if loaded.status not in [GameSaveService.Status.OK, GameSaveService.Status.MISSING]:
+			_save_error = String(loaded.reason)
+			return false
+		staged[file_name] = loaded.data
+	if not _attempt_current(generation) or user != xbox_user() or not user.signed_in:
+		return false
+	# Nothing may observe a ready account until every payload has passed validation.
+	_clear_player_state()
+	_history = _rows_to_history(staged[GameSaveService.HISTORY_FILE_NAME])
+	_achievement_tracker.apply_dict(staged[GameSaveService.STATS_FILE_NAME])
+	PlayerProfile.apply_dict(staged[GameSaveService.SAVE_FILE_NAME])
+	PlayerProfile.apply_display_settings()
+	PlayerProfile.set_identity(_identity.display_name, _identity.entity_id, _identity.xbox_user_id)
+	if not _attempt_current(generation) or user != xbox_user() or not user.signed_in:
+		return false
+	_ready_owner = user
+	print("[SaveLoad] account ready; resyncing achievement reports")
+	_achievement_tracker.resync()
+	print("[SaveLoad] warming account services")
+	_warm_account_state()
+	print("[SaveLoad] account preparation completed")
+	return is_current_account(generation)
+
+
+func _wait_for_session_teardown(generation: int) -> bool:
+	if NetManager.is_account_teardown_pending():
+		_set_sign_in_stage("Finishing the previous session")
+	while NetManager.is_account_teardown_pending():
+		if not _attempt_current(generation):
+			return false
+		await get_tree().process_frame
+	return _attempt_current(generation)
+
+
+func _attempt_current(generation: int) -> bool:
+	return generation == _account_generation and not _shutting_down
+
+
+func account_generation() -> int:
+	return _account_generation
+
+
+func is_account_ready() -> bool:
+	return not _shutting_down and _ready_owner != null and _identity != null and _ready_owner == xbox_user() \
+		and playfab_user() != null \
+		and xbox_user() != null and xbox_user().signed_in \
+		and _game_saves.is_bound(_ready_owner, _account_generation)
+
+
+func is_current_account(generation: int) -> bool:
+	return _attempt_current(generation) and is_account_ready()
+
+
+## XGameSaveFiles releases its provider on suspend; resume must resolve and load again.
+func invalidate_saves_for_resume() -> void:
+	_account_generation += 1
+	_ready_owner = null
+	_game_saves.reset()
+	_clear_leaderboard_submission()
+	account_state_changed.emit()
+
+
+func _clear_player_state() -> void:
+	_clear_leaderboard_submission()
+	_history.clear()
+	_achievement_tracker.clear()
+	PlayerProfile.reset_to_defaults()
+	PlayerProfile.set_identity("", "", "")
+
+
+func cancel_sign_in() -> void:
+	_account_generation += 1
+	_ready_owner = null
+	_save_error = ""
+	_game_saves.reset()
+	_identity.sign_out()
+	_clear_player_state()
+	_reset_account_state(false)
+	if _chat != null:
+		_chat.invalidate_session()
+		_chat.set_chat_allowed(false)
+		_chat.clear_chat_restrictions()
+	if _devices != null:
+		_devices.clear()
+	account_state_changed.emit()
+	account_lost.emit()
 
 
 ## Warms the privilege cache and the privacy lists for the signed-in account, and
@@ -454,6 +503,9 @@ func sign_in() -> bool:
 ## overlapping, and keeping one platform call in flight at a time keeps it clear of
 ## whatever the player is actually doing.
 func _warm_account_state() -> void:
+	if not is_account_ready() or _shutting_down:
+		return
+	var generation := _account_generation
 	_reset_account_state()
 	var user: Variant = xbox_user()
 	if user == null:
@@ -463,14 +515,15 @@ func _warm_account_state() -> void:
 	# associations per user, and until this point the Godot joypad list was standing in.
 	_devices.start(user)
 	await _privileges.check(user, PrivilegeService.MULTIPLAYER)
+	if not is_current_account(generation):
+		return
 	await _privileges.check(user, PrivilegeService.COMMUNICATIONS)
+	if not is_current_account(generation):
+		return
 	await _privacy.refresh_lists(user)
 
 
-## Sign-in is the one chain that cannot be stepped through on a desktop machine — the
-## GDK, PlayFab and Game Saves halves only do anything on a console with a real identity
-## — so it says what it is doing. The acquire-user screen shows this under the spinner,
-## which turns a stalled platform call into a named one without a debugger attached.
+## The acquire-user screen names the platform call currently in progress.
 ## Empty means no step is in progress.
 func _set_sign_in_stage(stage: String) -> void:
 	sign_in_stage = stage
@@ -498,21 +551,22 @@ func _reset_account_state(notify: bool = true) -> void:
 func _connect_user_changed() -> void:
 	if _user_changed_connected:
 		return
-	var gdk: Variant = XboxBootstrap.find_singleton()
+	var gdk: Variant = _user_events_gdk()
 	if gdk == null or not gdk.is_initialized():
 		return
 	gdk.users.user_changed.connect(_on_user_changed)
 	_user_changed_connected = true
 
 
+func _user_events_gdk() -> Variant:
+	return XboxBootstrap.find_singleton()
+
+
 ## XboxUsers reports `privileges` when the account's privileges change and
 ## `signed_in_again` when it is re-authenticated; both invalidate everything cached
 ## about the account. Other change kinds (gamertag, gamer picture) do not.
 ##
-## `added` and `removed` are the XR-115 half. `removed` for the signed-in user is the last
-## moment this title is guaranteed to run: the platform terminates a title whose user has
-## signed out, so the handler commits state and does nothing else. There is deliberately no
-## navigation, no Party teardown and no sign-out deferral — see persist_user_state().
+## Removal invalidates synchronously; surviving processes defer teardown/navigation.
 func _on_user_changed(user: Variant, change_kind: String) -> void:
 	match change_kind:
 		"privileges", "signed_in_again":
@@ -525,7 +579,7 @@ func _on_user_changed(user: Variant, change_kind: String) -> void:
 				_warm_account_state()
 		"removed":
 			_reset_account_state(false)
-			if _is_signed_in_user(user):
+			if _is_signed_in_user(user) or _signing_in:
 				persist_user_state()
 
 
@@ -538,39 +592,14 @@ func _is_signed_in_user(user: Variant) -> bool:
 	return String(user.xuid) == _identity.xbox_user_id
 
 
-## Commits everything belonging to the signed-in user, synchronously.
-##
-## Called when the platform reports that user removed. Every write here is a plain file
-## write with no `await` anywhere in the path, because the process may be torn down as soon
-## as this returns and work queued behind an await is work that never runs. No sign-out
-## deferral is taken: a deferral exists to buy time for slow teardown, and two file writes
-## do not need any. Writing into the Game Save synced folder is the whole cloud story —
-## the platform flushes that folder after the title closes.
+## Invalidates the removed account without attempting another save or SDK operation.
 func persist_user_state() -> void:
-	_commit_durable_state()
-	_chat.invalidate_session()
-	_clear_leaderboard_submission()
-	# The identity is gone whether or not any frame renders after this, so nothing is left
-	# holding a departed user's gamertag, entity id or local user handle.
-	if _identity != null:
-		_identity.sign_out()
-	if _game_saves != null:
-		_game_saves.reset()
-	# The device associations were the departing account's.
-	if _devices != null:
-		_devices.clear()
-	# So was the history. It has just been committed to their Game Save folder above, and
-	# leaving it in memory would show it to whoever signs in next.
-	_history.clear()
-	# And so was the achievement progress, for the sharper reason: counters left in place
-	# would carry on accumulating under the next account and unlock against it.
-	_achievement_tracker.clear()
-	PlayerProfile.set_identity("", "", "")
-	print("[Services] Signed-in user was removed; state committed.")
+	# Removal is already too late to begin a write against that user's handle.
+	# Normal changes and suspend commit while the binding is still valid.
+	cancel_sign_in()
 
 
-## The suspend counterpart of persist_user_state (XR-001): the same durable writes, and
-## nothing else.
+## Commits current data while the account's folder is still usable (XR-001).
 ##
 ## Deliberately not persist_user_state(). A suspend does not remove the user — the account
 ## is still signed in and is the account the title resumes as — so signing out and dropping
@@ -580,8 +609,8 @@ func persist_user_state() -> void:
 ## Synchronous for the same reason the removed path is, only more sharply: the suspend
 ## handler runs inside the platform's suspend deadline and the process is frozen the moment
 ## it returns, so anything left behind an await or a deferred call may never run at all.
-func persist_for_suspend() -> void:
-	_commit_durable_state()
+func persist_for_suspend() -> bool:
+	return _commit_durable_state()
 
 
 ## Whether a sign-in is in flight, and therefore whether a platform call is outstanding
@@ -603,23 +632,40 @@ func is_shutting_down() -> bool:
 ## on its own -- taking it away mid-flight is the failure mode this exists to avoid.
 func begin_shutdown() -> void:
 	_shutting_down = true
-	if _leaderboards != null:
-		_leaderboards.invalidate_pending_submissions()
+	_clear_leaderboard_submission()
+	if _signing_in:
+		_account_generation += 1
+		_game_saves.reset()
 	if _identity != null:
 		_identity.begin_shutdown()
 
 
-## The durable writes shared by the user-removed and suspend paths. No await anywhere:
-## PlayerProfile.save_settings writes a ConfigFile on desktop and only marks itself clean
-## on console, and write_now() writes JSON into the already-resolved synced folder — which
-## on console is the only place either of them is written.
-func _commit_durable_state() -> void:
-	PlayerProfile.save_settings(false)
-	if _game_saves != null and _game_saves.has_folder():
-		_game_saves.write_now(GameSaveService.SAVE_FILE_NAME, PlayerProfile.to_dict())
-		_game_saves.write_now(GameSaveService.HISTORY_FILE_NAME, _history)
-		_game_saves.write_now(GameSaveService.STATS_FILE_NAME, _achievement_tracker.to_dict())
-		_achievement_tracker.clear_dirty()
+## Attempt every payload independently; failed writes leave the working copy available for retry.
+func _commit_durable_state() -> bool:
+	var started_usec := Time.get_ticks_usec()
+	var ready := is_account_ready()
+	var bound := _game_saves != null and _game_saves.is_bound(_ready_owner, _account_generation)
+	print("[SaveCommit] entry ready=%s store_bound=%s" % [ready, bound])
+	var profile_ok := _commit_payload("profile", ready, PlayerProfile.save_settings)
+	var history_ok := _commit_payload("history", ready, _save_history)
+	var stats_ok := _commit_payload("stats", ready, _save_achievement_stats)
+	var saved := profile_ok and history_ok and stats_ok
+	var result := "success" if saved else "failed_writes"
+	if not ready:
+		result = "no_ready_account"
+	print("[SaveCommit] exit result=%s elapsed_ms=%.3f" % [
+		result, (Time.get_ticks_usec() - started_usec) / 1000.0])
+	return saved
+
+
+func _commit_payload(category: String, ready: bool, commit: Callable) -> bool:
+	if not ready:
+		print("[SaveCommit] payload=%s action=skipped reason=no_ready_account" % category)
+		return false
+	print("[SaveCommit] payload=%s action=attempt" % category)
+	var saved: bool = commit.call()
+	print("[SaveCommit] payload=%s result=%s" % [category, "success" if saved else "error"])
+	return saved
 
 
 func is_online() -> bool:
@@ -628,24 +674,31 @@ func is_online() -> bool:
 
 # --- Cloud profile ----------------------------------------------------------
 
-## PlayFab Game Save of the profile JSON. Fire-and-forget: returns immediately and never
-## blocks the caller (PlayerProfile.save_settings calls this after every local save).
-func save_profile_to_cloud(data: Dictionary) -> void:
-	if not is_online():
-		return
-	_game_saves.save(_identity.playfab_user, data)
+func save_profile(data: Dictionary) -> bool:
+	return _write_save(GameSaveService.SAVE_FILE_NAME, data)
 
 
-func load_profile_from_cloud() -> Dictionary:
-	if not is_online():
-		return {}
-	return await _game_saves.load(_identity.playfab_user)
+func _write_save(file_name: String, data: Variant) -> bool:
+	var reason := "Sign in and load your saved data before saving."
+	if is_account_ready():
+		var written := _game_saves.write_now(_ready_owner, _account_generation, file_name, data)
+		if written.status == GameSaveService.Status.OK:
+			return true
+		reason = String(written.reason)
+	push_warning("[Services] %s" % reason)
+	save_failed.emit(reason)
+	return false
 
 
 # --- Match result -----------------------------------------------------------
 
-## Records the match locally; an online match also reports its local player's final score.
-func report_match_result(payload: Dictionary) -> void:
+## Records a finished match for the ready account, including identified Practice.
+func report_match_result(payload: Dictionary) -> bool:
+	if not is_account_ready() or _shutting_down:
+		push_warning("[Services] Match result rejected: the account is not ready.")
+		return false
+	var generation := _account_generation
+	var online_match := not NetManager.is_offline()
 	_append_match_history(payload)
 	# Runs on every peer -- the host records its own result here and each client records
 	# theirs on the same path -- which is exactly the property the achievement counters
@@ -655,18 +708,22 @@ func report_match_result(payload: Dictionary) -> void:
 		int(payload.get("placement", 0)),
 		int(payload.get("player_count", 0)),
 		int(payload.get("human_count", 0)))
-	_save_achievement_stats()
+	var history_ok := _save_history()
+	var stats_ok := _save_achievement_stats()
 	# Practice stays local even when signed in. Queuing/uploading must not hold the
 	# results flow, so this standalone coroutine call deliberately ignores its result.
-	if is_online() and not NetManager.is_offline():
+	if is_current_account(generation) and online_match:
 		@warning_ignore("return_value_discarded", "missing_await")
 		submit_leaderboard_score(int(payload["score"]))
+	return history_ok and stats_ok
 
 
 ## The working copy, newest first. Already in memory — loaded from the Game Save folder at
 ## sign-in — so the Match History screen needs no read here.
 func get_match_history() -> Array[Dictionary]:
-	return _history
+	if not is_account_ready():
+		return []
+	return _history.duplicate(true)
 
 
 # --- Leaderboards -----------------------------------------------------------
@@ -674,17 +731,21 @@ func get_match_history() -> Array[Dictionary]:
 ## The live top ten, with status kept separate from an empty board. No cached history
 ## is substituted when PlayFab cannot answer.
 func get_leaderboard() -> Dictionary:
+	if not is_account_ready():
+		return LeaderboardService.failure(
+			"The account is not ready.", "Sign in and load your saved data to view leaderboards.")
 	if _leaderboards == null:
 		return LeaderboardService.failure(
 			"Leaderboard service is unavailable.", "Leaderboards are unavailable right now.")
 	var user: Variant = playfab_user()
+	var generation := _account_generation
 	if user != null and _connectivity != null and not _connectivity.is_online():
 		return LeaderboardService.failure(
 			_connectivity.offline_reason(), "Connect to the internet to view leaderboards.")
 
 	var result: Dictionary = await _leaderboards.get_top_entries(user)
 	# Sign-out during the query would otherwise show another account's board.
-	if user != playfab_user():
+	if not is_current_account(generation) or user != playfab_user():
 		return LeaderboardService.failure(
 			"The PlayFab session changed during the query.", "Sign-in changed - reopen leaderboards.")
 	return result
@@ -693,7 +754,10 @@ func get_leaderboard() -> Dictionary:
 ## Gameplay starts this without awaiting; a caller investigating the result can await
 ## its own outcome without consulting mutable last-error state.
 func submit_leaderboard_score(score: int) -> Dictionary:
+	if not is_account_ready():
+		return LeaderboardService.score_failure("Sign in and load your saved data before submitting a score.")
 	var user: Variant = playfab_user()
+	var generation := _account_generation
 	_leaderboard_submission_serial += 1
 	var serial := _leaderboard_submission_serial
 	_leaderboard_submission_user = user
@@ -706,8 +770,8 @@ func submit_leaderboard_score(score: int) -> Dictionary:
 	}
 	leaderboard_submission_changed.emit()
 
-	var result: Dictionary = await _submit_leaderboard_score(user, score)
-	if user != playfab_user():
+	var result: Dictionary = await _submit_leaderboard_score(user, generation, score)
+	if not is_current_account(generation) or user != playfab_user():
 		return LeaderboardService.score_failure("Sign-in changed during leaderboard submission.")
 	if serial == _leaderboard_submission_serial:
 		_leaderboard_submission = result
@@ -715,21 +779,23 @@ func submit_leaderboard_score(score: int) -> Dictionary:
 	return result
 
 
-func _submit_leaderboard_score(user: Variant, score: int) -> Dictionary:
+func _submit_leaderboard_score(user: Variant, generation: int, score: int) -> Dictionary:
 	if _leaderboards == null:
 		return LeaderboardService.score_failure("Leaderboard service is unavailable.")
 	if user == null:
 		return LeaderboardService.score_failure("Sign in to submit a score.")
-	if user != playfab_user() or _shutting_down:
-		return LeaderboardService.score_failure("The session is closing; no new submission was started.")
+	if not is_current_account(generation) or user != playfab_user():
+		return LeaderboardService.score_failure("The account is no longer ready; no new submission was started.")
 	if _connectivity != null and not _connectivity.is_online():
 		return LeaderboardService.score_failure(_connectivity.offline_reason())
-	return await _leaderboards.submit_score(user, score)
+	var account_current := func() -> bool:
+		return is_current_account(generation) and user == playfab_user()
+	return await _leaderboards.submit_score(user, score, account_current)
 
 
 ## An accepted update, skipped update and observed readback are different outcomes.
 func get_leaderboard_submission() -> Dictionary:
-	if _leaderboard_submission_user != playfab_user():
+	if not is_account_ready() or _leaderboard_submission_user != playfab_user():
 		return {}
 	return _leaderboard_submission.duplicate()
 
@@ -749,20 +815,18 @@ func _clear_leaderboard_submission() -> void:
 ## through this; nothing else may write to it, and nothing outside this file talks to the
 ## GDK about achievements.
 func achievement_tracker() -> AchievementTracker:
-	return _achievement_tracker
+	return _achievement_tracker if is_account_ready() and not _shutting_down else null
 
 
 func unlock_achievement(achievement_id: String) -> void:
-	if not is_online():
+	if not is_account_ready() or _shutting_down:
 		return
 	_achievements.unlock(_identity.gdk_user, achievement_id)
 
 
-## The tracker announces a percentage; this is the only thing that turns one into a
-## platform call. Progress earned while signed out is kept locally and delivered by the
-## resync at sign-in, so dropping it here costs nothing.
+## Only progress owned by the ready account may reach the achievement service.
 func _on_achievement_progress(achievement_id: String, percent: int) -> void:
-	if not is_online():
+	if not is_account_ready() or _shutting_down:
 		return
 	_achievements.update_progress(_identity.gdk_user, achievement_id, percent)
 
@@ -786,6 +850,8 @@ func _connect_match_signals() -> void:
 ## a kill. Deaths cost a point instead, but only when nobody else caused them, so they are
 ## counted from the local ship's destruction rather than from here.
 func _on_score_updated_for_achievements(payload: Dictionary) -> void:
+	if not is_account_ready() or _shutting_down:
+		return
 	if int(payload.get("delta", 0)) <= 0:
 		return
 	if int(payload.get("peer_id", 0)) != NetManager.local_peer_id():
@@ -794,6 +860,8 @@ func _on_score_updated_for_achievements(payload: Dictionary) -> void:
 
 
 func _on_match_state_for_achievements(state: NRTypes.MatchState) -> void:
+	if not is_account_ready() or _shutting_down:
+		return
 	if NRTypes.has_match_state(state, NRTypes.MatchState.RUNNING):
 		_achievement_tracker.begin_match()
 
@@ -801,21 +869,12 @@ func _on_match_state_for_achievements(state: NRTypes.MatchState) -> void:
 # --- Presence ---------------------------------------------------------------
 
 func update_presence(status: String) -> void:
-	if not is_online():
+	if not is_account_ready():
 		return
 	_activity.set_presence(_identity.gdk_user, status)
 
 
-# --- Match history store ----------------------------------------------------
-#
-# `_history` is the working copy. The PlayFab Game Save synced folder is the record: it
-# follows the account across devices, the platform scopes it to one user and protects it
-# at rest, and on console it is the only place the history is written.
-#
-# Desktop has no synced folder, so it keeps a plaintext cache at MATCH_HISTORY_PATH,
-# namespaced per --pf-user token exactly like the settings file so two local instances do
-# not overwrite each other. That is the development configuration and holds no console
-# account's data.
+# --- Account-owned history and counters --------------------------------------
 
 func _append_match_history(payload: Dictionary) -> void:
 	_history.push_front({
@@ -827,52 +886,12 @@ func _append_match_history(payload: Dictionary) -> void:
 	})
 	if _history.size() > MATCH_HISTORY_LIMIT:
 		_history.resize(MATCH_HISTORY_LIMIT)
-	_save_local_history()
-	if is_online():
-		_game_saves.save_history(_identity.playfab_user, _history)
 
 
-## Path of the desktop cache, namespaced per --pf-user token. Mirrors
-## PlayerProfile._resolve_settings_path(): without this every local test instance shares
-## one history file and each match overwrites the others'.
-func _local_history_path() -> String:
-	var token := IdentityService.resolve_custom_id_token()
-	if token.is_empty():
-		return MATCH_HISTORY_PATH
-	return "user://match_history_%s.json" % token.validate_filename()
-
-
-func _load_local_history() -> Array[Dictionary]:
-	var entries: Array[Dictionary] = []
-	if IdentityService.has_protected_storage():
-		return entries
-	var path := _local_history_path()
-	if not FileAccess.file_exists(path):
-		return entries
-	var file := FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return entries
-	var text := file.get_as_text()
-	file.close()
-
-	var parsed: Variant = JSON.parse_string(text)
-	# Bare array is what this writes; the wrapper is what older dev files carry.
-	if typeof(parsed) == TYPE_ARRAY:
-		return _rows_to_history(parsed)
-	if typeof(parsed) == TYPE_DICTIONARY:
-		var stored: Variant = (parsed as Dictionary).get(HISTORY_ENTRIES_KEY, [])
-		if typeof(stored) == TYPE_ARRAY:
-			return _rows_to_history(stored)
-	return entries
-
-
-## Shapes raw parsed rows — from the desktop cache or the Game Save folder — into the
-## dictionaries the Match History screen expects, dropping anything malformed.
+## Rows have already passed current-schema validation.
 func _rows_to_history(rows: Array) -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
 	for item in rows:
-		if typeof(item) != TYPE_DICTIONARY:
-			continue
 		var row: Dictionary = item
 		entries.append({
 			"date": String(row.get("date", "")),
@@ -881,73 +900,14 @@ func _rows_to_history(rows: Array) -> Array[Dictionary]:
 			"placement": int(row.get("placement", 0)),
 			"player_count": int(row.get("player_count", 0)),
 		})
+		if entries.size() == MATCH_HISTORY_LIMIT:
+			break
 	return entries
 
 
-func _save_local_history() -> void:
-	if IdentityService.has_protected_storage():
-		return
-	var path := _local_history_path()
-	var file := FileAccess.open(path, FileAccess.WRITE)
-	if file == null:
-		push_warning("[Services] Could not write match history at %s" % path)
-		return
-	file.store_string(JSON.stringify(_history, "\t"))
-	file.close()
+func _save_history() -> bool:
+	return _write_save(GameSaveService.HISTORY_FILE_NAME, _history)
 
 
-# --- Achievement stats store ------------------------------------------------
-#
-# Same two-tier arrangement as the match history, and for the same reasons: the Game Save
-# synced folder is the record on console, and desktop keeps a per-token plaintext cache so
-# progress survives a restart on a development machine.
-#
-# Written at the end of a match rather than on every counter change. A busy match moves
-# the asteroid counter dozens of times a minute and none of those moments is worth a file
-# write; the ones that must not be lost -- suspend and user-removed -- are covered by
-# _commit_durable_state(), which writes synchronously whatever the match was doing.
-
-func _save_achievement_stats() -> void:
-	if not _achievement_tracker.is_dirty():
-		return
-	_achievement_tracker.clear_dirty()
-	_save_local_stats()
-	if is_online():
-		_game_saves.save_stats(_identity.playfab_user, _achievement_tracker.to_dict())
-
-
-## Path of the desktop cache, namespaced per --pf-user token like the history and the
-## settings file, so two local instances do not accumulate into each other.
-func _local_stats_path() -> String:
-	var token := IdentityService.resolve_custom_id_token()
-	if token.is_empty():
-		return ACHIEVEMENT_STATS_PATH
-	return "user://achievement_stats_%s.json" % token.validate_filename()
-
-
-func _load_local_stats() -> Dictionary:
-	if IdentityService.has_protected_storage():
-		return {}
-	var path := _local_stats_path()
-	if not FileAccess.file_exists(path):
-		return {}
-	var file := FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return {}
-	var text := file.get_as_text()
-	file.close()
-
-	var parsed: Variant = JSON.parse_string(text)
-	return parsed if typeof(parsed) == TYPE_DICTIONARY else {}
-
-
-func _save_local_stats() -> void:
-	if IdentityService.has_protected_storage():
-		return
-	var path := _local_stats_path()
-	var file := FileAccess.open(path, FileAccess.WRITE)
-	if file == null:
-		push_warning("[Services] Could not write achievement stats at %s" % path)
-		return
-	file.store_string(JSON.stringify(_achievement_tracker.to_dict(), "\t"))
-	file.close()
+func _save_achievement_stats() -> bool:
+	return _write_save(GameSaveService.STATS_FILE_NAME, _achievement_tracker.to_dict())

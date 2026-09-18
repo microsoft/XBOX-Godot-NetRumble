@@ -100,7 +100,7 @@ static func failure(reason: String, message: String = "Failed to load leaderboar
 
 ## A known lower/equal score needs no round trip. Every candidate that could raise the
 ## known best reads the server first; a failed read must not become permission to overwrite.
-func submit_score(user: Variant, score: int) -> Dictionary:
+func submit_score(user: Variant, score: int, account_current: Callable = Callable()) -> Dictionary:
 	var generation := _submission_generation
 	var entity_id := _entity_id(user)
 	if entity_id.is_empty():
@@ -108,7 +108,7 @@ func submit_score(user: Variant, score: int) -> Dictionary:
 
 	while _writes_in_flight.has(entity_id) and generation == _submission_generation:
 		await _score_write_finished
-	if generation != _submission_generation:
+	if generation != _submission_generation or (account_current.is_valid() and not account_current.call()):
 		return score_failure("The session ended while the score was queued; UpdateLeaderboardEntries was not called.")
 	if _best_scores.has(entity_id) and score <= int(_best_scores[entity_id]):
 		return _skip_score(score, int(_best_scores[entity_id]))
@@ -124,7 +124,8 @@ func submit_score(user: Variant, score: int) -> Dictionary:
 	# old best, then race their writes despite each having passed its own comparison.
 	_writes_in_flight[entity_id] = true
 	var published: Dictionary = await _read_published_best(user, entity_id, pf)
-	if generation != _submission_generation or not pf.is_initialized() \
+	if generation != _submission_generation or (account_current.is_valid() and not account_current.call()) \
+			or not pf.is_initialized() \
 			or String(pf.get_title_id()).strip_edges().to_upper() != title_id.to_upper():
 		return _finish_submission(entity_id,
 			score_failure("The session or title changed while checking the published best; no update was started."))

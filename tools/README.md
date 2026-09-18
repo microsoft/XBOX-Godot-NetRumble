@@ -59,10 +59,17 @@ not a registered package, so there is no package identity. Sign-in, achievements
 multiplayer invites and protocol activation all need one. That
 means exporting, even for a quick desktop test.
 
-For offline/editor exploration, run `godot.exe --path .` after addon setup and choose
-Continue Offline. Debug custom-ID multiplayer is a separate path requiring a **development
-PlayFab title** that permits account creation; it bypasses XBOX checks and does not test Game Save.
-See [two-instance setup](../docs/multiplayer.md#testing-two-players-on-one-pc).
+For editor/front-end inspection, run `godot.exe --path .` after addon setup. All gameplay,
+including Practice, requires an identified account and ready Game Saves; failures offer
+Retry/Back, not unsaved play. Debug custom-ID authentication diagnostics require a separate
+development PlayFab title, but without a signed-in XboxUser cannot pass save readiness.
+Use registered devices/accounts for [multiplayer acceptance](../docs/multiplayer.md#testing-two-players-on-one-pc).
+
+PC and console use the same Xbox-owned `GDK.game_save.get_folder_async` folder through
+`GameSaveService` (`XGameSaveFiles`, using the Xbox services SCID).
+There are no desktop/token save caches or migration steps; do not import, move or delete old
+settings/history/stats files as part of deployment. A successful export/launch does not prove
+save isolation or roaming; follow the [account-save tests](../docs/manual-test-plan.md#account-owned-saves-pc-and-console).
 
 ---
 
@@ -84,6 +91,12 @@ did not.
 .\tools\deploy-pc.ps1 -SkipExport              # re-register the existing staging folder
 .\tools\deploy-pc.ps1 -Unregister              # remove the registration
 ```
+
+After changing scripts or diagnostics, omit `-SkipExport`: it reuses the old staged package.
+To re-export and register without launching, run
+`.\tools\deploy-pc.ps1 -Configuration release -GodotExe '<Godot_console.exe>'`.
+This still changes registration because the preset enables `dev/register_loose`; coordinate
+deployment before running it. Source/import/test success does not update a packaged build.
 
 Once registered the game is launchable from the Start menu and the XBOX app, or
 with `-Launch`, which resolves the registered package's AUMID and calls `wdapp launch`.

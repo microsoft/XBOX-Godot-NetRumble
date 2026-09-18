@@ -15,7 +15,9 @@ in the first score column. `additional_scores` defaults to empty, so exactly one
 column value is sent. The column name is not a request key or a separate API argument.
 
 `Services.report_match_result()` starts the operation without awaiting it. Practice
-remains local even when signed in, and existing history/achievement work is unchanged.
+retains its account-owned history and achievement counters but never submits GlobalScore.
+Existing history/achievement saves still report their actual write outcome independently
+of the asynchronous leaderboard result.
 The Leaderboards screen retains its top-ten read and shows a live, wrapped
 **Last score submission** notice. Refresh only reads the board.
 
@@ -79,9 +81,21 @@ existing one during a failed read. Gameplay still never awaits the service, fail
 only warn, and there is no automatic/durable retry queue. Future eligible submissions
 try the read again.
 
-User removal/shutdown invalidates a pending seed or queued call before it can start
-an update. An update already started settles normally. Known scores are not cleared
-as a side effect of canceling queued work.
+Account cancellation/removal, resume invalidation and shutdown clear the account-owned
+submission notice and invalidate a pending seed or queued call before it can start an
+update. An update already started settles normally. Known per-entity scores are not cleared
+as a side effect of canceling queued work; an accepted in-flight update still informs that
+entity's highest-score guard, but its stale completion cannot restore the notice.
+
+The facade and Leaderboards menu require the signed-in Xbox account and all three
+successful account-save loads, just like the rest of the title. No query or submission
+starts while loading, resuming or closing. Both query and submission capture the account
+generation and PlayFab user, and recheck after awaiting the service. Resume may reuse the
+same PlayFab user object; that does not authorize a result from the old generation.
+The submission service also rechecks the facade's captured readiness/owner guard after
+waiting for the per-entity gate or published-best read, before starting another SDK call.
+This closes the interval between a handle becoming signed out and its removal notification.
+Fresh synchronized account saves do not supply leaderboard entries or trigger uploads.
 
 **Limits:** the read and write are not an atomic server-side compare-and-set.
 Another device/writer can update between them; eventually consistent reads and

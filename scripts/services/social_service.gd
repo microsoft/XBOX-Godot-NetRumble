@@ -16,8 +16,7 @@ extends RefCounted
 ## activities are per-title, so a friend playing something else simply has none.
 ##
 ## Like the other platform services, everything here fails soft. Without the GDK
-## extension, without an initialized runtime or without an XboxUser — the state of every
-## desktop dev machine and every --pf-user test client — the friends list is empty
+## extension, without an initialized runtime or without an XboxUser, the friends list is empty
 ## rather than an error, and the UI says there is nobody to join rather than looking
 ## broken.
 ##
@@ -32,10 +31,13 @@ var _friends_group: Variant = null
 ## Guards the load, so two screens opening at once share one round trip instead of
 ## creating two groups for the same user.
 var _loading := false
+var _generation := 0
+var _owner: Variant = null
+signal _group_loaded()
 
 
-## Whether a real friends list can be produced on this machine. False on desktop, in a
-## build without the GDK and for a custom-id test client, where friends() is empty.
+## Whether a real friends list can be produced with this platform and user.
+## This does not replace the facade's account/save readiness checks.
 func is_available(user: Variant) -> bool:
 	return _social() != null and user != null
 
@@ -48,6 +50,8 @@ func friends(user: Variant) -> Array[Dictionary]:
 		return []
 
 	if not await _ensure_group(social, user):
+		return []
+	if user != _owner or _friends_group == null:
 		return []
 
 	var users: Variant = social.get_group_users(_friends_group)
@@ -76,31 +80,47 @@ func friends(user: Variant) -> Array[Dictionary]:
 	return result
 
 
-## Drops the tracked group. Called when the account changes: the graph belongs to the
-## user it was started for, and a group left behind would keep reporting their friends.
+## Drops the tracked group and releases this generation's waiters. An outstanding SDK
+## call still owns its eventual result, not a replacement account's load claim.
 func clear() -> void:
-	var social: Variant = _social()
-	if social != null and _friends_group != null:
-		social.destroy_social_group(_friends_group)
+	_generation += 1
+	_loading = false
+	_owner = null
+	var group: Variant = _friends_group
 	_friends_group = null
+	var social: Variant = _social()
+	if social != null and group != null:
+		social.destroy_social_group(group)
+	_group_loaded.emit()
 
 
 ## Loads the friends group once. get_friends_async both creates the group and waits for
 ## its initial data, which is the whole reason this is awaited rather than read
 ## directly.
 func _ensure_group(social: Variant, user: Variant) -> bool:
+	if _owner != null and _owner != user:
+		clear()
+	_owner = user
+	var generation := _generation
 	if _friends_group != null:
 		return true
 	if _loading:
-		return false
+		await _group_loaded
+		return generation == _generation and user == _owner and _friends_group != null
 	_loading = true
 	var result: Variant = await social.get_friends_async(user)
+	if generation != _generation or user != _owner:
+		if result != null and result.ok and result.data != null and result.data != _friends_group:
+			social.destroy_social_group(result.data)
+		return false
 	_loading = false
 	if result == null or not result.ok or result.data == null:
 		push_warning("[Social] Loading the friends list failed: %s" % _reason(result))
+		_group_loaded.emit()
 		return false
 	_friends_group = result.data
-	return true
+	_group_loaded.emit()
+	return generation == _generation and user == _owner and _friends_group == result.data
 
 
 func _social() -> Variant:

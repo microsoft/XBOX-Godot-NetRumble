@@ -64,11 +64,11 @@ var _state: State = State.WAITING_FOR_INPUT
 ## so a slow chain of steps is not mistaken for a stuck one.
 var _stage_started_msec := 0
 var _stalled := false
+var _attempt := 0
 
 
 func _init() -> void:
-	# Sign-in is the gate to everything online, so this screen is never dismissed by
-	# Back; the player leaves it through one of its own menu entries.
+	# Back abandons acquisition, not the account-readiness gate.
 	allow_back = false
 
 
@@ -97,6 +97,10 @@ func on_revealed() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	super._unhandled_input(event)
+	if is_active and _state != State.WAITING_FOR_INPUT and event.is_action_pressed("ui_back_action"):
+		get_viewport().set_input_as_handled()
+		_on_back()
+		return
 	if not is_active or _state != State.WAITING_FOR_INPUT:
 		return
 	if not _is_any_key_press(event):
@@ -141,9 +145,16 @@ func _on_pending_invite_changed() -> void:
 ## One attempt at the whole GDK -> PlayFab chain. Services.sign_in() is idempotent and
 ## re-entrancy guarded, so retrying is always safe.
 func _acquire_user() -> void:
+	if _state == State.SIGNING_IN:
+		return
+	if Services.is_signing_in():
+		_enter_needs_interaction("The previous account operation is still finishing. Retry once it completes, or go Back.")
+		return
+	_attempt += 1
+	var attempt := _attempt
 	_enter_signing_in()
 	var success: bool = await Services.sign_in()
-	if not is_inside_tree():
+	if not is_inside_tree() or is_queued_for_deletion() or attempt != _attempt:
 		return
 	# The title is closing, and this only resolved because the shutdown path waited for it
 	# to. Whatever it came back with is not news the player is staying to read, and the
@@ -151,7 +162,7 @@ func _acquire_user() -> void:
 	# would only flash it on the way out.
 	if Services.is_shutting_down():
 		return
-	if success:
+	if success and Services.is_account_ready():
 		_enter_ready()
 	else:
 		_enter_needs_interaction(Services.sign_in_error())
@@ -199,11 +210,11 @@ func _process(_delta: float) -> void:
 	_stalled = true
 	_status_label.text = "Still signing in"
 	var stage := _detail_label.text
-	_detail_label.text = "%s is taking longer than expected.\nYou can keep waiting, or continue without signing in." % (
+	_detail_label.text = "%s is taking longer than expected.\nKeep waiting, or go Back to abandon this attempt." % (
 		stage if not stage.is_empty() else "Sign-in")
 	_menu_list.clear_rows()
-	_menu_list.add_button("Try Again", _on_try_again)
-	_menu_list.add_button("Continue Offline", _on_continue_offline)
+	_menu_list.add_button("Retry", _on_try_again).disabled = true
+	_menu_list.add_button("Back", _on_back)
 	if not is_console():
 		_menu_list.add_button("Quit", _on_quit)
 	_menu_list.visible = true
@@ -214,11 +225,11 @@ func _enter_needs_interaction(reason: String) -> void:
 	_state = State.NEEDS_INTERACTION
 	_stalled = false
 	_stop_waiting_animation()
-	_status_label.text = "Not signed in"
+	_status_label.text = "Account not ready"
 	_detail_label.text = reason if not reason.is_empty() else "Sign-in did not complete."
 	_menu_list.clear_rows()
-	_menu_list.add_button("Try Again", _on_try_again)
-	_menu_list.add_button("Continue Offline", _on_continue_offline)
+	_menu_list.add_button("Retry", _on_try_again)
+	_menu_list.add_button("Back", _on_back)
 	if not is_console():
 		_menu_list.add_button("Quit", _on_quit)
 	_menu_list.visible = true
@@ -226,6 +237,8 @@ func _enter_needs_interaction(reason: String) -> void:
 
 
 func _enter_ready() -> void:
+	var attempt := _attempt
+	var generation: int = Services.account_generation()
 	_state = State.READY
 	_stalled = false
 	_stop_waiting_animation()
@@ -239,7 +252,7 @@ func _enter_ready() -> void:
 	_status_label.text = "Signed in as %s%s" % [PlayerProfile.display_name, suffix]
 	_detail_label.text = ""
 	await get_tree().create_timer(_READY_DWELL_SECONDS).timeout
-	if is_inside_tree():
+	if is_inside_tree() and not is_queued_for_deletion() and attempt == _attempt and Services.is_current_account(generation):
 		_hand_off()
 
 
@@ -251,8 +264,10 @@ func _stop_waiting_animation() -> void:
 ## Leaves the screen. On first run this screen *is* the stack, so it becomes the main
 ## menu; when the main menu re-pushed it to sign in later, it simply pops back.
 func _hand_off() -> void:
+	if not Services.is_account_ready() or Services.is_shutting_down():
+		return
 	if ScreenManager.get_stack_size() > 1:
-		ScreenManager.pop()
+		ScreenManager.remove(self)
 	else:
 		ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 
@@ -261,13 +276,15 @@ func _on_try_again() -> void:
 	_acquire_user()
 
 
-## Practice mode needs no identity, so offline is a real choice rather than a dead end.
-func _on_continue_offline() -> void:
-	# Choosing offline is the player declining the invite that brought them here, not
-	# deferring it: an activation kept past this point can only be redeemed by a sign-in
-	# much later, which would pull them into a match without them asking again.
+func _on_back() -> void:
+	_attempt += 1
+	Services.cancel_sign_in()
 	InviteRouter.decline_pending_invite()
-	_hand_off()
+	_enter_waiting_for_input()
+
+
+func _exit_tree() -> void:
+	_attempt += 1
 
 
 func _on_quit() -> void:

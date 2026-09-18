@@ -106,8 +106,8 @@ enum WriteResult {
 	## The service was asked and refused or errored. Until a later write succeeds, what is
 	## actually advertised is genuinely unknown -- the call may well have landed.
 	FAILED,
-	## No platform or no signed-in user, so nothing was sent. There is nothing out there
-	## to disagree with the caller, and nothing to retry against.
+	## No platform or no signed-in user, so nothing was sent. This does not confirm that
+	## an earlier advertisement was cleared; retry needs restored service/account access.
 	UNAVAILABLE,
 	## The call could not be built from what the caller supplied. Retrying the same input
 	## fails the same way; only better input fixes it.

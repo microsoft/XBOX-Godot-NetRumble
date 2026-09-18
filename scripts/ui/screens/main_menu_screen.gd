@@ -64,6 +64,7 @@ var _online_action_in_flight := false
 ## The Join Friend overlay is not a ScreenManager screen, so keep its duplicate guard
 ## here rather than teaching the global stack about one menu-specific panel.
 var _friend_list: NRFriendList = null
+var _account_generation := -1
 
 
 func _init() -> void:
@@ -72,6 +73,7 @@ func _init() -> void:
 
 func _ready() -> void:
 	super._ready()
+	_account_generation = Services.account_generation()
 	_add_starfield()
 
 	_xbox_logo.texture = Assets.texture("Logo_Xbox")
@@ -90,6 +92,9 @@ func _ready() -> void:
 ## Reached when the acquire-user screen (or any other pushed screen) is popped.
 func on_revealed() -> void:
 	super.on_revealed()
+	if Services.is_account_ready() and _sign_in_row_shown:
+		_account_generation = Services.account_generation()
+		_build_menu()
 	_refresh_gamertag()
 	focus_menu_list(_menu_list)
 
@@ -135,12 +140,14 @@ func _build_menu() -> void:
 	_in_options = false
 	allow_back = false
 	_apply_list_rect(_MENU_RECT)
-	_sign_in_row_shown = not PlayerProfile.is_signed_in
+	_sign_in_row_shown = not Services.is_account_ready()
 	_menu_list.clear_rows()
-	# Sign-in normally completes on the acquire-user screen before this menu is ever
-	# shown, so this row only appears when the player chose to continue offline.
 	if _sign_in_row_shown:
+		_forget_top_rows()
 		_menu_list.add_button("Sign In", _on_sign_in)
+		if not is_console():
+			_menu_list.add_button("Quit", _on_quit)
+		return
 	# Reserved unconditionally so that going offline and back only changes this row's
 	# text, never the height of the list above the rows the player is aiming at.
 	_connectivity_note = _menu_list.add_note("")
@@ -150,8 +157,8 @@ func _build_menu() -> void:
 	_host_row = _menu_list.add_button("Host Match", _on_play)
 	_join_row = _menu_list.add_button("Join Match", _on_join_match)
 	_menu_list.add_button("Practice", _on_practice)
-	_menu_list.add_button("Match History", func() -> void: ScreenManager.push(ScreenManager.MATCH_HISTORY))
-	_menu_list.add_button("Leaderboards", func() -> void: ScreenManager.push(ScreenManager.LEADERBOARDS))
+	_menu_list.add_button("Match History", _on_match_history)
+	_menu_list.add_button("Leaderboards", _on_leaderboards)
 	_menu_list.add_button("Options", _build_options_menu)
 	# Consoles have no in-title Quit: the platform owns leaving the game, and a
 	# second way out that behaves differently is exactly what certification flags.
@@ -166,6 +173,8 @@ func _build_menu() -> void:
 ## and says why, rather than presenting a dead row the player cannot inspect.
 ## Focus starts on Lobby Code so the two-tap journey (Join → Lobby Code) stays quick.
 func _build_join_menu() -> void:
+	if not _account_current():
+		return
 	_in_join_menu = true
 	_forget_top_rows()
 	# The top-level menu refuses Back (it is the root screen), but the submenu has
@@ -182,6 +191,8 @@ func _build_join_menu() -> void:
 ## themselves are shared with the in-match pause panel (NROptionsRows), so both entry
 ## points offer the same settings and neither owns them.
 func _build_options_menu() -> void:
+	if not _account_current():
+		return
 	_in_join_menu = false
 	_in_options = true
 	_forget_top_rows()
@@ -195,14 +206,18 @@ func _build_options_menu() -> void:
 
 ## Settings apply live, so leaving the rows is what commits them.
 func _on_options_back() -> void:
+	if not _account_current():
+		return
 	NROptionsRows.save()
-	_build_top_menu()
+	if _account_current():
+		_build_top_menu()
 
 
 ## Returns from a submenu to the top-level list.
 func _build_top_menu() -> void:
 	_build_menu()
-	_menu_list.call_deferred("focus_first")
+	if is_active:
+		_menu_list.call_deferred("focus_first")
 
 
 ## Drops the top-level row references before another list replaces them. `clear_rows()`
@@ -229,22 +244,26 @@ func _apply_list_rect(rect: Rect2) -> void:
 ## button press, not a cache read, so an account whose answer was never warmed cannot
 ## slip into the network path as "unknown, assumed allowed" (XR-045).
 func _on_play() -> void:
-	if _online_action_in_flight:
+	if _online_action_in_flight or not _account_current():
 		return
 	_online_action_in_flight = true
 
-	ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
+	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
 	var denial := await _multiplayer_denial()
+	ScreenManager.remove(checking)
+	if not _account_current():
+		_online_action_in_flight = false
+		return
 	if not denial.is_empty():
-		ScreenManager.pop()
 		await _offer_practice("Cannot Host", denial)
 		_online_action_in_flight = false
 		return
-	ScreenManager.pop()
-
-	ScreenManager.push(ScreenManager.LOADING, {"message": "Creating match"})
+	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Creating match"})
 	var hosted: bool = await NetManager.host_match(NRTypes.GameModeType.DEATHMATCH)
-	ScreenManager.pop()
+	ScreenManager.remove(loading)
+	if not _account_current():
+		_online_action_in_flight = false
+		return
 	if not hosted:
 		await _offer_practice("Cannot Host", NetManager.last_error)
 		_online_action_in_flight = false
@@ -258,8 +277,8 @@ func _on_play() -> void:
 ## answer and, for resolvable denials, to fix it in system UI. Empty includes the
 ## deliberate XR-074 fail-open paths, where the service could not answer at all.
 func _multiplayer_denial() -> String:
-	if Services == null:
-		return "Online services are unavailable in this build."
+	if not _account_current():
+		return NetManager.ACCOUNT_NOT_READY
 	return await Services.resolve_multiplayer_denial_reason()
 
 
@@ -269,8 +288,8 @@ func _multiplayer_denial() -> String:
 ## player can see that online play exists and is simply unavailable right now. Practice is
 ## untouched: it is the whole reason the offline case is still worth showing a menu for.
 ##
-## Only Host and Join are gated here. Match History and Options are local; Leaderboards
-## stays reachable and explains a missing sign-in or connection on its own screen.
+## A ready account's History and Options remain usable without network connectivity.
+## Leaderboards stays reachable for that account and explains connection failures itself.
 ##
 ## `announce` is false while building, because a menu that opens saying "Connection
 ## restored" is announcing a state the player never saw change.
@@ -324,22 +343,41 @@ func _on_connectivity_changed(_online: bool) -> void:
 	_apply_connectivity(true)
 
 
-## Single-machine practice match. The one path that needs no PlayFab sign-in, kept so
-## the game is still playable when Party or the GDK is unavailable.
+## Practice needs a ready save store, but no live multiplayer connection.
 func _on_practice() -> void:
-	NetManager.start_offline()
+	if not _account_current():
+		return
+	if not NetManager.start_offline():
+		await ScreenManager.show_dialog("Cannot Start Practice", NetManager.last_error, "error", false)
+		return
 	ScreenManager.push(ScreenManager.LOBBY, {"option": "host"})
+
+
+func _account_current() -> bool:
+	return is_inside_tree() and not is_queued_for_deletion() and not Services.is_shutting_down() and Services.is_current_account(_account_generation)
+
+
+func _on_match_history() -> void:
+	if _account_current():
+		ScreenManager.push(ScreenManager.MATCH_HISTORY)
+
+
+func _on_leaderboards() -> void:
+	if _account_current():
+		ScreenManager.push(ScreenManager.LEADERBOARDS)
 
 
 ## Party and Lobby both require a signed-in PlayFabUser, so an online failure is a dead
 ## end rather than something to silently downgrade. Offer practice explicitly instead.
 func _offer_practice(title: String, reason: String) -> void:
+	if not _account_current():
+		return
 	var message := reason
 	if message.is_empty():
 		message = "Online play is unavailable."
 	message += "\n\nPlay a practice match offline instead?"
 	var practice: bool = await ScreenManager.show_dialog(title, message, "warning", true)
-	if practice:
+	if practice and _account_current():
 		_on_practice()
 
 
@@ -350,14 +388,16 @@ func _on_join_match() -> void:
 
 
 func _on_lobby_code() -> void:
-	if _online_action_in_flight:
+	if _online_action_in_flight or not _account_current():
 		return
 	_online_action_in_flight = true
 
-	ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
+	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
 	var denial := await _multiplayer_denial()
-	ScreenManager.pop()
+	ScreenManager.remove(checking)
 	_online_action_in_flight = false
+	if not _account_current():
+		return
 	if not denial.is_empty():
 		await ScreenManager.show_dialog("Cannot Join", denial, "error", false)
 		return
@@ -378,7 +418,7 @@ func _on_lobby_code() -> void:
 ## the way than a modal refusal in front of a screen the player has not seen yet. The
 ## list still makes the authoritative privilege check before it offers any rows.
 func _on_join_friend() -> void:
-	if is_instance_valid(_friend_list):
+	if is_instance_valid(_friend_list) or not _account_current():
 		return
 	var list := _FRIEND_LIST_SCENE.instantiate() as NRFriendList
 	_friend_list = list
@@ -396,13 +436,16 @@ func _on_friend_list_closed(list: NRFriendList) -> void:
 ## code, so this joins the way an accepted invite does (InviteRouter._join) and lands
 ## the player in the same lobby a typed code would.
 func _on_friend_join_requested(connection_string: String) -> void:
-	if _online_action_in_flight:
+	if _online_action_in_flight or not _account_current():
 		return
 	_online_action_in_flight = true
 
 	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
 	var denial := await _multiplayer_denial()
 	ScreenManager.remove(checking)
+	if not _account_current():
+		_online_action_in_flight = false
+		return
 	if not denial.is_empty():
 		_online_action_in_flight = false
 		await ScreenManager.show_dialog("Cannot Join", denial, "error", false)
@@ -416,6 +459,8 @@ func _on_friend_join_requested(connection_string: String) -> void:
 	# screen instead of this one.
 	ScreenManager.remove(loading)
 	_online_action_in_flight = false
+	if not _account_current():
+		return
 	# Another join replaced this one, and owns the screen and the outcome. Nothing is
 	# shown here -- not even a failure -- because from the player's side nothing failed.
 	if request.was_superseded():
@@ -432,13 +477,16 @@ func _on_friend_join_requested(connection_string: String) -> void:
 
 
 func _on_join_code_submitted(code: String) -> void:
-	if _online_action_in_flight:
+	if _online_action_in_flight or not _account_current():
 		return
 	_online_action_in_flight = true
 
 	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
 	var denial := await _multiplayer_denial()
 	ScreenManager.remove(checking)
+	if not _account_current():
+		_online_action_in_flight = false
+		return
 	if not denial.is_empty():
 		_online_action_in_flight = false
 		await ScreenManager.show_dialog("Cannot Join", denial, "error", false)
@@ -460,6 +508,8 @@ func _on_join_code_submitted(code: String) -> void:
 	await request.wait()
 	ScreenManager.remove(loading)
 	_online_action_in_flight = false
+	if not _account_current():
+		return
 	if request.was_superseded():
 		return
 	if not NetManager.joined_session_is_live(request):
@@ -496,7 +546,7 @@ func _on_quit() -> void:
 
 
 func _refresh_gamertag() -> void:
-	if PlayerProfile.is_signed_in:
+	if Services.is_account_ready():
 		var suffix := ""
 		# Make a --pf-user test client obvious so it is never mistaken for a real
 		# Xbox sign-in while debugging a Party session.
@@ -515,6 +565,6 @@ func _on_identity_changed() -> void:
 	_refresh_gamertag()
 	if _in_options or _in_join_menu:
 		return
-	if _sign_in_row_shown == PlayerProfile.is_signed_in:
+	if _sign_in_row_shown == Services.is_account_ready():
 		_build_menu()
 		_menu_list.call_deferred("focus_first")

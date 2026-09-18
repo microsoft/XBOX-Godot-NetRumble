@@ -43,6 +43,9 @@ var _activity_published := false
 ## saw nothing to clear and sent nothing at all, leaving a started match advertised.
 enum _Remote { UNKNOWN, PUBLISHED, CLEARED }
 var _activity_remote: _Remote = _Remote.CLEARED
+var _activity_owner: Variant = null
+var _activity_epoch := 0
+var _activity_suspended := false
 ## Serialization for the two activity writes. Both are service calls that take their own
 ## time, and issuing them as they are asked for lets an older publish complete after a
 ## newer retirement — leaving a joinable activity for a session that has closed or ended,
@@ -140,7 +143,7 @@ func _activity() -> ActivityService:
 
 
 func _xbox_user() -> Variant:
-	return Services.xbox_user() if Services != null else null
+	return Services.xbox_user() if Services != null and Services.is_account_ready() else null
 
 
 func _profiles() -> ProfileService:
@@ -219,7 +222,10 @@ func _queue_activity_update() -> void:
 	if not _activity_published or _activity_update_queued:
 		return
 	_activity_update_queued = true
+	var generation := Services.account_generation()
 	await NetManager.get_tree().create_timer(0.5).timeout
+	if not Services.is_current_account(generation):
+		return
 	_activity_update_queued = false
 	# Half a second is long enough for the match to have started, or ended, or for the
 	# player to have left it. publish_activity re-reads that rather than assuming the
@@ -233,6 +239,24 @@ func retire_activity() -> void:
 	# to come down should not be denied them because publishing it had used them up.
 	_activity_retries_used = 0
 	_write_activity()
+
+
+func resume_activity() -> void:
+	_activity_suspended = false
+	_write_activity()
+
+
+## The caller owns the shutdown deadline. Retirement needs the authenticated owner,
+## not permission to start gameplay, which shutdown has already revoked.
+func retire_activity_and_wait() -> void:
+	retire_activity()
+	while _activity_writing:
+		await NetManager.get_tree().process_frame
+
+
+func _activity_owner_current(user: Variant) -> bool:
+	return user is Object and is_instance_valid(user) and Services != null \
+		and user == Services.xbox_user() and user.signed_in
 
 
 ## True while the service's view differs from what this session wants advertised, or while
@@ -252,18 +276,18 @@ func _activity_needs_write() -> bool:
 ## desired state when it starts, so the last state asked for is the one that ends up
 ## published however the requests overlapped.
 func _write_activity() -> void:
-	if _activity_writing:
+	if _activity_writing or _activity_suspended:
 		return
 	_activity_writing = true
+	var account_changed := false
 	while _activity_needs_write():
+		var generation := Services.account_generation()
+		var epoch := _activity_epoch
 		var target := _activity_published
 		_activity_dirty = false
 		var activity := _activity()
-		var user: Variant = _xbox_user()
-		if activity == null or user == null:
-			# Nothing can be written and nothing can have been: signed out, or a build
-			# without the GDK. No retry either -- there is no service to retry against.
-			_activity_remote = _Remote.CLEARED
+		var user: Variant = _xbox_user() if target else _activity_owner
+		if activity == null or not _activity_owner_current(user):
 			break
 		var result := ActivityService.WriteResult.UNAVAILABLE
 		if target:
@@ -271,6 +295,8 @@ func _write_activity() -> void:
 			if party == null:
 				_activity_published = false
 				continue
+			_activity_owner = user
+			_activity_remote = _Remote.UNKNOWN
 			# The join code is the session's stable shared identifier — every member has
 			# the same one and it lives as long as the session does, which is exactly
 			# what the activity's group id is for.
@@ -281,19 +307,18 @@ func _write_activity() -> void:
 				NetManager.players.size(),
 				NetManager.join_code)
 		else:
-			result = await activity.delete_activity(user)
-		if _xbox_user() != user:
-			# The account changed while the call was outstanding. An answer about the old
-			# user's activity says nothing about the new user's, so it is not recorded --
-			# and the loop converges again from whoever is signed in now.
 			_activity_remote = _Remote.UNKNOWN
-			continue
+			result = await activity.delete_activity(user)
+		if epoch != _activity_epoch or _activity_suspended or not _activity_owner_current(user) \
+				or user != _activity_owner or (target and not Services.is_current_account(generation)):
+			account_changed = true
+			break
 		if result == ActivityService.WriteResult.CONFIRMED:
 			_activity_remote = _Remote.PUBLISHED if target else _Remote.CLEARED
 			_activity_retries_used = 0
 			continue
 		if result == ActivityService.WriteResult.UNAVAILABLE:
-			_activity_remote = _Remote.CLEARED
+			_activity_remote = _Remote.UNKNOWN
 			break
 		# Refused or unusable. What is out there is now unknown rather than assumed
 		# absent, so the next pass has something to converge even where this one asked for
@@ -304,11 +329,16 @@ func _write_activity() -> void:
 		_schedule_activity_retry(target, result)
 		break
 	_activity_writing = false
+	# A replacement account may have queued its publication while the old SDK call
+	# held the writer. Its desired/dirty state survives invalidation; only its own
+	# completion can confirm it. Do not interpret or retry the stale result.
+	if account_changed and not _activity_suspended and _activity_needs_write():
+		_write_activity()
 
 
 ## Waits out the backoff, then converges again. Bounded, and silent when it runs out.
 func _schedule_activity_retry(target: bool, result: ActivityService.WriteResult) -> void:
-	if _activity_retry_pending:
+	if _activity_retry_pending or Services.is_shutting_down():
 		return
 	if result != ActivityService.WriteResult.FAILED:
 		# INVALID means the input was unusable, not that the service is struggling.
@@ -330,8 +360,16 @@ func _schedule_activity_retry(target: bool, result: ActivityService.WriteResult)
 	var delay := _ACTIVITY_RETRY_DELAYS[_activity_retries_used]
 	_activity_retries_used += 1
 	_activity_retry_pending = true
+	var generation := Services.account_generation()
+	var epoch := _activity_epoch
+	var owner: Variant = _activity_owner
 	await NetManager.get_tree().create_timer(delay).timeout
+	if epoch != _activity_epoch:
+		return
 	_activity_retry_pending = false
+	if _activity_suspended or not _activity_owner_current(owner) or Services.is_shutting_down() \
+			or (target and not Services.is_current_account(generation)):
+		return
 	# Converged from current state rather than replayed: the session may have opened,
 	# closed or ended while the timer ran, and the write that matters now is for the state
 	# that exists now.
@@ -406,7 +444,10 @@ func _queue_recent_players_flush() -> void:
 	if _recent_players_dirty:
 		return
 	_recent_players_dirty = true
+	var generation := Services.account_generation()
 	await NetManager.get_tree().create_timer(2.0).timeout
+	if not Services.is_current_account(generation):
+		return
 	flush_recent_players()
 
 
@@ -531,6 +572,8 @@ func _invalidate_chat_policy() -> void:
 
 func _on_chat_account_changed() -> void:
 	_invalidate_chat_policy()
+	if not Services.is_account_ready() or Services.is_shutting_down():
+		return
 	var chat := _chat()
 	if chat == null:
 		return
@@ -694,6 +737,27 @@ func refresh_player_profiles() -> void:
 
 
 # --- Session teardown -------------------------------------------------------
+
+## No SDK work. Suspend retains retirement for this owner; removal discards ownership,
+## not a claim that the service deleted anything.
+func invalidate_account(for_suspend: bool = false) -> void:
+	_invalidate_chat_policy()
+	_activity_epoch += 1
+	_activity_suspended = for_suspend
+	_activity_published = false
+	if not for_suspend:
+		_activity_owner = null
+		_activity_remote = _Remote.UNKNOWN
+	_activity_dirty = false
+	_activity_update_queued = false
+	_activity_retry_pending = false
+	_activity_retries_used = 0
+	_activity_handover = false
+	_reported_xuids.clear()
+	_recent_players_dirty = false
+	_chat_allowed = false
+	_chat_restriction = ""
+
 
 ## Returns every platform obligation to its between-sessions state. `keep_activity` is
 ## set only when NetManager is leaving one session to immediately start another, so the

@@ -17,6 +17,7 @@ const _OPTIONS_PANEL_SIZE := Vector2(780.0, 950.0)
 @onready var _menu: NRMenuList = ($MenuPanel as NRMenuPanel).menu_list()
 
 var _in_options := false
+var _account_generation := -1
 
 
 func _init() -> void:
@@ -25,6 +26,7 @@ func _init() -> void:
 
 func _ready() -> void:
 	super._ready()
+	_account_generation = Services.account_generation()
 	_build_menu_rows()
 
 
@@ -36,7 +38,8 @@ func _build_menu_rows() -> void:
 	_menu.add_button("Resume", func() -> void: ScreenManager.pop())
 	_menu.add_button("Options", _build_options_rows)
 	_menu.add_button("Leave Match", _on_leave)
-	focus_menu_list(_menu)
+	if is_active:
+		focus_menu_list(_menu)
 
 
 func _build_options_rows() -> void:
@@ -51,20 +54,23 @@ func _build_options_rows() -> void:
 
 ## Settings apply live, so leaving the rows is what commits them.
 func _on_options_back() -> void:
+	if not Services.is_current_account(_account_generation):
+		return
 	NROptionsRows.save()
-	_build_menu_rows()
+	if is_inside_tree() and not is_queued_for_deletion() and Services.is_current_account(_account_generation):
+		_build_menu_rows()
 
 
 func _on_leave() -> void:
 	var confirmed: bool = await ScreenManager.show_dialog("Leave Match", "Leave the current match?", "warning", true)
-	if not confirmed:
+	if not confirmed or not is_inside_tree() or is_queued_for_deletion() or not Services.is_current_account(_account_generation):
 		return
 	NetManager.leave_match()
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not is_active:
+	if not is_active or not Services.is_current_account(_account_generation):
 		return
 	if event.is_action_pressed("toggle_game_menu"):
 		get_viewport().set_input_as_handled()

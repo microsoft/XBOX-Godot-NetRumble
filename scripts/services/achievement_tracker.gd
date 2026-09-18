@@ -8,11 +8,8 @@ extends RefCounted
 ## announces a change through `progress_changed`. Services owns it, feeds it, persists it
 ## and is the only thing that talks to the GDK on its behalf.
 ##
-## That split is what makes offline play work. Every counter advances whether or not the
-## player is signed in — practice against bots is the one mode that runs with no identity
-## at all — and the reports that could not be delivered are re-sent by `resync()` once
-## sign-in resolves. The service keeps the highest percentage it has seen, so replaying a
-## report that already landed costs a call and changes nothing.
+## Services exposes this tracker only for a ready account and replaces its counters at
+## account boundaries. Practice and multiplayer therefore count for the same owner.
 ##
 ## The counters are the local player's own. Every call site reports something the local
 ## player did, on the machine that player is sitting at, because that is the only machine
@@ -66,8 +63,6 @@ var modes_completed: int = 0
 ## Deaths in the match currently being played, for the flawless-win rule. Not persisted:
 ## it describes one match, and a match does not survive the process.
 var _match_deaths: int = 0
-## Set when a counter moves, cleared once Services has written the stats out.
-var _dirty: bool = false
 ## Last percentage announced per achievement, so an unchanged one is not re-sent every
 ## time an unrelated counter moves. In memory only — `resync()` clears it precisely so a
 ## fresh session re-reports everything to a service that may have missed it.
@@ -84,13 +79,13 @@ func begin_match() -> void:
 
 func note_kill() -> void:
 	kills += 1
-	_touch()
+	_publish()
 
 
 func note_death() -> void:
 	deaths += 1
 	_match_deaths += 1
-	_touch()
+	_publish()
 
 
 func note_weapon_fired(weapon: int) -> void:
@@ -100,7 +95,7 @@ func note_weapon_fired(weapon: int) -> void:
 	if mask == weapons_fired:
 		return
 	weapons_fired = mask
-	_touch()
+	_publish()
 
 
 func note_buff_collected(buff: int) -> void:
@@ -110,12 +105,12 @@ func note_buff_collected(buff: int) -> void:
 	if mask == buffs_collected:
 		return
 	buffs_collected = mask
-	_touch()
+	_publish()
 
 
 func note_asteroid_destroyed() -> void:
 	asteroids_destroyed += 1
-	_touch()
+	_publish()
 
 
 ## Records a finished match from the local player's point of view.
@@ -134,7 +129,7 @@ func note_match_completed(mode: int, placement: int, player_count: int, human_co
 		modes_completed |= 1 << mode
 
 	_match_deaths = 0
-	_touch()
+	_publish()
 
 
 # --- Persistence ------------------------------------------------------------
@@ -153,8 +148,7 @@ func to_dict() -> Dictionary:
 	}
 
 
-## Replaces the counters wholesale. Used for the boot read and again when the cloud copy
-## arrives at sign-in, so anything malformed reads as zero rather than propagating.
+## Replaces the counters with validated account data.
 func apply_dict(data: Dictionary) -> void:
 	matches_completed = int(data.get("matches_completed", 0))
 	wins = int(data.get("wins", 0))
@@ -165,22 +159,8 @@ func apply_dict(data: Dictionary) -> void:
 	weapons_fired = int(data.get("weapons_fired", 0))
 	buffs_collected = int(data.get("buffs_collected", 0))
 	modes_completed = int(data.get("modes_completed", 0))
-
-
-## The cloud copy and the local copy are the same player's progress reached from two
-## places, and either can be the further along: the local one after a session played
-## offline, the cloud one after a session played on another console. Merging per counter
-## keeps whichever is, rather than letting a stale read undo earned progress.
-func merge_dict(data: Dictionary) -> void:
-	matches_completed = maxi(matches_completed, int(data.get("matches_completed", 0)))
-	wins = maxi(wins, int(data.get("wins", 0)))
-	flawless_wins = maxi(flawless_wins, int(data.get("flawless_wins", 0)))
-	kills = maxi(kills, int(data.get("kills", 0)))
-	deaths = maxi(deaths, int(data.get("deaths", 0)))
-	asteroids_destroyed = maxi(asteroids_destroyed, int(data.get("asteroids_destroyed", 0)))
-	weapons_fired |= int(data.get("weapons_fired", 0))
-	buffs_collected |= int(data.get("buffs_collected", 0))
-	modes_completed |= int(data.get("modes_completed", 0))
+	_match_deaths = 0
+	_reported.clear()
 
 
 ## Zeroes everything, for when the signed-in user goes away and the next player must not
@@ -189,23 +169,11 @@ func clear() -> void:
 	apply_dict({})
 	_match_deaths = 0
 	_reported.clear()
-	_dirty = false
-
-
-func is_dirty() -> bool:
-	return _dirty
-
-
-func clear_dirty() -> void:
-	_dirty = false
 
 
 # --- Progress ---------------------------------------------------------------
 
-## Re-announces every achievement that has any progress, forgetting what was already
-## sent. Called once sign-in resolves: everything earned before there was an identity to
-## earn it against has to be delivered, and there is no way to ask the service what it
-## already knows without paying for a full read.
+## Re-announces only the counters loaded for the ready account.
 func resync() -> void:
 	_reported.clear()
 	_publish()
@@ -251,11 +219,6 @@ static func achievement_ids() -> PackedStringArray:
 		AchievementService.ACHIEVEMENT_ALL_MODES,
 		AchievementService.ACHIEVEMENT_CENTURION,
 	])
-
-
-func _touch() -> void:
-	_dirty = true
-	_publish()
 
 
 ## Announces the achievements whose percentage has moved since the last announcement.

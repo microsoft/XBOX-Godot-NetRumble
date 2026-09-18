@@ -21,6 +21,11 @@ The [README matrix](../README.md#what-works-where) defines environment coverage.
 `Services.party()` / `Services.chat()`, resolves multiplayer/communication privileges, then
 attaches the returned `PlayFabPartyPeer` to Godot's `MultiplayerAPI`.
 
+Before any of these operations, `Services` must have an identified account and successfully
+initialized/loaded Game Saves. That gate applies to direct session calls, existing-user paths,
+Practice and any fallback after a failed host/join, not only menu navigation. Authentication
+alone or a lower-level unchecked privilege verdict cannot enable gameplay.
+
 ### Host
 
 1. `NetManager` calls `_require_multiplayer_privilege()`. See
@@ -61,9 +66,10 @@ attaches the returned `PlayFabPartyPeer` to Godot's `MultiplayerAPI`.
    It skips code **search**, not Lobby join: `PlayFab.multiplayer.join_lobby_async()` still
    validates the session/version and supplies the code/descriptor for `PlayFab.party.join_network_async()`.
 3. For shell activations, `ActivityService` normalizes accepted invites, pending invites and
-   protocol URIs into a request. `InviteRouter` buffers it until sign-in and the acquire screen
-   have completed; if it contains a host XUID, XBOX activity resolves that to a connection string.
-4. A cold-launch request expires after five minutes. Continue Offline declines it. An invite
+   protocol URIs into a request. `InviteRouter` buffers it until account/save readiness and the
+   acquire screen have completed; if it contains a host XUID, XBOX activity resolves that to a connection string.
+4. A cold-launch request expires after five minutes. Back abandons acquisition without joining.
+   Save-loading failure offers Retry/Back, not a route around readiness. An invite
    received while already playing asks before leaving the current session.
 
 Join Friend and shell invites require a registered XBOX session. Custom-ID has no XBOX friends
@@ -178,7 +184,8 @@ PlayFab.party.chat.text_message_received(entity_key, message)
 ```
 
 Outgoing moderation uses XBOX string verification when an XBOX user/service is available;
-custom-ID bypasses that check. `last_chat_error` explains unavailable chat, no eligible
+lower-level custom-ID diagnostics skip that check but cannot bypass gameplay readiness.
+`last_chat_error` explains unavailable chat, no eligible
 recipients, moderation refusal, changed sessions or failed Party submission. Failed sends keep
 the entry text and show the error; they do not add a successful local row.
 
@@ -190,7 +197,8 @@ denials; a later evaluation can obtain a real verdict. The voice-query fallback 
 Account-cache invalidation clears retained text while policy is re-evaluated. Roster removal
 immediately removes that peer from eligible recipients, even if its Party chat control remains.
 An empty target list fails explicitly because the addon treats an empty array as broadcast.
-Debug custom-ID permits only recognized current-session peers without claiming XBOX policy coverage.
+Lower-level custom-ID diagnostics permit only recognized current-session peers without claiming
+XBOX policy coverage or providing a playable custom-ID session.
 
 Only `message.text` from a valid typed-text event is shown: never `original_text`, translations,
 transcriptions or sender-supplied markup/identity metadata. The sender is matched to the current
@@ -347,45 +355,29 @@ Detailed interpolation, prediction and latency mechanics moved to the
 ---
 
 ## Testing two players on one PC
-GDK / XBOX sign-in is one user per PC and cannot produce two identities locally. For local
-multiplayer testing the addons support a **custom-ID** path, exposed through two command-line
-overrides (environment variables `PF_CUSTOM_ID` and `PF_TITLE_ID` also work):
 
-```powershell
-# terminal 1, host
-godot.exe --path . -- --pf-user=alice --pf-title=<dev-title-id>
-# terminal 2, client
-godot.exe --path . -- --pf-user=bob   --pf-title=<dev-title-id>
-```
+**Two custom-ID windows are no longer a playable multiplayer test path.** The sample's
+simplified XBOX user model uses the launching account. A `--pf-user` custom-ID login may
+authenticate to PlayFab, but lacks the signed-in XboxUser needed to initialize XGameSaveFiles.
+It cannot enter Practice, host/join or redeem an invite, and there is no per-token save cache.
+Use two registered PCs or authorized consoles with distinct XBOX accounts, compatible builds,
+the same title and ready saves for multiplayer acceptance.
 
-Each `--pf-user` value signs in as a *distinct* PlayFab entity and gets its own
-`user://settings_<token>.cfg`, `match_history_<token>.json` and `achievement_stats_<token>.json`.
-These are plaintext desktop caches, not account-scoped Game Save. The menu
-shows "(test user)" so a custom-ID session is never mistaken for a real one.
+One PC still supports the **sequential A/B account-isolation test**: close the game, change the
+launching XBOX account, then relaunch the registered package. That is not simultaneous
+multiplayer. See [account-save acceptance](manual-test-plan.md#account-owned-saves-pc-and-console).
 
-**Four caveats apply:**
+### Retained SDK diagnostics
 
-1. **Debug-desktop only.** `IdentityService.developer_overrides_allowed()` ignores both overrides
-   on a console build and in any exported release build. A shipping build can only reach PlayFab
-   through the XBOX-linked path. A suppressed override logs a warning.
+Debug authentication overrides `--pf-user` / `--pf-title` (`PF_CUSTOM_ID` / `PF_TITLE_ID`)
+remain restricted to debug desktop/editor builds. Console and exported release builds ignore
+them. Custom-ID account creation needs a separate development title; the sample title `186CDB`
+rejects it with `E_PF_PLAYER_CREATION_DISABLED` (`0x892357BA`). See
+[configuration](configuration.md#debug-custom-id-diagnostics).
 
-2. **Requires a title that permits custom-ID account creation.** The sample's production title
-   (`186CDB`) does **not**. Custom-id login there returns
-   `E_PF_PLAYER_CREATION_DISABLED` (`0x892357BA`). Use a development title for this flow.
-
-3. **Party binds a UDP socket and by default pins a fixed port.** A second local instance would
-   fail with *"failed to bind or connect the UDP socket because the address is already in local
-   use."* `PartyService` therefore passes `local_udp_port = 0` (OS-assigned) to
-   `initialize_async` **for custom-ID sessions only**; real sessions keep `-1` so Game Core's
-   preferred multiplayer port applies. The PlayFab addon registers
-   `playfab/party/local_udp_socket_bind_port` to override that port. This project leaves it at
-   the addon default, so the setting is deliberately absent from `project.godot`.
-
-4. **Party uses `direct_peer_connectivity = NONE`** so all traffic relays through PlayFab, which
-   also helps two instances coexist on one host.
-
-Custom-ID bypasses XBOX privileges, privacy and string verification; it provides no XBOX
-achievement reporting, friends/invites or console save roaming. It can demonstrate Lobby/Party
-and typed-text UI, not XBOX policy. Both instances must use the same development title and
-compatible build. Follow the [Manual test plan](manual-test-plan.md); these instructions are not
-evidence that a two-instance or live-service run has passed.
+For lower-level Party diagnostics, the existing custom-ID branch selects `local_udp_port = 0`
+(OS-assigned) for `initialize_async`; XBOX-linked sessions retain `-1` for Game Core's preferred
+multiplayer port. The addon exposes `playfab/party/local_udp_socket_bind_port`; the project
+leaves it at the addon default. `direct_peer_connectivity = NONE` relays Party traffic through
+PlayFab. These explain SDK transport configuration, not permission to bypass the title's
+account/save gate. Custom-ID results cannot validate XBOX policy, achievement awards or roaming.

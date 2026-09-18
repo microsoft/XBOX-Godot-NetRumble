@@ -6,22 +6,24 @@ extends NRScreen
 
 var _submission_row: NRButton = null
 var _loading := false
+var _account_generation := -1
 
 
 func _ready() -> void:
 	super._ready()
+	_account_generation = Services.account_generation()
 	Services.leaderboard_submission_changed.connect(_refresh_submission_status)
 	_rebuild()
 
 
 func _rebuild() -> void:
-	if _loading:
+	if _loading or not Services.is_current_account(_account_generation):
 		return
 	_loading = true
 	_show_loading()
 
 	var result: Dictionary = await Services.get_leaderboard()
-	if not is_inside_tree() or is_queued_for_deletion():
+	if not is_inside_tree() or is_queued_for_deletion() or not Services.is_current_account(_account_generation):
 		return
 
 	_loading = false

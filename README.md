@@ -25,7 +25,7 @@ saved match history, all in the box.
 
 Most platform samples show you one API at a time against a stub. NetRumble wires every
 Microsoft **GDK** and **PlayFab** service into the place a shipping title would really call
-it, so you can watch sign-in, privileges, privacy, Party networking and console Game Save
+it, so you can watch sign-in, privileges, privacy, Party networking and account-owned Game Saves
 work around an actual game loop, and then go and play the result. It is a working reference,
 **not a certified title**.
 
@@ -42,10 +42,11 @@ GDK/PlayFab addons, pinned as a submodule at `external/xbox-godot-sample` and bu
 > release. We are excited to hear your feedback, and see any community PRs, as we evolve this
 > together.
 >
-> **The online flows need access to this sample's title.** Sign-in, Lobby discovery, Party,
+> **All gameplay needs an account and ready Game Saves.** Sign-in, Lobby discovery, Party,
 > privileges, achievements and Game Save all run against the **XDKS.1** sandbox and title,
 > which needs an XBOX publishing relationship and a test account from that sandbox. Without
-> it you can still clone, build and play Practice through **Continue Offline**. Please join
+> it you can still clone, build and inspect the project, but cannot play, including Practice.
+> Sign-in or save-loading failures offer **Retry / Back**, not unsaved play. Please join
 > the [XBOX Developer Program](https://developer.microsoft.com/en-us/games/) to get access.
 
 <img width="1920" height="1080" alt="XBOX Godot NetRumble sample banner, showing the game's NET.RUMBLE start screen signing in to XBOX" src="docs/images/godot_netrumble_hero.png" />
@@ -60,16 +61,22 @@ account policy still apply.
 
 | Feature | XBOX on PC | XBOX Series X\|S | Debug desktop custom-ID | Offline |
 |---|---|---|---|---|
-| XBOX identity → PlayFab authentication | XBOX-linked | XBOX-linked | PlayFab custom-ID only | No online identity |
-| PlayFab Lobby discovery + Party transport | Yes | Yes | Yes, separate dev title | Practice only |
-| PlayFab Party voice + in-match typed text | Subject to XBOX policy | Subject to XBOX policy | Transport demo; XBOX checks bypassed | Unavailable |
+| XBOX identity → PlayFab authentication | XBOX-linked | XBOX-linked | PlayFab custom-ID only | Platform-dependent; not guaranteed at cold launch |
+| PlayFab Lobby discovery + Party transport | Yes, after saves are ready | Yes, after saves are ready | No gameplay; diagnostics only | Unavailable |
+| PlayFab Party voice + in-match typed text | Subject to XBOX policy | Subject to XBOX policy | No gameplay | Unavailable |
 | XBOX privileges, privacy, string verification, reporting | Yes | Yes | Bypassed / unavailable | Unavailable |
 | XBOX friends, activity, invites, recent players | Yes | Yes | Unavailable | Unavailable |
-| XBOX achievement reporting | Yes | Yes | Counters only; no XBOX award | Counters only |
-| GlobalScore standalone leaderboard | Online-match writes subject to title policy; top-10 reads | Online-match writes subject to title policy; top-10 reads | Same API and title-policy requirements | No submission or cached board; Practice stays local |
-| PlayFab Game Save roaming | Not used by this sample | Per-user synced folder | Not used | No cloud sync |
-| Settings, history and counters | Desktop local cache | Game Save when signed in | Local cache per token | Desktop cache; console memory only |
+| XBOX achievement reporting | Yes | Yes | No gameplay progress | Same-account counters; service reporting needs connectivity |
+| GlobalScore standalone leaderboard | Online-match writes subject to title policy; top-10 reads | Online-match writes subject to title policy; top-10 reads | No gameplay; lower-level API diagnostics only | No submission or cached board; Practice stays local |
+| Xbox XGameSaveFiles roaming | Per-account synced folder | Per-account synced folder | Unavailable without a signed-in XboxUser | No cloud sync while disconnected |
+| Settings, history and counters | Account-owned Game Saves | Account-owned Game Saves | No save cache or gameplay | Platform-managed account folder only, if ready |
 | Lifecycle / controller detection | Focus and device detection | Suspend/resume, constrain, association detection | Desktop behavior | Platform-dependent |
+
+Practice is a local simulation, not an unsigned mode. It requires an identified account and
+a successfully initialized/loaded Game Saves folder, including when the platform supports
+offline access to that folder. A cold offline launch is not guaranteed to resolve the required
+identity and store. PC and console use the same `GameSaveService` / `GDK.game_save`
+backend; historical shared or `--pf-user` token files are never read, imported, moved or deleted.
 
 The sample uses **PlayFab Lobby discovery**, not PlayFab Matchmaking queues or tickets.
 Voice mute and typed-text privacy are separate. Text is in-match only: four recent messages,
@@ -128,8 +135,8 @@ If PowerShell refuses to run the scripts, see
 `wdapp list`, then launches the registered AUMID. The deliverable is `build\_gdk_staging`,
 not an executable at the preset's nominal export path. A successful demonstration reaches
 the acquire-user screen and then the menu with the signed-in gamertag. If sign-in fails,
-read its stage/reason and check registration, sandbox and account access; Practice remains
-available through **Continue Offline**.
+read its stage/reason and check registration, sandbox and account access. Save initialization
+and loading must also succeed; failures offer **Retry / Back** and block every gameplay path.
 
 Keep the committed sample title/package identifiers unchanged; see the
 [configuration checklist](docs/configuration.md#configuration-checklist). Continue with the
@@ -137,13 +144,13 @@ Keep the committed sample title/package identifiers unchanged; see the
 
 ### Other run paths
 
-- **Editor/offline exploration:** after addon setup, `godot.exe --path .` (or F5), then
-  Continue Offline → Practice. An initialized GDK in the editor is **not registered package
-  identity** and is not the XBOX sign-in/invite demonstration.
-- **Two instances on one PC:** use distinct `--pf-user` tokens and `--pf-title` for a
-  **separate development PlayFab title** that permits custom-ID creation. This debug-only
-  path bypasses XBOX checks; it cannot validate privacy, achievements or Game Save.
-  See [local multiplayer setup](docs/multiplayer.md#testing-two-players-on-one-pc).
+- **Editor exploration:** after addon setup, `godot.exe --path .` (or F5) can inspect the
+  front end, but missing identity/save readiness blocks Practice as well as multiplayer.
+  An initialized GDK in the editor is **not registered package identity**.
+- **Custom-ID diagnostics:** debug `--pf-user` / `--pf-title` overrides can exercise
+  authentication against a separate development title. Without a signed-in XboxUser
+  they cannot prepare Game Saves or enter gameplay. Use two registered devices/accounts
+  for multiplayer; see [testing prerequisites](docs/multiplayer.md#testing-two-players-on-one-pc).
 - **Console:** after completing the authorized GDKX and devkit setup, use a Middleware console
   fork and `.\tools\deploy-console.ps1 -Launch`; see
   [configuration](docs/configuration.md#running-with-gdk-identity).
@@ -157,7 +164,7 @@ Follow these source boundaries alongside the [Walkthroughs](docs/walkthroughs.md
 | Feature | Source | Guide |
 |---|---|---|
 | GDK sign-in and the exchange for a PlayFab identity | `scripts/services/identity_service.gd` | [Platform services](docs/platform-services.md#sign-in) |
-| Dedicated sign-in progress and offline fallback | `scripts/ui/screens/acquire_user_screen.gd` | [Platform services](docs/platform-services.md#sign-in) |
+| Account/save readiness, progress and Retry/Back | `scripts/ui/screens/acquire_user_screen.gd` | [Platform services](docs/platform-services.md#sign-in) |
 | PlayFab Party as a drop-in Godot `MultiplayerPeer` | `scripts/services/party_service.gd` | [Multiplayer](docs/multiplayer.md) |
 | Join-code discovery with PlayFab Lobby | `scripts/services/party_service.gd` | [Connection flows](docs/multiplayer.md#connection-flows) |
 | Multiplayer and communications privilege checks | `scripts/services/privilege_service.gd` | [Platform services](docs/platform-services.md#privileges-and-player-communication) |
@@ -165,7 +172,7 @@ Follow these source boundaries alongside the [Walkthroughs](docs/walkthroughs.md
 | Text verification before user-authored content is published | `scripts/services/moderation_service.gd` | [Platform services](docs/platform-services.md#moderation-and-reporting) |
 | Party voice and four-message typed-text display | `scripts/services/chat_service.gd`, `scripts/ui/elements/nr_chat_log.gd` | [Multiplayer](docs/multiplayer.md#voice-chat) |
 | One-shot and incremental achievement progress | `scripts/services/achievement_service.gd`, `scripts/services/achievement_tracker.gd` | [Platform services](docs/platform-services.md#achievements) |
-| Console Game Save: profile, history and counters | `scripts/services/game_save_service.gd` | [Platform services](docs/platform-services.md#game-saves) |
+| PC/console Game Saves: account-owned profile, history and counters | `scripts/services/game_save_service.gd` | [Platform services](docs/platform-services.md#game-saves) |
 | Standalone leaderboard submission and browsing | `scripts/services/leaderboard_service.gd`, `scripts/ui/screens/leaderboards_screen.gd` | [Leaderboard behavior and client-access policy](docs/leaderboards.md) |
 | Suspend, resume and constrain handling | `scripts/main.gd` | [Architecture](docs/architecture.md#process-lifecycle) |
 | Activity publishing and join-from-guide invites | `scripts/autoload/platform_session.gd`, `scripts/services/activity_service.gd`, `scripts/autoload/invite_router.gd` | [Multiplayer](docs/multiplayer.md) |
@@ -184,7 +191,7 @@ XboxBootstrap             GDK runtime bootstrap
 Services                  Owns identity, Party, chat, policy, saves and XBOX service wrappers
 NetManager → Services     Session, authenticated peer roster and gameplay RPCs
   └── PlatformSession     Activity, presence, recent players, names and communication policy
-InviteRouter              Buffers platform activations until identity/front end are ready
+InviteRouter              Buffers activations until account, saves and front end are ready
 main.gd                   Synchronous suspend persistence; resume/constrain and device overlay
 ```
 

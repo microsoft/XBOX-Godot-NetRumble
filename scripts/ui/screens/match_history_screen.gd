@@ -11,22 +11,25 @@ extends NRScreen
 
 func _ready() -> void:
 	super._ready()
+	Services.account_lost.connect(_on_account_lost)
 	_rebuild()
 
 
+func _on_account_lost() -> void:
+	_list.clear_rows()
+
+
 ## Rebuilds the whole list so there is a single NRMenuList and focus wrap-around stays
-## correct. Entries load asynchronously behind a placeholder row.
+## correct. Services supplies a synchronous deep snapshot for the ready account.
 func _rebuild() -> void:
 	_list.clear_rows()
-	_list.add_button("Loading\u2026", Callable())
-	_list.add_button("Back", on_back_pressed)
-	focus_menu_list(_list)
-
-	var rows := await _load_rows()
-	if not is_inside_tree():
+	if not Services.is_account_ready():
+		_list.add_note("Sign in and load your saved data to view match history.")
+		_list.add_button("Back", on_back_pressed)
+		focus_menu_list(_list)
 		return
 
-	_list.clear_rows()
+	var rows := _load_rows()
 	for row in rows:
 		# Entries stay focusable buttons even though they do nothing: focus is what
 		# scrolls the ScrollContainer on a gamepad, so unfocusable rows would be
@@ -40,7 +43,7 @@ func _rebuild() -> void:
 
 func _load_rows() -> PackedStringArray:
 	var rows := PackedStringArray()
-	var matches: Variant = await Services.get_match_history()
+	var matches: Variant = Services.get_match_history()
 	if not (matches is Array):
 		return rows
 	for entry in matches as Array:

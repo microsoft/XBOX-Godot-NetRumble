@@ -10,7 +10,7 @@ You do not need to read this page front to back. Skim it once, then come back to
 | Term | Meaning |
 |---|---|
 | **Microsoft Game Development Kit (GDK)** | Microsoft's SDK for building games that run on XBOX consoles and on Windows. It provides sign-in, privileges, achievements, saves and packaging, and it installs the command-line tools this repository's scripts call. It is a separate download and install; it is not part of Godot. |
-| **PlayFab** | Microsoft's hosted game backend, used here for identity, session discovery (Lobby), networking and voice (Party), and cloud saves. It is a separate service with its own account and its own titles, reached over the network rather than installed. |
+| **PlayFab** | Microsoft's hosted game backend, used here for identity, session discovery (Lobby), networking and voice (Party). It is a separate service with its own account and its own titles. Saves in this title use Xbox XGameSaveFiles instead. |
 | **XBOX services** | The online layer behind an XBOX account: gamertags, friends, privileges, privacy, achievements and presence. The GDK is how a title talks to it. |
 
 ## Certification and requirements
@@ -35,7 +35,7 @@ You do not need to read this page front to back. Skim it once, then come back to
 | **mute list / avoid list** | Per-account privacy lists. A muted player's voice is suppressed for you; an avoided player is one the platform keeps you apart from. Both are the platform's decision, not the title's. |
 | **Guide** | The XBOX system overlay, opened with the XBOX button. Invites and profile cards are raised from it. |
 | **PlayFab entity** | PlayFab's addressable identity object, identified by an entity id and an entity type. Roster and chat code resolves entity ids back to display names. |
-| **Custom ID** | A PlayFab login that authenticates against a developer-supplied string instead of an XBOX account. It is the debug-only path this repository uses to run two clients on one PC, and it bypasses every XBOX check. |
+| **Custom ID** | A PlayFab login using a developer-supplied string instead of an XBOX account. Debug authentication diagnostics only in this title: without a signed-in XboxUser it cannot initialize XGameSaveFiles or enter gameplay. |
 
 ## Multiplayer and communication
 
