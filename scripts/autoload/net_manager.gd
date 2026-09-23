@@ -544,10 +544,11 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 		return error if not error.is_empty() else "Could not join the match."
 
 	if not _bind_peer(result.get("peer")):
+		push_warning("[Net] PlayFab Party did not return a usable network peer for the join.")
 		await _party().leave()
 		if not _is_join_current(request) or not _account_is_current(generation):
 			return ""
-		return "PlayFab Party did not return a usable network peer."
+		return PartyService.JOIN_FAILED_UNKNOWN
 
 	_is_offline = false
 	join_code = String(result.get("code", ""))

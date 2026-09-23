@@ -135,6 +135,17 @@ const JOIN_FAILED_SERVICE := "The match service is unavailable. Try again in a m
 ## Nothing above matched. Says what happened and no more, because the title genuinely
 ## does not know which of the causes it was.
 const JOIN_FAILED_UNKNOWN := "That match could not be joined."
+## Decided from the member counts on the lobby search result, before any join is
+## attempted, rather than from an HRESULT. PlayFab documents no "lobby full" error, so
+## waiting for the join to fail would put whichever generic refusal the service happened
+## to send in front of the player instead. See join().
+const JOIN_FAILED_FULL := "That match is full."
+## The join-code search itself failed and no HRESULT in the table explained why. Kept
+## apart from "No match found", which means the search worked and nothing matched.
+const JOIN_FAILED_SEARCH := "Could not look up that join code. Try again in a moment."
+## Party or Lobby could not initialize on this device. The SDK's reason goes to the log,
+## for the same reason as above.
+const MULTIPLAYER_START_FAILED := "Online multiplayer could not start. Try again in a moment."
 
 ## HRESULT to message. godot_playfab binds no named constants for these, so they are
 ## declared here from the PlayFab Multiplayer error reference rather than left as bare
@@ -214,8 +225,8 @@ func cancel_pending_join() -> void:
 
 ## The joined lobby's connection string, or empty when there is no lobby. This is the
 ## value an invitee needs for an explicit join, so it is what the Xbox multiplayer
-## activity advertises: handing it out skips _find_lobby_connection_string() entirely,
-## which is the slowest and least reliable part of joining.
+## activity advertises: handing it out skips _find_lobby() entirely, which is the
+## slowest and least reliable part of joining.
 func lobby_connection_string() -> String:
 	if _lobby == null:
 		return ""
@@ -399,11 +410,24 @@ func join(user: Variant, code: String) -> Dictionary:
 	if not _is_join_operation_current(operation):
 		return _fail("Join cancelled.")
 
-	var connection_string := await _find_lobby_connection_string(user, normalized, operation)
+	var lookup := await _find_lobby(user, normalized, operation)
 	if not _is_join_operation_current(operation):
 		return _fail("Join cancelled.")
+	var search_error := String(lookup.error)
+	if not search_error.is_empty():
+		return _fail(search_error)
+	var connection_string := String(lookup.connection_string)
 	if connection_string.is_empty():
 		return _fail("No match found for code %s." % normalized)
+	# The count is a snapshot of the search, not a reservation. A lobby reported full is
+	# refused here without a join; one that fills after the search is still refused by
+	# the service below, and gets whatever message that refusal maps to -- not this one.
+	var members := int(lookup.member_count)
+	var capacity := int(lookup.max_member_count)
+	if _is_at_capacity(members, capacity):
+		push_warning("[Party] Not joining %s: the lobby search reported it full (%d/%d)." % [
+			normalized, members, capacity])
+		return _fail(JOIN_FAILED_FULL)
 
 	return await _join_lobby_by_connection_string(user, connection_string, normalized, operation)
 
@@ -443,7 +467,7 @@ func _join_lobby_by_connection_string(user: Variant, connection_string: String, 
 			await _leave_lobby_instance(joined.data)
 		return _fail("Join cancelled.")
 	if joined == null or not joined.ok:
-		return _fail(_join_failure(joined, "Lobby"))
+		return _fail(_join_failure(joined, "Lobby join"))
 
 	_attach_lobby(joined.data)
 
@@ -466,8 +490,9 @@ func _join_lobby_by_connection_string(user: Variant, connection_string: String, 
 	# The code is Party's invitation identifier, not a caption — without it the network
 	# join below cannot authenticate. See _join_attached_lobby.
 	if code.is_empty():
+		push_warning("[Party] Refusing join: the lobby advertises no join code.")
 		await leave()
-		return _fail("This match can no longer be joined.")
+		return _fail(JOIN_FAILED_UNKNOWN)
 
 	return await _join_attached_lobby(user, code, operation)
 
@@ -506,6 +531,9 @@ func _join_attached_lobby(user: Variant, code: String, operation: int) -> Dictio
 	if not _is_join_operation_current(operation):
 		return _fail("Join cancelled.")
 	if descriptor.is_empty():
+		# Same words as the service's "not joinable" refusal, so say in the log which one
+		# this was: the lobby admitted the player but never offered a Party network.
+		push_warning("[Party] Match %s has no Party network descriptor; the host left or never published one." % code)
 		await leave()
 		return _fail("Match %s is no longer accepting players." % code)
 
@@ -520,7 +548,7 @@ func _join_attached_lobby(user: Variant, code: String, operation: int) -> Dictio
 		return _fail("Join cancelled.")
 	if network == null or not network.ok:
 		await leave()
-		return _fail(_join_failure(network, "Party network"))
+		return _fail(_join_failure(network, "Party network join"))
 
 	_attach_network(network.data, false)
 	join_code = code
@@ -594,7 +622,8 @@ func _ensure_initialized(operation: int) -> String:
 			if not _is_join_operation_current(operation):
 				return "Session cancelled."
 			if party_init == null or not party_init.ok:
-				return "PlayFab Party could not start: %s" % _reason(party_init)
+				push_warning("[Party] PlayFab Party could not start: %s" % _reason(party_init))
+				return MULTIPLAYER_START_FAILED
 			_party_initialized = true
 
 	if not _multiplayer_initialized:
@@ -605,7 +634,8 @@ func _ensure_initialized(operation: int) -> String:
 			if not _is_join_operation_current(operation):
 				return "Session cancelled."
 			if mp_init == null or not mp_init.ok:
-				return "PlayFab Lobby could not start: %s" % _reason(mp_init)
+				push_warning("[Party] PlayFab Lobby could not start: %s" % _reason(mp_init))
+				return MULTIPLAYER_START_FAILED
 			_multiplayer_initialized = true
 
 	return ""
@@ -684,18 +714,35 @@ func _make_search_config(code: String) -> Variant:
 ## ordinary hosts time to appear. When a code still misses, an immediate editable retry
 ## is clearer than a silent backoff loop, and one FindLobbies call cannot create the
 ## rate-limit spiral that retrying used to guard against.
-func _find_lobby_connection_string(user: Variant, code: String, operation: int = 0) -> String:
+##
+## Returns {"connection_string", "member_count", "max_member_count", "error"}, with the
+## counts taken from the same summary as the connection string. A search that worked and
+## matched nothing leaves every field empty; a search that failed sets only `error`, to
+## the player-facing reason. The two used to look identical, which reported a rate limit
+## or an expired sign-in as "No match found".
+func _find_lobby(user: Variant, code: String, operation: int = 0) -> Dictionary:
+	var lookup := {"connection_string": "", "member_count": 0, "max_member_count": 0, "error": ""}
 	if not _is_join_operation_current(operation):
-		return ""
+		return lookup
 	var search: Variant = _make_search_config(code)
 	var found: Variant = await _playfab().multiplayer.find_lobbies_async(user, search)
 	if not _is_join_operation_current(operation):
-		return ""
-	if found != null and found.ok:
-		return _first_connection_string(found.data)
-	elif found != null:
-		push_warning("[Party] Lobby search failed: %s" % _reason(found))
-	return ""
+		return lookup
+	if found == null or not found.ok:
+		lookup["error"] = _join_failure(found, "Lobby search", JOIN_FAILED_SEARCH)
+		return lookup
+	var summary: Variant = _first_live_summary(found.data)
+	if summary == null:
+		return lookup
+	var members := _summary_count(summary, "member_count")
+	var capacity := _summary_count(summary, "max_member_count")
+	if capacity <= 0:
+		push_warning("[Party] Lobby search result for %s carries no capacity (%d/%d); joining without a capacity check." % [
+			code, members, capacity])
+	lookup["connection_string"] = String(summary.connection_string)
+	lookup["member_count"] = members
+	lookup["max_member_count"] = capacity
+	return lookup
 
 
 ## find_lobbies_async hands back a PlayFabLobbySearchResult wrapper — the summaries live
@@ -704,20 +751,33 @@ func _find_lobby_connection_string(user: Variant, code: String, operation: int =
 ##
 ## Join codes are unique in practice, so the first live result wins. Tolerating extra
 ## results rather than demanding exactly one keeps a stale duplicate lobby from blocking
-## an otherwise valid join.
-func _first_connection_string(result: Variant) -> String:
+## an otherwise valid join. The capacity check reads this summary's counts and no other:
+## another result's counts say nothing about the lobby actually being joined.
+func _first_live_summary(result: Variant) -> Variant:
 	if result == null:
-		return ""
+		return null
 	var summaries: Variant = result.lobbies
 	if typeof(summaries) != TYPE_ARRAY:
-		return ""
+		return null
 	for entry in summaries:
 		if entry == null:
 			continue
-		var connection_string := String(entry.connection_string)
-		if not connection_string.is_empty():
-			return connection_string
-	return ""
+		if not String(entry.connection_string).is_empty():
+			return entry
+	return null
+
+
+## A member count off a search summary (PlayFabLobbySummary, filled from the service's
+## currentMemberCount and maxMemberCount), or 0 when the summary carries none.
+func _summary_count(summary: Variant, property: String) -> int:
+	var value: Variant = summary.get(property)
+	return int(value) if typeof(value) in [TYPE_INT, TYPE_FLOAT] else 0
+
+
+## True only for a real capacity that the lobby has reached. A capacity of 0 is what a
+## summary without counts looks like, and is not evidence of a full lobby.
+func _is_at_capacity(member_count: int, max_member_count: int) -> bool:
+	return max_member_count > 0 and member_count >= max_member_count
 
 
 func _attach_lobby(lobby: Variant) -> void:
@@ -949,18 +1009,19 @@ func _reason(result: Variant) -> String:
 
 ## The player-facing reason a join failed, and the developer-facing one in the log.
 ##
-## `stage` names which half of the handshake refused -- the lobby or the Party network --
-## so the warning is useful without the message on screen having to say so.
-func _join_failure(result: Variant, stage: String) -> String:
-	var message := JOIN_FAILED_UNKNOWN
+## `stage` names which step refused -- the lobby search, the lobby join or the Party
+## network join -- so the warning is useful without the message on screen having to say
+## so. `fallback` is what the player sees when the HRESULT is not in the table.
+func _join_failure(result: Variant, stage: String, fallback: String = JOIN_FAILED_UNKNOWN) -> String:
+	var message := fallback
 	var hresult := 0
 	if result != null:
 		# The native HRESULT is 32-bit and signed; Godot ints are 64-bit, so a negative
 		# value would never match a table written in the unsigned form the reference
 		# publishes. Masking makes both spellings land on the same key.
 		hresult = int(result.hresult) & 0xFFFFFFFF
-		message = JOIN_FAILURE_MESSAGES.get(hresult, JOIN_FAILED_UNKNOWN)
-	push_warning("[Party] %s join failed (0x%08X, %s): %s" % [
+		message = JOIN_FAILURE_MESSAGES.get(hresult, fallback)
+	push_warning("[Party] %s failed (0x%08X, %s): %s" % [
 		stage, hresult, _code_of(result), _reason(result)])
 	return message
 

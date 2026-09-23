@@ -364,8 +364,9 @@ The join code is written to `string_key1` and the game mode to `string_key2`; th
 descriptor lives in the lobby's (non-searchable) `party_descriptor` property. No title-side setup
 is needed for these properties. `string_key3` additionally carries the sample protocol version.
 PlayFab's lobby search index is **eventually consistent** and `FindLobbies` is rate-limited.
-`PartyService._find_lobby_connection_string()` performs a **single lookup**; failure leaves
-the code editable for an explicit retry. The code-join operation times out after 45 seconds.
+`PartyService._find_lobby()` performs a **single lookup**; a miss or a failed search leaves
+the code editable for an explicit retry, and a result already at its `max_member_count` is
+refused as full without joining. The code-join operation times out after 45 seconds.
 See [connection flows](multiplayer.md#connection-flows). No Matchmaking queue/ticket setup is used.
 
 ---
