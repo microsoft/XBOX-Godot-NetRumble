@@ -78,9 +78,17 @@ code and message go to the `[Party] <stage> failed (…)` warning instead. See
 2. `NetManager.join_by_invite()` calls the sample `PartyService.join_by_connection_string()`.
    It skips code **search**, not Lobby join: `PlayFab.multiplayer.join_lobby_async()` still
    validates the session/version and supplies the code/descriptor for `PlayFab.party.join_network_async()`.
-3. For shell activations, `ActivityService` normalizes accepted invites, pending invites and
-   protocol URIs into a request. `InviteRouter` buffers it until account/save readiness and the
-   acquire screen have completed; if it contains a host XUID, XBOX activity resolves that to a connection string.
+3. For shell activations — an invite sent from the title or the XBOX shell, or a shell **Join
+   Game** — the activation URI carries the host's Lobby connection string:
+   `ms-xbl-<titleId>://inviteAccept?invitedUser=…&sender=…&connectionString=…` on console,
+   `ms-xbl-multiplayer://inviteAccept?…` on PC. `ActivityService` reads it from the raw URI and
+   percent-decodes it exactly once. It never uses `String.uri_decode()`, nor the addon's pre-parsed
+   fields built with it: that turns `+` into a space and drops the `%` of a lowercase escape, and a
+   mangled string fails Lobby join. Accepted invites, pending invites and protocol URIs all become
+   one request. `InviteRouter` buffers it until account/save readiness and the acquire screen have
+   completed; an older activation that names only the host (`sender`, `senderXuid`, `joineeXuid`)
+   is resolved to a connection string from their XBOX activity. Every activation logs its URI and
+   a `parsed:` summary under `[Activity]`.
 4. A cold-launch request expires after five minutes. Back abandons acquisition without joining.
    Save-loading failure offers Retry/Back, not a route around readiness. An invite
    received while already playing asks before leaving the current session.

@@ -54,28 +54,29 @@ const ALLOW_CROSS_PLATFORM_JOIN := true
 ## carries no team assignment to distinguish the latter two with.
 const ENCOUNTER_TYPE := "default"
 
-## Query fields naming the player whose session is being entered — the host. An accepted
-## invite names them `senderXuid` (they sent it); a platform join names them
-## `joineeXuid` (they are being joined). Both spellings are probed because the addon
-## puts the raw camelCase key and a snake_case alias in the same dictionary.
+## Query fields naming the player whose session is being entered — the host — for an
+## activation that carries no connection string. A Multiplayer Activity invite names
+## them `sender`; the older MPSD shapes use `senderXuid` (invite) and `joineeXuid`
+## (platform join). The addon's snake_case aliases are listed too. Matched lower-cased.
 ##
-## The local player's own XUID travels alongside as `invitedXuid` / `joinerXuid` and is
-## deliberately NOT in this list: resolving an activity for ourselves would look up the
-## session we are trying to join *from*, not the one we were invited to.
+## The local player's own XUID travels alongside as `invitedUser` / `invitedXuid` /
+## `joinerXuid` and is deliberately NOT in this list: resolving an activity for
+## ourselves would look up the session we are trying to join *from*, not the one we
+## were invited to.
 const _TARGET_XUID_KEYS: PackedStringArray = [
-	"joinee_xuid",
-	"joineeXuid",
+	"sender",
+	"senderxuid",
 	"sender_xuid",
-	"senderXuid",
+	"joineexuid",
+	"joinee_xuid",
 ]
 
-## Keys a connection string might arrive under. An Xbox activation does not carry one —
-## it carries a handle and the host's XUID (see _TARGET_XUID_KEYS) — but a desktop
-## protocol launch driven by the title's own URI can, so this stays as the fast path.
+## Keys the Lobby connection string arrives under, matched lower-cased. A Multiplayer
+## Activity invite or shell join carries the host's activity connection string as
+## `connectionString` — see _join_request_from_invite() for the URI shape.
 const _CONNECTION_STRING_KEYS: PackedStringArray = [
-	"connectionString",
-	"connection_string",
 	"connectionstring",
+	"connection_string",
 ]
 
 ## True once the activation signals are hooked up, so a second construction cannot
@@ -84,9 +85,6 @@ var _activation_connected := false
 ## True once this is waiting on GDK.initialized to re-attempt the subscription, so the
 ## retry cannot stack up either.
 var _awaiting_runtime := false
-## Logged once, the first time an invite arrives, so the real shape of the payload is
-## visible in a sandbox console session.
-var _logged_invite_shape := false
 
 
 func _init() -> void:
@@ -341,14 +339,15 @@ func ensure_activation_subscribed() -> void:
 
 
 func _on_invite_accepted(invite: Dictionary) -> void:
-	_log_invite_shape(invite)
-	_emit_join_request(_join_request_from_invite(invite), "an accepted invite")
+	var request := _join_request_from_invite(invite)
+	_log_activation("Accepted invite", invite, request)
+	_emit_join_request(request, "an accepted invite")
 
 
 ## A pending invite has to be accepted before it becomes a join. Accepting re-raises it
 ## through invite_accepted, so this hands off rather than joining directly.
 func _on_pending_invite_received(invite: Dictionary) -> void:
-	_log_invite_shape(invite)
+	_log_activation("Pending invite", invite, _join_request_from_invite(invite))
 	var gdk: Variant = _gdk()
 	if gdk == null:
 		return
@@ -365,7 +364,9 @@ func _on_pending_invite_received(invite: Dictionary) -> void:
 ## the same parser. This is the platform join path: the guide's "Join Game" on a
 ## friend's card arrives here, as does a desktop launch with the URI on the command line.
 func _on_protocol_activated(uri: String) -> void:
-	_emit_join_request(_join_request_from_uri(uri), "a platform join")
+	var request := _join_request_from_uri(uri)
+	_log_activation("Protocol activation", {"raw_uri": uri}, request)
+	_emit_join_request(request, "a platform join")
 
 
 func _emit_join_request(request: Dictionary, description: String) -> void:
@@ -381,58 +382,110 @@ func _emit_join_request(request: Dictionary, description: String) -> void:
 ## `{"connection_string": String, "xuid": String}`; empty when it asks for nothing
 ## usable.
 ##
-## An Xbox activation does NOT carry a lobby connection string. It carries a handle
-## (`invite_handle_accept` / `activity_handle_join`) and the XUIDs either side of the
-## exchange, and the title is expected to resolve the session itself — for a title on
-## the Multiplayer Activity route, by reading the host's published activity. So the
-## connection string is tried first for the desktop protocol case, and the host's XUID
-## is what an invite or a guide join really yields.
-func _join_request_from_invite(invite: Dictionary) -> Dictionary:
-	for key in _CONNECTION_STRING_KEYS:
-		var value := String(invite.get(key, "")).strip_edges()
-		if not value.is_empty():
-			return {"connection_string": value.uri_decode(), "xuid": ""}
-	for key in _TARGET_XUID_KEYS:
-		var xuid := String(invite.get(key, "")).strip_edges()
-		if not xuid.is_empty() and xuid.is_valid_int():
-			return {"connection_string": "", "xuid": xuid}
-	return _join_request_from_uri(String(invite.get("raw_uri", "")))
+## A Multiplayer Activity invite — sent from the title or the shell — and a shell "Join
+## Game" both carry the host's Lobby connection string in the activation URI:
+##
+##     console: ms-xbl-<titleId>://inviteAccept?invitedUser=<xuid>&sender=<xuid>&connectionString=<cs>
+##     PC:      ms-xbl-multiplayer://inviteAccept?invitedUser=<xuid>&sender=<xuid>&connectionString=<cs>
+##
+## A PlayFab Lobby connection string looks like `cv2:<lobby id>|<n>|kv1:<base64 key>`,
+## and a base64 key carries `+`, `/` and `=`. Lobby join needs it byte for byte, so it
+## is read out of `raw_uri` and percent-decoded exactly once, by _percent_decode().
+## The addon's pre-parsed fields cannot be trusted with it: the addon runs every value
+## through String.uri_decode(), which turns `+` into a space and mangles lowercase
+## escapes such as `%3a`. Those fields are the fallback only for a payload that has no
+## `raw_uri`, and are used as given rather than decoded a second time.
+##
+## An activation with no connection string — the older MPSD `activityHandleJoin` /
+## `inviteHandleAccept` shapes — names the host by XUID instead, and InviteRouter
+## resolves that from their published activity.
+static func _join_request_from_invite(invite: Dictionary) -> Dictionary:
+	var request := _join_request_from_uri(String(invite.get("raw_uri", "")))
+	if not request.is_empty():
+		return request
+	var fields: Dictionary = {}
+	for key: Variant in invite:
+		var value: Variant = invite[key]
+		if typeof(value) == TYPE_STRING:
+			fields[String(key).to_lower()] = value
+	return _join_request_from_fields(fields)
 
 
-func _join_request_from_uri(uri: String) -> Dictionary:
-	var query := _query_fields(uri)
-	if query.is_empty():
-		return {}
+static func _join_request_from_uri(uri: String) -> Dictionary:
+	return _join_request_from_fields(_query_fields(uri))
+
+
+## Picks the join out of already-decoded, lower-cased fields: a connection string when
+## there is one, otherwise the host's XUID.
+static func _join_request_from_fields(fields: Dictionary) -> Dictionary:
 	for key in _CONNECTION_STRING_KEYS:
-		var value := String(query.get(key.to_lower(), "")).strip_edges()
+		var value := String(fields.get(key, "")).strip_edges()
 		if not value.is_empty():
 			return {"connection_string": value, "xuid": ""}
 	for key in _TARGET_XUID_KEYS:
-		var xuid := String(query.get(key.to_lower(), "")).strip_edges()
+		var xuid := String(fields.get(key, "")).strip_edges()
 		if not xuid.is_empty() and xuid.is_valid_int():
 			return {"connection_string": "", "xuid": xuid}
 	return {}
 
 
-## The URI's query as lower-cased key -> decoded value. Keys are folded because the
-## platform spells them in camelCase and the addon's aliases are snake_case.
-func _query_fields(uri: String) -> Dictionary:
+## The URI's query as lower-cased key -> value decoded once. Keys are folded because
+## the platform spells them in camelCase. A value is everything after the key's first
+## `=`, so a base64 key's `=` padding survives. The first occurrence of a key wins.
+static func _query_fields(uri: String) -> Dictionary:
 	var query_start := uri.find("?")
 	if query_start < 0:
 		return {}
 	var fields: Dictionary = {}
-	for pair in uri.substr(query_start + 1).split("&", false):
-		var split := pair.split("=", true, 1)
-		if split.size() != 2:
+	for pair: String in uri.substr(query_start + 1).split("&", false):
+		var equals := pair.find("=")
+		if equals <= 0:
 			continue
-		fields[split[0].strip_edges().to_lower()] = split[1].strip_edges().uri_decode()
+		var key := pair.substr(0, equals).strip_edges().to_lower()
+		if not fields.has(key):
+			fields[key] = _percent_decode(pair.substr(equals + 1)).strip_edges()
 	return fields
 
 
+## RFC 3986 percent-decoding, one pass. Not String.uri_decode(), which is form
+## decoding: it turns `+` into a space and drops the `%` of a lowercase escape, and
+## either one corrupts a Lobby connection string. Here `+` stays `+`, hex digits match
+## in either case, and a `%` that does not start a valid escape is kept as written.
+## Decoding is done on UTF-8 bytes, so a multi-byte escape comes back as one character.
+static func _percent_decode(value: String) -> String:
+	if not value.contains("%"):
+		return value
+	var source := value.to_utf8_buffer()
+	var decoded := PackedByteArray()
+	var index := 0
+	while index < source.size():
+		var byte := source[index]
+		if byte == 0x25 and index + 2 < source.size():
+			var high := _hex_digit(source[index + 1])
+			var low := _hex_digit(source[index + 2])
+			if high >= 0 and low >= 0:
+				decoded.append(high * 16 + low)
+				index += 3
+				continue
+		decoded.append(byte)
+		index += 1
+	return decoded.get_string_from_utf8()
+
+
+static func _hex_digit(byte: int) -> int:
+	if byte >= 0x30 and byte <= 0x39:
+		return byte - 0x30
+	if byte >= 0x41 and byte <= 0x46:
+		return byte - 0x41 + 10
+	if byte >= 0x61 and byte <= 0x66:
+		return byte - 0x61 + 10
+	return -1
+
+
 ## The lobby connection string for the session `xuid` is currently in, or empty when
-## there is none to be had. This is the second half of every platform join: the
-## activation names the host, and their published activity is what says how to reach
-## them.
+## there is none to be had. This is the second half of a platform join that names only
+## the host — the older MPSD activation shapes — rather than carrying the connection
+## string itself: their published activity is what says how to reach them.
 ##
 ## Unlike joinable_activities() this does not drop a full session — an invite the player
 ## explicitly accepted deserves a real attempt and a real error from the lobby, not a
@@ -458,15 +511,34 @@ func connection_string_for_xuid(user: Variant, xuid: String) -> String:
 	return String(info.get_connection_string()).strip_edges()
 
 
-## Printed once per run so the first sandbox test settles what an invite actually
-## carries, without spamming the console for every subsequent invite. Worth keeping:
-## the payload's shape is the difference between a join that works and one that is
-## silently dropped, and it can only be observed on hardware.
-func _log_invite_shape(invite: Dictionary) -> void:
-	if _logged_invite_shape:
-		return
-	_logged_invite_shape = true
-	print("[Activity] Invite payload: %s" % JSON.stringify(invite))
+## Printed for every activation: the payload's shape is the difference between a join
+## that works and one that is silently dropped, and it can only be observed on
+## hardware. The summary line says how the platform escaped the URI and what the
+## parser made of it, which is what to read first when an invite does not land.
+func _log_activation(kind: String, invite: Dictionary, request: Dictionary) -> void:
+	var uri := String(invite.get("raw_uri", ""))
+	if uri.is_empty():
+		print("[Activity] %s payload (no URI): %s" % [kind, JSON.stringify(invite)])
+	else:
+		print("[Activity] %s URI: %s" % [kind, uri])
+	print("[Activity] %s parsed: %s" % [kind, _describe_activation(uri, request)])
+
+
+## One line on how an activation URI was escaped and what the parser took from it.
+static func _describe_activation(uri: String, request: Dictionary) -> String:
+	var lowercase_escapes := RegEx.create_from_string("%([0-9a-f][a-f]|[a-f][0-9a-f])")
+	var summary := "percent escapes %s, lowercase escapes %s, '+' %s" % [
+		"yes" if uri.contains("%") else "no",
+		"yes" if lowercase_escapes.search(uri) != null else "no",
+		"yes" if uri.contains("+") else "no",
+	]
+	var connection_string := String(request.get("connection_string", ""))
+	if not connection_string.is_empty():
+		return "%s -> connection string (%d chars)" % [summary, connection_string.length()]
+	var xuid := String(request.get("xuid", ""))
+	if not xuid.is_empty():
+		return "%s -> host XUID %s" % [summary, xuid]
+	return "%s -> nothing usable" % summary
 
 
 # --- Shared -----------------------------------------------------------------

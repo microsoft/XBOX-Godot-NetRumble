@@ -466,9 +466,15 @@ for PC builds using XBOX sign-in, through Game Bar.
 - It subscribes to the GDK singleton's `activation` for `invite_accepted`,
   `pending_invite_received` and `protocol_activated`, normalizing all three into one
   `join_requested` signal.
+- An invite or shell join carries the host's Lobby connection string in the activation
+  URI (`…://inviteAccept?invitedUser=…&sender=…&connectionString=…`). `ActivityService`
+  reads it from the raw URI and percent-decodes it once. `String.uri_decode()` — which the
+  addon's pre-parsed invite fields go through — turns `+` into a space and drops the `%`
+  of a lowercase escape, and either one fails the Lobby join: an accepted invite that
+  never reached the lobby was a certification failure for exactly this reason.
 - `InviteRouter` buffers an activation that arrives before sign-in resolves (the normal
-  path for a cold launch from an invite), resolves the host's XUID once a user is signed
-  in, and lands the player in the lobby.
+  path for a cold launch from an invite), resolves the host's XUID when an activation
+  names only the host, and lands the player in the lobby.
 - The GDK runtime starts at process launch through `XboxBootstrap`, ahead of `Services`,
   so an activation delivered before sign-in is not dropped. Autoload order in
   `project.godot` is what guarantees this.
@@ -477,7 +483,8 @@ for PC builds using XBOX sign-in, through Game Bar.
 
 **Code:** `scripts/services/activity_service.gd`, `scripts/autoload/invite_router.gd`,
 `scripts/autoload/platform_session.gd`, `project.godot` (autoload order),
-`MicrosoftGame.config` (protocol activation).
+`MicrosoftGame.config` (protocol activation). Parsing is covered headlessly by
+`tools/tests/invite_uri_tests.gd`.
 
 ---
 
