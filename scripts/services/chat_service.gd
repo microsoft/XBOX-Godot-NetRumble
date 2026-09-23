@@ -73,6 +73,8 @@ var _restricted_text: Dictionary = {}
 var _text_evaluated: Dictionary = {}
 var _control_generation := 0
 var _control_operation_pending := false
+var _service_epoch := 0
+var _service_reset_pending := false
 var _text_policy_generation := 0
 var last_text_error := ""
 ## Whether this account may use voice and text chat at all (XR-045). Set before host or
@@ -104,6 +106,30 @@ func is_chat_allowed() -> bool:
 
 func has_control() -> bool:
 	return _chat_user != null
+
+
+func is_control_operation_pending() -> bool:
+	return _control_operation_pending
+
+
+## Party shutdown owns native controls until it confirms SDK cleanup. Do not destroy
+## an old user's control from a late completion after a later initialization.
+func begin_service_reset() -> void:
+	_service_reset_pending = true
+	_service_epoch += 1
+	invalidate_session()
+
+
+func finish_service_reset() -> void:
+	_chat_user = null
+	_muted_ids.clear()
+	_player_muted_ids.clear()
+	_self_muted = true
+	last_text_error = ""
+	clear_chat_restrictions()
+	_service_reset_pending = false
+	_finish_control_operation()
+	chat_changed.emit()
 
 
 func can_exchange_text(entity_key: Dictionary) -> bool:
@@ -352,11 +378,12 @@ func _text_failure(reason: String) -> bool:
 ## token itself belongs to PartyService, which owns the join lifecycle.
 func ensure_control(user: Variant, cfg: Variant, still_current: Callable = Callable()) -> void:
 	var chat: Variant = _chat()
-	if chat == null or user == null:
+	if _service_reset_pending or chat == null or user == null:
 		return
 	if not _still_current(still_current):
 		return
 	var generation := _control_generation
+	var service_epoch := _service_epoch
 	# Neither creation nor destruction may reuse a user's control while another
 	# native lifecycle operation still owns it.
 	while _control_operation_pending:
@@ -379,9 +406,13 @@ func ensure_control(user: Variant, cfg: Variant, still_current: Callable = Calla
 			return
 	_control_operation_pending = true
 	var result: Variant = await chat.create_local_chat_control_async(user, cfg)
+	if service_epoch != _service_epoch:
+		return
 	if generation != _control_generation or not _still_current(still_current):
 		if result != null and result.ok:
 			var destroyed: Variant = await chat.destroy_local_chat_control_async(user)
+			if service_epoch != _service_epoch:
+				return
 			if destroyed != null and not destroyed.ok:
 				push_warning("[Party] Destroying a cancelled chat control failed: %s" % _reason(destroyed))
 		_finish_control_operation()
@@ -410,6 +441,8 @@ func _finish_control_operation() -> void:
 
 func destroy_control() -> void:
 	invalidate_session()
+	if _service_reset_pending:
+		return
 	while _control_operation_pending:
 		await _control_operation_finished
 	await _destroy_control_now()
@@ -423,6 +456,9 @@ func destroy_control() -> void:
 ## dropping a retained control whose privilege has since been withdrawn must not read as
 ## the outside invalidation that guard is watching for.
 func _destroy_control_now() -> void:
+	if _service_reset_pending:
+		return
+	var service_epoch := _service_epoch
 	var chat: Variant = _chat()
 	var user: Variant = _chat_user
 	_chat_user = null
@@ -443,6 +479,8 @@ func _destroy_control_now() -> void:
 	if user != null:
 		_control_operation_pending = true
 		var result: Variant = await chat.destroy_local_chat_control_async(user)
+		if service_epoch != _service_epoch:
+			return
 		if result != null and not result.ok:
 			push_warning("[Party] Destroying the chat control failed: %s" % _reason(result))
 		_finish_control_operation()

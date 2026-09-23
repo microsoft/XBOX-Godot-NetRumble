@@ -26,10 +26,12 @@ while exiting zero. This needs built addons/importable resources and does not te
 Party, Xbox policy or roaming. CI's parse/import job is currently advisory; these text checks
 are hard gates. See [CONTRIBUTING](../CONTRIBUTING.md) and [Manual test plan](../docs/manual-test-plan.md).
 
-Account-save changes also need the focused behavioral suite:
+Account-save and multiplayer lifecycle changes also need the behavioral suite:
 
 ```powershell
 .\tools\run-save-tests.ps1 -Godot 'C:\path\to\Godot_console.exe'
+# Faster multiplayer-only iteration; the default command above includes this suite.
+.\tools\run-save-tests.ps1 -Godot 'C:\path\to\Godot_console.exe' -Suite Multiplayer
 ```
 
 The runner uses isolated, distinct Xbox/PlayFab identities, fake GDK XGameSaveFiles results
@@ -37,6 +39,22 @@ The runner uses isolated, distinct Xbox/PlayFab identities, fake GDK XGameSaveFi
 user saves, and does not initialize the live platform addons. It runs the copied project's
 import pass before executing production GDScript with test doubles, then removes its temporary
 project. The same runner is wired into the existing Godot CI job.
+
+`multiplayer_failure_tests.gd`, called by `save_tests.gd`, injects synchronous errors,
+returned completion Signals, terminal events and stalled native operations while retaining
+production PartyService host/join/attach/leave and NetManager lifecycle logic. It covers
+all six event kinds, pre-bind loss, absolute 45-second establishment and shared 15-second
+cleanup boundaries, scoped Party/Lobby reset, stale completions, manual retry/chat recreation,
+autonomous native reset/readiness reconciliation (including partial initialization), and
+actual host/code/friend/invite loading screens. Clock seams advance deadlines without
+waiting real budgets. No live addon, root-runtime shutdown, machine connectivity change
+or real account/save/network modification is part of these tests. Native SDK ownership
+and installed-binary provenance require separate companion-addon validation.
+
+The network double rejects leave after native destruction, including the peer-disconnect
+callback preceding DESTROYED. These cases verify retained chat, zero unnecessary scoped
+shutdowns, safe manual retry and exact-instance handling of late results/old notifications.
+Terminal state alone still requires cleanup; real leave errors are not broadly ignored.
 
 Cover owner changes, authoritative empty
 state, failed/malformed reads without overwrite or gameplay, Retry, canceled/stale completions,

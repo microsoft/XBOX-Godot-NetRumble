@@ -36,6 +36,10 @@ func _run() -> void:
 	_check(is_equal_approx(PlayerProfile.music_volume, 0.25), "startup ignores legacy music value")
 	_check(Services.get_match_history().is_empty(), "startup ignores legacy history")
 
+	if OS.get_environment("NR_SAVE_TEST_SUITE") == "Multiplayer":
+		await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
+		await _complete()
+		return
 	await _storage_contract()
 	await _storage_single_flight()
 	await _xbox_folder_contract()
@@ -59,7 +63,12 @@ func _run() -> void:
 	await preload("res://tools/tests/suspend_tests.gd").new().run(self)
 	await preload("res://tools/tests/leaderboard_tests.gd").new().run(self)
 	await preload("res://tools/tests/pr_feedback_tests.gd").new().run(self)
+	await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
 	_source_guards()
+	await _complete()
+
+
+func _complete() -> void:
 	for path: String in _legacy:
 		_check(FileAccess.get_file_as_bytes(path) == _legacy[path], "legacy file untouched: " + path)
 	await _reset()

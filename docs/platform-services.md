@@ -164,6 +164,65 @@ typed text. See [the text lifecycle](multiplayer.md#chat) and
 
 ---
 
+## Multiplayer establishment and recovery
+
+`NetManager.host_match()` remains an awaited boolean; code and invite joins return an
+owned `JoinRequest`. Each attempt has one **45-second monotonic deadline**, including
+NetManager's sign-in/privilege resolution, chat setup, Party/Lobby calls, descriptor
+discovery and guest admission. The menu's preceding permissions screen is separate.
+Neither a completed transport nor a provisional admission renews that budget.
+
+Definitive offline hints and terminal Party loss fail an establishing attempt immediately,
+even before NetManager has a peer. The first reason wins. Established online sessions
+retain their **eight-second hint-loss grace**; recoverable Party ERROR events do not end
+a match. Practice is unaffected. Party network event kinds come from the loaded
+`PlayFabParty` ClassDB constants; addon-free fallbacks are 1 through 6, not 0 through 5.
+Missing or ambiguous loaded contracts explicitly refuse establishment.
+
+An unsuccessful attempt remains pending on its own loading screen while `PartyService`
+performs single-flight cleanup. The caption changes to **Cleaning up the match**, and
+repeat cancellation is disabled. Descriptor clearing is best-effort and cannot block
+lobby or network leave. All outstanding calls, including creates/joins which have not
+yet returned a resource and chat-control operations, share a separate **15-second
+graceful-cleanup budget**.
+
+An ordinary native network destruction is already cleaned up, not a reason to reset
+both services. The addon detaches a successfully exposed network's `local_peer` before
+peer-disconnect and DESTROYED callbacks; cleanup recognizes that exact detached wrapper
+and skips its redundant leave, including late operation results. FAILED/DISCONNECTED
+alone do not prove release, and genuine leave failures still escalate. Notifications
+from an old network cannot clear a replacement. Valid per-user chat remains retained.
+
+If cleanup stalls or leave fails, the caption changes to **Recovering multiplayer
+services**. The game awaits scoped Party and Lobby `shutdown_async()` operations, never
+PlayFab-root, account or save shutdown. Invalidating a continuation does not release
+SDK-owned state. Online entry stays fenced through reset; only confirmed successful
+shutdown releases that fence and invalidates retained chat controls and initialization
+flags. A later **manual** retry initializes both services and recreates chat lazily,
+without signing in again. There is no automatic reconnect or network retry.
+Native services can also reset themselves before returning any network. Cleanup and
+initialization reconcile both readiness caches with native `is_initialized()`; an
+uninitialized Party invalidates retained chat controls even when no network was attached.
+A manual retry initializes only missing services, preserving a still-valid sibling service
+and its resources. A service lost during initialization fails that attempt rather than
+restarting it automatically.
+
+If scoped recovery reports failure, the attempt explicitly reports that online play is
+blocked and requires a restart; it never reports successful cleanup or a usable session.
+Late results cannot publish activity, bind a peer, clear a replacement's chat control,
+or dismiss another attempt's loading screen. Host failure still offers Practice for a
+ready account. Superseded joins stay silent so only the replacement reports a recovery
+failure; explicit cancellation stays silent unless recovery itself fails. Suspend,
+account removal and application quit retain their own
+ownership and readiness safeguards.
+
+The isolated failure suite in `tools\tests\multiplayer_failure_tests.gd` drives production
+PartyService, NetManager and the actual menu/invite screens with SDK-boundary doubles.
+It is game-side regression evidence, not proof of native SDK lifetime safety or live
+PC/console connectivity behavior.
+
+---
+
 ## Moderation and reporting
 Chat is the only content a player authors in this title, making it the whole UGC surface
 (XR-018). `ModerationService` owns both halves.

@@ -207,6 +207,7 @@ class Chat extends ChatService:
 
 class Network extends RefCounted:
 	signal state_changed()
+	var local_peer := OfflineMultiplayerPeer.new()
 	var descriptor := "test-descriptor"
 	var leaves := 0
 
@@ -256,6 +257,7 @@ class SessionParty extends PartyService:
 	func _attach_network(network: Variant, _host: bool) -> void:
 		attachments += 1
 		_network = network
+		_peer = OfflineMultiplayerPeer.new()
 
 	func _create_lobby(_user: Variant, _descriptor: String, _max: int, _mode: String, _operation: int) -> String:
 		advertisements += 1
