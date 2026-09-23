@@ -516,17 +516,48 @@ func connection_string_for_xuid(user: Variant, xuid: String) -> String:
 ## hardware. The summary line says how the platform escaped the URI and what the
 ## parser made of it, which is what to read first when an invite does not land.
 func _log_activation(kind: String, invite: Dictionary, request: Dictionary) -> void:
+	for line: String in _activation_log_lines(kind, invite, request):
+		print(line)
+
+
+## The lines _log_activation prints. No value from the payload appears in them: the
+## Lobby connection string is the credential join_lobby_async accepts, its kv1 segment
+## being the lobby's key, and XUIDs identify players. Keys, their order and each value's
+## length are what tell one activation shape from another, and those are kept.
+static func _activation_log_lines(kind: String, invite: Dictionary, request: Dictionary) -> PackedStringArray:
 	var uri := String(invite.get("raw_uri", ""))
+	var shape := ""
 	if uri.is_empty():
-		print("[Activity] %s payload (no URI): %s" % [kind, JSON.stringify(invite)])
+		var keys := PackedStringArray()
+		for key: Variant in invite:
+			keys.append(str(key))
+		shape = "URI: (none); payload keys: %s" % (", ".join(keys) if not keys.is_empty() else "(none)")
 	else:
-		print("[Activity] %s URI: %s" % [kind, uri])
-	print("[Activity] %s parsed: %s" % [kind, _describe_activation(uri, request)])
+		shape = "URI: " + _redacted_uri(uri)
+	return PackedStringArray([
+		"[Activity] %s %s" % [kind, shape],
+		"[Activity] %s parsed: %s" % [kind, _describe_activation(uri, request)],
+	])
 
 
-## One line on how an activation URI was escaped and what the parser took from it.
+## The URI with every query value replaced by its length, as in
+## `ms-xbl-7C84AA93://inviteAccept?invitedUser=<16 chars>&sender=<16 chars>&connectionString=<N chars>`.
+static func _redacted_uri(uri: String) -> String:
+	var query_start := uri.find("?")
+	if query_start < 0:
+		return uri
+	var pairs := PackedStringArray()
+	for pair: String in uri.substr(query_start + 1).split("&"):
+		var equals := pair.find("=")
+		pairs.append(pair if equals < 0 else "%s=<%d chars>" % [pair.left(equals), pair.length() - equals - 1])
+	return uri.left(query_start + 1) + "&".join(pairs)
+
+
+## One line on how an activation URI was escaped and what the parser took from it. A
+## lowercase escape has a lowercase hex digit in either place (`%3a`, `%aB`, `%Ab`);
+## String.uri_decode() decodes none of them.
 static func _describe_activation(uri: String, request: Dictionary) -> String:
-	var lowercase_escapes := RegEx.create_from_string("%([0-9a-f][a-f]|[a-f][0-9a-f])")
+	var lowercase_escapes := RegEx.create_from_string("%(?:[0-9A-Fa-f][a-f]|[a-f][0-9A-Fa-f])")
 	var summary := "percent escapes %s, lowercase escapes %s, '+' %s" % [
 		"yes" if uri.contains("%") else "no",
 		"yes" if lowercase_escapes.search(uri) != null else "no",
@@ -537,7 +568,7 @@ static func _describe_activation(uri: String, request: Dictionary) -> String:
 		return "%s -> connection string (%d chars)" % [summary, connection_string.length()]
 	var xuid := String(request.get("xuid", ""))
 	if not xuid.is_empty():
-		return "%s -> host XUID %s" % [summary, xuid]
+		return "%s -> host XUID (%d digits)" % [summary, xuid.length()]
 	return "%s -> nothing usable" % summary
 
 

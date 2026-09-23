@@ -29,6 +29,7 @@ func run(test: Node) -> void:
 	_preparsed_fallback(test)
 	_percent_decoding(test)
 	_unusable_uris(test)
+	_activation_logging(test)
 	_emits_exact_request(test)
 
 
@@ -126,6 +127,8 @@ func _percent_decoding(test: Node) -> void:
 		"%3a%7C%3D": ":|=",
 		"%C3%A9": "é",
 		"%c3%a9": "é",
+		"%C3%aB": "ë",
+		"%c3%Ab": "ë",
 		"%2541": "%41",
 		"%%41": "%A",
 		"100%": "100%",
@@ -152,6 +155,53 @@ func _unusable_uris(test: Node) -> void:
 		test._check(ActivityService._join_request_from_uri(uri).is_empty(), "nothing to join in '%s'" % uri)
 		test._check(ActivityService._join_request_from_invite(_addon_invite(uri)).is_empty(),
 			"nothing to join via addon payload in '%s'" % uri)
+
+
+func _activation_logging(test: Node) -> void:
+	print("CASE: activation logs keep the payload's shape but none of its values")
+	var key := CS.get_slice("kv1:", 1)
+	var lobby_id := CS.get_slice(":", 1).get_slice(".", 0)
+	var secrets: Array[String] = [key, key.uri_encode(), _lowercase_escapes(key.uri_encode()), lobby_id, INVITED, SENDER]
+	var encodings := {
+		"uppercase escapes": CS.uri_encode(),
+		"lowercase escapes": _lowercase_escapes(CS.uri_encode()),
+		"unescaped": CS,
+	}
+	for encoding: String in encodings:
+		var uri := "%s?invitedUser=%s&sender=%s&connectionString=%s" % [CONSOLE, INVITED, SENDER, encodings[encoding]]
+		for payload: Dictionary in [_addon_invite(uri), {"raw_uri": uri}]:
+			var logged := ActivityService._activation_log_lines("Accepted invite", payload, ActivityService._join_request_from_invite(payload))
+			_check_redacted(test, logged, secrets, encoding)
+			test._check(logged[0] == "[Activity] Accepted invite URI: %s?invitedUser=<16 chars>&sender=<16 chars>&connectionString=<%d chars>" % [
+				CONSOLE, String(encodings[encoding]).length()], "URI line keeps keys and value lengths: " + logged[0])
+			test._check(logged[1].ends_with("-> connection string (%d chars)" % CS.length()), "parsed line: " + logged[1])
+
+	var no_uri := {"connectionString": CS, "sender_xuid": SENDER}
+	var lines := ActivityService._activation_log_lines("Pending invite", no_uri, ActivityService._join_request_from_invite(no_uri))
+	_check_redacted(test, lines, secrets, "payload without a URI")
+	test._check(lines[0] == "[Activity] Pending invite URI: (none); payload keys: connectionString, sender_xuid",
+		"a payload without a URI still gets a URI line: " + lines[0])
+	lines = ActivityService._activation_log_lines("Pending invite", {}, {})
+	test._check(lines[0] == "[Activity] Pending invite URI: (none); payload keys: (none)" and lines[1].ends_with("-> nothing usable"),
+		"an empty payload: " + str(lines))
+
+	var host_only := "%s?invitedUser=%s&sender=%s" % [CONSOLE, INVITED, SENDER]
+	lines = ActivityService._activation_log_lines("Protocol activation", {"raw_uri": host_only}, ActivityService._join_request_from_uri(host_only))
+	_check_redacted(test, lines, secrets, "host XUID only")
+	test._check(lines[1].ends_with("-> host XUID (16 digits)"), "parsed line names a host XUID without printing it: " + lines[1])
+
+	# uri_decode() mangles an escape with a lowercase hex digit in either place, so the
+	# summary has to flag %aB and %Ab as well as %3a.
+	for uri: String in [CONSOLE + "?x=%3a", CONSOLE + "?x=%C3%aB", CONSOLE + "?x=%C3%Ab"]:
+		test._check(ActivityService._describe_activation(uri, {}).contains("lowercase escapes yes"), "lowercase escape flagged in " + uri)
+	for uri: String in [CONSOLE + "?x=%3A%7C%2B%C3%AB", CONSOLE + "?x=100%", CONSOLE + "?x=%zz", CONSOLE + "?x=abc"]:
+		test._check(ActivityService._describe_activation(uri, {}).contains("lowercase escapes no"), "no lowercase escape in " + uri)
+
+
+static func _check_redacted(test: Node, lines: PackedStringArray, secrets: Array[String], label: String) -> void:
+	var text := "\n".join(lines)
+	for secret: String in secrets:
+		test._check(not text.contains(secret), "%s: log omits '%s'" % [label, secret.left(12)])
 
 
 func _emits_exact_request(test: Node) -> void:

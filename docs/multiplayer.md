@@ -88,7 +88,8 @@ code and message go to the `[Party] <stage> failed (…)` warning instead. See
    one request. `InviteRouter` buffers it until account/save readiness and the acquire screen have
    completed; an older activation that names only the host (`sender`, `senderXuid`, `joineeXuid`)
    is resolved to a connection string from their XBOX activity. Every activation logs its URI and
-   a `parsed:` summary under `[Activity]`.
+   a `parsed:` summary under `[Activity]`. The URI line keeps each query key but shows only the
+   value's length: the connection string is a lobby join credential and XUIDs identify players.
 4. A cold-launch request expires after five minutes. Back abandons acquisition without joining.
    Save-loading failure offers Retry/Back, not a route around readiness. An invite
    received while already playing asks before leaving the current session.
