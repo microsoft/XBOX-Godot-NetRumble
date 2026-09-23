@@ -36,9 +36,14 @@ func _run() -> void:
 	_check(is_equal_approx(PlayerProfile.music_volume, 0.25), "startup ignores legacy music value")
 	_check(Services.get_match_history().is_empty(), "startup ignores legacy history")
 
+	if OS.get_environment("NR_SAVE_TEST_SUITE") == "Multiplayer":
+		await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
+		await _complete()
+		return
 	await _storage_contract()
 	await _storage_single_flight()
 	await _xbox_folder_contract()
+	await preload("res://tools/tests/save_layout_tests.gd").new().run(self)
 	await _account_isolation()
 	await _read_failures_and_retry()
 	await _initialization_failures()
@@ -60,7 +65,12 @@ func _run() -> void:
 	await preload("res://tools/tests/leaderboard_tests.gd").new().run(self)
 	await preload("res://tools/tests/pr_feedback_tests.gd").new().run(self)
 	await preload("res://tools/tests/join_failure_tests.gd").new().run(self)
+	await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
 	_source_guards()
+	await _complete()
+
+
+func _complete() -> void:
 	for path: String in _legacy:
 		_check(FileAccess.get_file_as_bytes(path) == _legacy[path], "legacy file untouched: " + path)
 	await _reset()
@@ -91,13 +101,14 @@ func _folder() -> String:
 	_folder_sequence += 1
 	var path := ProjectSettings.globalize_path("res://test-data/%d" % _folder_sequence)
 	_check(DirAccess.make_dir_recursive_absolute(path) == OK, "create disposable account folder")
+	_check(DirAccess.make_dir_absolute(path.path_join(GameSaveService.SAVE_DIRECTORY)) == OK, "create disposable save subdirectory")
 	return path
 
 
 func _put(folder: String, file_name: String, text: String) -> void:
 	var sequence := 1
 	for slot: String in [file_name, file_name + GameSaveService.SLOT_SUFFIX]:
-		var path := folder.path_join(slot)
+		var path := folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(slot)
 		if FileAccess.file_exists(path):
 			var existing: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
 			if existing is Dictionary and existing.get("sequence") is float:
@@ -107,7 +118,7 @@ func _put(folder: String, file_name: String, text: String) -> void:
 		"payload": text,
 		"sha256": ("%d\n%s" % [sequence, text]).sha256_text(),
 	}
-	var file := FileAccess.open(folder.path_join(file_name), FileAccess.WRITE)
+	var file := FileAccess.open(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name), FileAccess.WRITE)
 	_check(file != null, "create fixture " + file_name)
 	if file != null:
 		file.store_string(JSON.stringify(record))
@@ -192,13 +203,13 @@ func _storage_contract() -> void:
 		var read := store.read(user, 1, file_name)
 		_status(read, GameSaveService.Status.OK, "read written " + file_name)
 		_check(read.data == JSON.parse_string(JSON.stringify(data)), "actual JSON roundtrip " + file_name)
-		var before := FileAccess.get_file_as_bytes(folder.path_join(file_name))
+		var before := FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name))
 		_status(store.write_now(other, 1, file_name, data), GameSaveService.Status.STALE, "wrong owner write")
 		_status(store.write_now(user, 2, file_name, data), GameSaveService.Status.STALE, "wrong generation write")
 		_status(store.read(other, 1, file_name), GameSaveService.Status.STALE, "wrong owner read")
 		_status(store.read(user, 2, file_name), GameSaveService.Status.STALE, "wrong generation read")
 		_status(store.write_now(user, 1, file_name, "invalid"), GameSaveService.Status.FAILED, "bad write payload")
-		_check(FileAccess.get_file_as_bytes(folder.path_join(file_name)) == before, "rejected writes preserve valid " + file_name)
+		_check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name)) == before, "rejected writes preserve valid " + file_name)
 	_status(store.read(user, 1, "../escape.json"), GameSaveService.Status.FAILED, "unknown read path")
 	_status(store.write_now(user, 1, "../escape.json", {}), GameSaveService.Status.FAILED, "unknown write path")
 	_check(not FileAccess.file_exists(folder.get_base_dir().path_join("escape.json")), "unknown write cannot escape store")
@@ -356,7 +367,7 @@ func _read_failures_and_retry() -> void:
 		_put(folder, sample.file, sample.text)
 		var before: Dictionary = {}
 		for file_name: String in FILES:
-			before[file_name] = FileAccess.get_file_as_bytes(folder.path_join(file_name))
+			before[file_name] = FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name))
 		_select("bad-read", folder)
 		_check(not await Services.sign_in(), "invalid payload denies readiness: " + sample.text)
 		_check(Services.is_online() and not Services.is_account_ready(), "authentication alone is not readiness")
@@ -369,7 +380,7 @@ func _read_failures_and_retry() -> void:
 		_check(not PlayerProfile.save_settings(), "failed load denies profile write")
 		await _assert_denied()
 		for file_name: String in FILES:
-			_check(FileAccess.get_file_as_bytes(folder.path_join(file_name)) == before[file_name], "failed load leaves bytes untouched")
+			_check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name)) == before[file_name], "failed load leaves bytes untouched")
 		_json(folder, sample.file, [] if sample.file == "history.json" else {})
 		_check(await Services.sign_in(), "Retry reads repaired current payload")
 		_check(Services._identity.calls == 1, "Retry reuses authenticated identity")
@@ -378,7 +389,7 @@ func _read_failures_and_retry() -> void:
 	for file_name: String in FILES:
 		await _reset()
 		var folder := _folder()
-		var blocked_path := folder.path_join(file_name)
+		var blocked_path := folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name)
 		_check(DirAccess.make_dir_absolute(blocked_path) == OK, "inject directory at save path")
 		_select("read-failure", folder)
 		_check(not await Services.sign_in(), "directory read fails, not missing: " + file_name)
@@ -392,14 +403,33 @@ func _read_failures_and_retry() -> void:
 	_select("vanished", vanished)
 	var store: Doubles.Saves = Services._game_saves
 	store.on_read = func(_name: String) -> void:
-		DirAccess.remove_absolute(vanished)
+		DirAccess.remove_absolute(vanished.path_join(GameSaveService.SAVE_DIRECTORY))
 	_check(not await Services.sign_in(), "folder disappearing between prepare/read is failure")
 	_check(Services.sign_in_error().contains("not accessible"), "folder access failure is explicit")
+	_check(Services.sign_in_error().contains("stage=read")
+		and Services.sign_in_error().contains("directory_exists=false"), "read folder diagnostics survive sign-in error")
+	_check(not Services.sign_in_error().contains(vanished), "read folder diagnostics omit account path")
 	store.on_read = Callable()
 
 
 func _xbox_folder_contract() -> void:
 	print("CASE: XGameSaveFiles dictionary/native results, signed-out completions and Xbox-only binding")
+	var inaccessible := Doubles.Saves.new()
+	var owner := Doubles.User.new("folder-diagnostics")
+	var absent := _folder().path_join("absent")
+	inaccessible.sdk.folder = absent
+	var failed := await inaccessible.prepare(owner, 1)
+	_status(failed, GameSaveService.Status.FAILED, "inaccessible SDK folder fails preparation")
+	_check(failed.reason.contains("stage=create-directory") and failed.reason.contains("error=")
+		and failed.reason.contains("directory_exists=false"), "prepare reports independent folder diagnostics")
+	_check(not failed.reason.contains(absent) and not inaccessible.is_bound(owner, 1),
+		"folder diagnostics do not expose path or bypass readiness")
+	_check(not DirAccess.dir_exists_absolute(absent), "folder diagnostic does not create the missing directory")
+	var existing := _folder()
+	var diagnostic := GameSaveService._folder_access_failure(existing, "prepare", ERR_INVALID_PARAMETER)
+	_check(diagnostic.contains("error=%d" % ERR_INVALID_PARAMETER)
+		and diagnostic.contains("directory_exists=true"), "diagnostic distinguishes open rejection from existing directory")
+	_check(not diagnostic.contains(existing), "existing directory diagnostic omits account path")
 	for response: Variant in [null, false, "bad", {}, {"ok": true}, {"ok": "yes", "data": {"path": _folder()}},
 			{"ok": true, "data": _folder()}, {"ok": true, "data": []}, {"ok": true, "data": {}},
 			{"ok": true, "data": {"path": 4}}, {"ok": true, "data": {"path": ""}},
@@ -483,7 +513,7 @@ func _initialization_failures() -> void:
 			"folder-result": store.sdk.folder_ok = false
 			"empty-folder": store.sdk.folder = ""
 			"wrong-folder-type": store.sdk.folder = {}
-			"absent-folder": store.sdk.folder = folder.path_join("absent")
+			"absent-folder": store.sdk.folder = folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("absent")
 			"custom": Services._identity.xbox_available = false
 			"signed-out": Services._identity.target.signed_in = false
 			"auth": Services._identity.authenticate = false
@@ -596,8 +626,8 @@ func _write_retry() -> void:
 	_check(Services.report_match_result(_payload(1)), "seed valid history/stats")
 	var before: Dictionary = {}
 	for file_name: String in FILES:
-		before[file_name] = FileAccess.get_file_as_bytes(folder.path_join(file_name))
-		_check(DirAccess.make_dir_absolute(folder.path_join(file_name + GameSaveService.SLOT_SUFFIX)) == OK, "inject real inactive-slot access failure")
+		before[file_name] = FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name))
+		_check(DirAccess.make_dir_absolute(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name + GameSaveService.SLOT_SUFFIX)) == OK, "inject real inactive-slot access failure")
 	PlayerProfile.music_volume = 0.6
 	_check(not PlayerProfile.save_settings() and PlayerProfile.music_volume == 0.6, "profile write failure retains current settings")
 	_check(not Services.report_match_result(_payload(2)), "match write failure returned")
@@ -611,15 +641,15 @@ func _write_retry() -> void:
 		and Services.achievement_tracker().to_dict() == pending_stats, "suspend retains every failed payload")
 	_check(_save_errors.size() == 6, "each failed write emits a visible save_failed signal")
 	for file_name: String in FILES:
-		_check(FileAccess.get_file_as_bytes(folder.path_join(file_name)) == before[file_name], "failed write preserves valid bytes: " + file_name)
-	_check(DirAccess.remove_absolute(folder.path_join("profile.json" + GameSaveService.SLOT_SUFFIX)) == OK, "remove only profile fault")
+		_check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name)) == before[file_name], "failed write preserves valid bytes: " + file_name)
+	_check(DirAccess.remove_absolute(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json" + GameSaveService.SLOT_SUFFIX)) == OK, "remove only profile fault")
 	_check(not Services.persist_for_suspend(), "partial retry still reports history/stats failure")
 	_check((await _saved(folder, "profile.json")).musicVolume == 0.6
 		and Services.get_match_history() == pending_history and Services.achievement_tracker().to_dict() == pending_stats,
 		"partial retry commits profile and retains failed history/stats")
 	for file_name: String in ["history.json", "stats.json"]:
-		_check(FileAccess.get_file_as_bytes(folder.path_join(file_name)) == before[file_name], "partial retry protects failed file")
-		_check(DirAccess.remove_absolute(folder.path_join(file_name + GameSaveService.SLOT_SUFFIX)) == OK, "remove remaining write fault")
+		_check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name)) == before[file_name], "partial retry protects failed file")
+		_check(DirAccess.remove_absolute(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(file_name + GameSaveService.SLOT_SUFFIX)) == OK, "remove remaining write fault")
 	_check(Services.persist_for_suspend(), "same-owner suspend retry succeeds")
 	_check(PlayerProfile.to_dict() == pending_profile and Services.get_match_history() == pending_history
 		and Services.achievement_tracker().to_dict() == pending_stats, "successful retry preserves working payloads")
@@ -631,7 +661,7 @@ func _write_retry() -> void:
 	Services._game_saves.failed_files.append("profile.json")
 	PlayerProfile.music_volume = 0.8
 	_check(not PlayerProfile.save_settings(), "departing owner's save failure returned")
-	var saved_profile := FileAccess.get_file_as_bytes(folder.path_join("profile.json"))
+	var saved_profile := FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json"))
 	var old_user: Variant = Services.xbox_user()
 	var old_generation := Services.account_generation()
 	var old_store: GameSaveService = Services._game_saves
@@ -642,16 +672,16 @@ func _write_retry() -> void:
 	_check(is_equal_approx(PlayerProfile.music_volume, 0.25), "A unsaved settings discarded at owner boundary")
 	_status(old_store.write_now(old_user, old_generation, "profile.json", {"musicVolume": 0.8}),
 		GameSaveService.Status.STALE, "old writer cannot retry after account loss")
-	_check(FileAccess.get_file_as_bytes(folder.path_join("profile.json")) == saved_profile, "account loss never writes removed user")
+	_check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json")) == saved_profile, "account loss never writes removed user")
 	_check(not FileAccess.file_exists(b.path_join("profile.json")), "no transfer of A unsaved payload into B")
 
 	var store := Doubles.Saves.new()
 	var user := Doubles.User.new("rename")
 	store.sdk.folder = _folder()
 	_status(await store.prepare(user, 1), GameSaveService.Status.OK, "rename test prepared")
-	_check(DirAccess.make_dir_absolute(store.sdk.folder.path_join("profile.json")) == OK, "block atomic rename destination")
+	_check(DirAccess.make_dir_absolute(store.sdk.folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json")) == OK, "block atomic rename destination")
 	_status(store.write_now(user, 1, "profile.json", {}), GameSaveService.Status.FAILED, "real replacement failure")
-	_check(DirAccess.dir_exists_absolute(store.sdk.folder.path_join("profile.json")), "replacement failure preserves destination")
+	_check(DirAccess.dir_exists_absolute(store.sdk.folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json")), "replacement failure preserves destination")
 
 
 func _unconditional_settings() -> void:
@@ -781,7 +811,7 @@ func _gameplay_and_invites() -> void:
 	_check(Services.is_current_account(generation), "network hint does not invalidate ready save store")
 	_check(Services.report_match_result(_payload(9)), "identified offline account retains persistence")
 	var folder: String = Services._game_saves.sdk.folder
-	var saved := FileAccess.get_file_as_bytes(folder.path_join("history.json"))
+	var saved := FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("history.json"))
 	Services.achievement_tracker().note_kill()
 	PlayerProfile.music_volume = 0.81
 	Services._identity.target.signed_in = false
@@ -790,7 +820,7 @@ func _gameplay_and_invites() -> void:
 	_check(NetManager.players.is_empty() and Services.get_match_history().is_empty(), "account loss clears session/history")
 	_check(not PlayerProfile.is_signed_in and PlayerProfile.music_volume == 0.25, "account loss clears identity and current profile")
 	_check(Services._achievement_tracker.kills == 0, "account loss clears tracker")
-	_check(FileAccess.get_file_as_bytes(folder.path_join("history.json")) == saved, "removal does not initiate save")
+	_check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("history.json")) == saved, "removal does not initiate save")
 	await get_tree().process_frame
 	await _assert_denied()
 

@@ -175,6 +175,8 @@ own progress. Repeat with a B that already has nonempty Game Saves.
 | Original A -> fresh B reproduction, then alternate A/B | B starts empty/default; A's own Game Saves remain recoverable; neither account overwrites the other |
 | B has existing settings/history/counters | B loads exactly B's state, with no A rows, preferences, counters or achievement reports |
 | Both integrity slots missing in an initialized folder; valid empty history | Defaults/empty history/zero counters as applicable are authoritative, not previous memory |
+| Console first acquisition, save, normal exit and relaunch | Uses `NetRumble` below the SDK root without a directory-change requirement; saved state survives relaunch. Verify roaming separately |
+| Existing root-level current-format PC saves | Verified copies preserve data in `NetRumble`, originals remain untouched, existing destination saves win, and interrupted copies retry without resetting progress |
 | Shared `settings.cfg`, `match_history.json`, `achievement_stats.json` and token variants pre-seeded in isolated fixtures | Never read, imported, copied, modified, moved or deleted; no migration, old-wrapper reader or compatibility path |
 | New profile and explicitly saved music `0.7` | New profile defaults to `0.25`; explicit `0.7` stays `0.7`, with no value remapping |
 | Initialization/folder failure, unreadable slot, neither slot intact or wrong current-schema payload shape | Specific reason plus Retry/Back; no gameplay, partial account publication or default overwrite of existing files |
@@ -243,7 +245,7 @@ the required XboxUser and cannot supply playable Lobby/Party/UI coverage.
 | 3.8 | Match end and next match | Both return to lobby; next match has no old text |
 | 3.9 | Client closes mid-match | Host removes it and continues; departed sender's retained rows disappear |
 | 3.10 | Host closes mid-match | Client sees a reason and returns to main menu, not a dead match |
-| 3.11 | Cancel join, retry, and allow an attempt to time out | Code remains editable after failure; no delayed join after abandonment; code timeout is 45 seconds |
+| 3.11 | Cancel join, retry, and allow an attempt to time out | Code remains editable after cleanup; no delayed join after abandonment; host/code/invite establishment has one monotonic 45-second budget, including admission |
 | 3.12 | Wrong/newly-created code | One search, then success or readable failure with explicit editable retry; no automatic backoff |
 | 3.13 | Try joining after start or with incompatible protocol | Readable refusal; existing match/roster remains valid; the refused client never sees the lobby, empty or otherwise |
 | 3.14 | Join Friend and accepted invite while warm/cold | Registered XBOX path waits for account/save readiness before lobby; Back abandons acquisition without joining |
@@ -273,6 +275,39 @@ the required XboxUser and cannot supply playable Lobby/Party/UI coverage.
 ### Tier 3 fast path
 
 For iteration, 3.2 → 3.3 → 3.6 → 3.7 → 3.10 covers connection, replication and teardown.
+
+### Establishment failure and scoped recovery
+
+Run `.\tools\run-save-tests.ps1 -Godot '<Godot console executable>' -Suite Multiplayer`
+for isolated fault injection. No live addons, network changes, real accounts or real
+save folders are used. The default runner includes these cases alongside the existing
+save/account/suspend/quit regressions.
+
+Live fault acceptance below requires separately authorized test devices/accounts.
+Do not disable adapters, alter firewalls or disrupt another user's connection as part
+of the automated suite. Record the game revision and installed addon build provenance.
+
+| Scenario | Expected result |
+|---|---|
+| Host loss during Party creation or lobby advertisement, before peer binding | Immediate attempt invalidation; no activity or lobby navigation; one final reason after cleanup |
+| Code/friend/invite loss during lobby/network join or admission | Same ownership and deadline behavior on every entry point; no duplicate disconnect dialog |
+| Delayed sign-in or chat privilege/native result | Counts toward the single 45-second establishment budget; late success cannot restart an abandoned attempt |
+| Cancel, terminal loss or timeout with delayed cleanup | Same loading screen stays visible, says Cleaning up the match, disables repeat Cancel |
+| Descriptor clear stalls or fails | Lobby and network leave still start; cleanup budget is shared, not 15 seconds per step |
+| Leave or an unreturned create/join stalls | After 15 seconds, Recovering multiplayer services remains visible through Party and Lobby shutdown; no root/account/save shutdown |
+| Scoped shutdown fails | Explicit recovery error and blocked online entry, never a success-shaped fallback |
+| Restore connectivity, then manually host/join after confirmed reset | Lazy initialization and a new chat control; same ready account; no automatic retry |
+| Native Party resets while create/join has not returned a network, or either service resets independently | Cached readiness follows both native services; manual retry initializes only missing services and replaces chat only when Party reset; no root/account reset |
+| Late old success after reset/retry | No old resource attachment, activity, chat destruction or replacement-screen dismissal |
+| All six event kinds; terminal STATE versus ERROR | Descriptor changes republish, peer changes route normally, DESTROYED/FAILED/DISCONNECTED end the session; recoverable ERROR alone does not |
+| Native destruction, including peer disconnect before DESTROYED or a late detached result | End only the owning session and leave its lobby; no redundant network leave, Party/Lobby reset or chat recreation; manual retry remains available |
+| FAILED/DISCONNECTED with native resources still attached | Still leave the network; genuine leave failure must escalate, even when its code is `party_resource_not_ready` |
+| Established hint flap or sustained loss | Eight-second grace still applies only to established online sessions; Practice survives either hint |
+| Account removal, suspend or quit overlaps failure cleanup | Existing readiness/quit fences remain; no stale session or account resurrection |
+
+Mocked game-side results do not prove the reported native crash's cause or memory safety.
+Validate the companion native failure/lifetime suite and authorized live PC/console
+behavior independently before claiming either.
 It does **not** replace text/privacy/audio acceptance for communication changes.
 
 > **After any change that moves an `@rpc` method**, 3.3 and 3.7 are mandatory. Godot routes RPCs by

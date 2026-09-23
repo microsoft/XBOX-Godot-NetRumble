@@ -2,6 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $Godot,
+    [ValidateSet('All', 'Multiplayer')]
+    [string] $Suite = 'All',
     [ValidateRange(1, 600)]
     [int] $TimeoutSeconds = 120
 )
@@ -23,6 +25,7 @@ function Invoke-TestGodot([string[]] $Arguments, [string] $InterruptedMarker = '
         $start.Environment[$name] = Join-Path $sandbox 'userdata'
     }
     $start.Environment['NR_SAVE_TEST_ROOT'] = $sandbox
+    $start.Environment['NR_SAVE_TEST_SUITE'] = $Suite
     $start.Environment['PF_CUSTOM_ID'] = 'A'
     $start.Environment['PF_TITLE_ID'] = ''
     $process = [Diagnostics.Process]::Start($start)
@@ -97,7 +100,7 @@ function Assert-SuspendDiagnostics([string] $Output, [int] $ExpectedCount) {
 }
 
 function Initialize-IntegrityFixture([string] $Name) {
-    $folder = Join-Path $sandbox "test-data\$Name"
+    $folder = Join-Path $sandbox "test-data\$Name\NetRumble"
     New-Item -ItemType Directory -Force -Path $folder | Out-Null
     $payload = '{"musicVolume":0.3}'
     $hash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("1`n$payload"))
@@ -147,6 +150,7 @@ renderer/rendering_method="gl_compatibility"
 '@ | Set-Content -LiteralPath (Join-Path $sandbox 'project.godot') -Encoding utf8
     $common = @('--headless', '--path', $sandbox, '--log-file', (Join-Path $sandbox 'godot.log'))
     $null = Invoke-TestGodot ($common + @('--import', '--quiet'))
+    if ($Suite -eq 'All') {
     foreach ($mode in @('partial', 'complete')) {
         $null = Initialize-IntegrityFixture "crash-$mode"
         $null = Invoke-TestGodot -Arguments ($common + @('res://tools/tests/crash_writer.tscn', '--', $mode)) `
@@ -177,12 +181,15 @@ renderer/rendering_method="gl_compatibility"
         [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
     $locks.Add($flushLock)
     $flushLock.Lock(0, 1048576)
+    }
     $output = Invoke-TestGodot $common
     if ($output -notmatch 'SAVE TESTS PASSED: \d+ assertions') {
         throw 'Godot exited without completing the behavioral suite.'
     }
-    Assert-SuspendDiagnostics $output 39
-    Write-Host 'CASE: suspend diagnostics contain only ordered category outcomes and measured elapsed time'
+    if ($Suite -eq 'All') {
+        Assert-SuspendDiagnostics $output 39
+        Write-Host 'CASE: suspend diagnostics contain only ordered category outcomes and measured elapsed time'
+    }
 }
 finally {
     foreach ($handle in $locks) { $handle.Dispose() }

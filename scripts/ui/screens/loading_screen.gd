@@ -25,6 +25,26 @@ var _cancel_requested := false
 var _rings: Array[Control] = []
 
 
+func set_status(message: String, cancelling: bool = true) -> void:
+	_message = message
+	if cancelling:
+		_cancel_requested = true
+		_allow_cancel = false
+	if is_node_ready():
+		_message_label.text = message
+		_cancel_button.disabled = _cancel_requested
+
+
+func follow_join(request: JoinRequest) -> void:
+	request.status_changed.connect(set_status)
+	if not request.status.is_empty():
+		set_status(request.status, request.cleaning_up)
+
+
+func follow_host() -> void:
+	NetManager.host_status_changed.connect(set_status)
+
+
 func _init() -> void:
 	allow_back = false
 
@@ -63,7 +83,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _on_cancel_pressed() -> void:
-	if _cancel_requested:
+	if _cancel_requested or not _allow_cancel:
 		return
 	_cancel_requested = true
 	_cancel_button.disabled = true

@@ -527,9 +527,10 @@ func toggle_peer_mute(peer_id: int) -> void:
 ## ChatService before PartyService builds the network config. Denied chat means the
 ## network is created with voice and text off and no chat control at all, rather than a
 ## player sitting muted in a live mesh.
-func apply_chat_privilege() -> void:
-	if _chat_privilege_running:
+func apply_chat_privilege(still_current: Callable = Callable()) -> void:
+	while _chat_privilege_running:
 		await _chat_privilege_finished
+	if still_current.is_valid() and not still_current.call():
 		return
 	_chat_privilege_running = true
 	_chat_allowed = false
@@ -542,6 +543,8 @@ func apply_chat_privilege() -> void:
 		while true:
 			var generation := _chat_policy_generation
 			var verdict: Dictionary = await Services.can_communicate()
+			if still_current.is_valid() and not still_current.call():
+				break
 			if generation != _chat_policy_generation:
 				if Services.playfab_user() != identity:
 					_chat_restriction = "The signed-in account changed. Rejoin to use chat."

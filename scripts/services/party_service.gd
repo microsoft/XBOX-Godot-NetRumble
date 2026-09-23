@@ -48,6 +48,7 @@ signal network_destroyed()
 ## A Party operation or state-change batch failed. **Not terminal** — the network may
 ## still be usable — so this reports the failure without ending the session.
 signal party_failed(message: String)
+signal cleanup_status_changed(message: String)
 
 ## Lobby property the host publishes the Party descriptor under. Matches the key used
 ## by the addon's own Party tutorial so the two interoperate.
@@ -90,14 +91,22 @@ const JOIN_CODE_LENGTH := 5
 const JOIN_CODE_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 ## Party network-change kinds, as reported on the `kind` member of a network-state
-## change. godot_playfab binds no named constants for these, so they are declared here
-## from the Party reference rather than left as bare integers at the match site.
-const NETWORK_CHANGE_STATE := 0
-const NETWORK_CHANGE_PEER_JOINED := 1
-const NETWORK_CHANGE_PEER_LEFT := 2
-const NETWORK_CHANGE_DESCRIPTOR_UPDATED := 3
-const NETWORK_CHANGE_DESTROYED := 4
-const NETWORK_CHANGE_ERROR := 5
+## change. These are addon-free fallbacks only; loaded contracts use ClassDB below.
+const NETWORK_CHANGE_STATE := 1
+const NETWORK_CHANGE_PEER_JOINED := 2
+const NETWORK_CHANGE_PEER_LEFT := 3
+const NETWORK_CHANGE_DESCRIPTOR_UPDATED := 4
+const NETWORK_CHANGE_DESTROYED := 5
+const NETWORK_CHANGE_ERROR := 6
+const NETWORK_CHANGES := {
+	&"NETWORK_CHANGE_STATE": NETWORK_CHANGE_STATE,
+	&"NETWORK_CHANGE_PEER_JOINED": NETWORK_CHANGE_PEER_JOINED,
+	&"NETWORK_CHANGE_PEER_LEFT": NETWORK_CHANGE_PEER_LEFT,
+	&"NETWORK_CHANGE_DESCRIPTOR_UPDATED": NETWORK_CHANGE_DESCRIPTOR_UPDATED,
+	&"NETWORK_CHANGE_DESTROYED": NETWORK_CHANGE_DESTROYED,
+	&"NETWORK_CHANGE_ERROR": NETWORK_CHANGE_ERROR,
+}
+const RECOVERY_FAILED := "Multiplayer cleanup could not complete safely. Online play is unavailable. Restart the game before trying again."
 
 ## Party network states. Only these two are terminal; the rest of the sequence
 ## (CREATING, CONNECTING, AUTHENTICATING, CONNECTED) is the ordinary path to a live
@@ -183,6 +192,7 @@ var _multiplayer_initialized: bool = false
 ## attaches a lobby/network that the player has already timed out or backed away from.
 var _join_operation_token := 0
 var _operation_account_generation := -1
+var _operation_deadline_msec := 0
 
 ## Voice and text chat, which live alongside a Party network rather than inside it: see
 ## chat_service.gd. Held here because this service owns the network's lifetime, so it is
@@ -191,6 +201,15 @@ var _operation_account_generation := -1
 var _chat: ChatService
 var _leaving := false
 signal _leave_completed()
+var recovery_error := ""
+var cleanup_status := ""
+var _network_changes: Dictionary = {}
+var _contract_error := ""
+var _native_epoch := 0
+var _native_sequence := 0
+var _pending_native: Dictionary = {}
+var _cleanup_failed := false
+var _recovering := false
 
 ## Membership-lock serialization. An SDK update cannot be recalled once posted, so a
 ## second lock request waits for the first to settle rather than posting an opposite
@@ -204,6 +223,49 @@ var _lock_result: Dictionary = {}
 
 func _init(chat: ChatService) -> void:
 	_chat = chat
+	_load_network_contract()
+
+
+func _bound_network_constant(name: StringName) -> int:
+	if not ClassDB.class_exists(&"PlayFabParty"):
+		return int(NETWORK_CHANGES[name])
+	if ClassDB.class_has_integer_constant(&"PlayFabParty", name):
+		return ClassDB.class_get_integer_constant(&"PlayFabParty", name)
+	return -1
+
+
+func _load_network_contract() -> void:
+	_network_changes.clear()
+	_contract_error = ""
+	for name: StringName in NETWORK_CHANGES:
+		var value := _bound_network_constant(name)
+		if value < 1 or _network_changes.values().has(value):
+			_contract_error = "The installed PlayFab addon has an incompatible network event contract. Rebuild addons/ from the pinned submodule."
+			push_warning("[Party] " + _contract_error)
+			return
+		_network_changes[name] = value
+
+
+func is_cleanup_pending() -> bool:
+	return _leaving or _recovering or not recovery_error.is_empty()
+
+
+func _now_msec() -> int:
+	return Time.get_ticks_msec()
+
+
+## Track calls before dispatch, including operations which have not exposed a resource.
+## Retiring an epoch fences continuations, not the native SDK's ownership.
+func _native_call(target: Variant, method: StringName, args: Array = []) -> Variant:
+	if _recovering or not recovery_error.is_empty():
+		return null
+	_native_sequence += 1
+	var ticket := _native_sequence
+	var epoch := _native_epoch
+	_pending_native[ticket] = true
+	var result: Variant = await target.callv(method, args)
+	_pending_native.erase(ticket)
+	return result if epoch == _native_epoch else null
 
 
 ## True when the godot_playfab extension is present. Everything else assumes this.
@@ -304,7 +366,7 @@ func set_lobby_locked(locked: bool) -> Dictionary:
 
 
 func _post_membership_lock(lobby: Variant, membership_lock: int, operation: int) -> void:
-	var result: Variant = await lobby.set_membership_lock_async(membership_lock)
+	var result: Variant = await _native_call(lobby, &"set_membership_lock_async", [membership_lock])
 	# The lobby this answers for may have been left, or a later update may already own the
 	# outcome. Either way this result is no longer anybody's answer.
 	if operation != _lock_operation:
@@ -331,10 +393,13 @@ func _await_lock_settled() -> bool:
 
 ## Creates the Party network and advertises it on a lobby. Returns
 ## {"ok": bool, "peer": Variant, "code": String, "error": String}.
-func host(user: Variant, max_players: int, game_mode: String) -> Dictionary:
+func host(user: Variant, max_players: int, game_mode: String, deadline_msec: int = 0) -> Dictionary:
 	if not _user_is_ready(user):
 		return _fail("Sign in and load your saved data before hosting.")
-	var operation := _begin_join_operation()
+	if is_cleanup_pending():
+		return _fail(recovery_error if not recovery_error.is_empty() else "The previous match is still being cleaned up.")
+	var operation := _begin_join_operation(deadline_msec)
+	await leave(false)
 	var ready_error := await _ensure_initialized(operation)
 	if not _is_join_operation_current(operation):
 		return _fail("Host cancelled.")
@@ -342,10 +407,6 @@ func host(user: Variant, max_players: int, game_mode: String) -> Dictionary:
 		return _fail(ready_error)
 	if user == null:
 		return _fail("You must be signed in to host a match.")
-
-	await leave(false)
-	if not _is_join_operation_current(operation):
-		return _fail("Host cancelled.")
 
 	# The join code is minted before the network because it doubles as Party's
 	# invitation identifier, which has to be fixed at creation time.
@@ -358,7 +419,7 @@ func host(user: Variant, max_players: int, game_mode: String) -> Dictionary:
 	await _chat.ensure_control(user, cfg, func() -> bool: return _is_join_operation_current(operation))
 	if not _is_join_operation_current(operation):
 		return _fail("Host cancelled.")
-	var created: Variant = await pf.party.create_and_join_network_async(user, cfg)
+	var created: Variant = await _native_call(pf.party, &"create_and_join_network_async", [user, cfg])
 	if not _is_join_operation_current(operation):
 		if created != null and created.ok:
 			await _leave_network_instance(created.data)
@@ -368,20 +429,24 @@ func host(user: Variant, max_players: int, game_mode: String) -> Dictionary:
 		return _fail("Could not create the Party network: %s" % _reason(created))
 
 	_attach_network(created.data, true)
+	if not _network_is_usable():
+		return _fail("PlayFab Party did not return a usable network peer.")
 
 	var descriptor: String = await _await_descriptor(operation)
 	if not _is_join_operation_current(operation):
 		return _fail("Host cancelled.")
 	if descriptor.is_empty():
-		await leave()
+		leave()
 		return _fail("The Party network never published a connection descriptor.")
 
 	var lobby_error := await _create_lobby(user, descriptor, max_players, game_mode, operation)
 	if not _is_join_operation_current(operation):
 		return _fail("Host cancelled.")
 	if not lobby_error.is_empty():
-		await leave()
+		leave()
 		return _fail(lobby_error)
+	if not _network_is_usable():
+		return _fail("The match connection ended before it could be advertised.")
 
 	return {"ok": true, "peer": _peer, "code": join_code, "error": ""}
 
@@ -390,10 +455,13 @@ func host(user: Variant, max_players: int, game_mode: String) -> Dictionary:
 
 ## Resolves a five-character join code to a lobby, reads the Party descriptor out of
 ## it and joins that network. Returns {"ok", "peer", "code", "error"}.
-func join(user: Variant, code: String) -> Dictionary:
+func join(user: Variant, code: String, deadline_msec: int = 0) -> Dictionary:
 	if not _user_is_ready(user):
 		return _fail("Sign in and load your saved data before joining.")
-	var operation := _begin_join_operation()
+	if is_cleanup_pending():
+		return _fail(recovery_error if not recovery_error.is_empty() else "The previous match is still being cleaned up.")
+	var operation := _begin_join_operation(deadline_msec)
+	await leave(false)
 	var ready_error := await _ensure_initialized(operation)
 	if not _is_join_operation_current(operation):
 		return _fail("Join cancelled.")
@@ -405,10 +473,6 @@ func join(user: Variant, code: String) -> Dictionary:
 	var normalized := _normalize_join_code(code)
 	if normalized.length() != JOIN_CODE_LENGTH:
 		return _fail("Join codes are %d characters long." % JOIN_CODE_LENGTH)
-
-	await leave(false)
-	if not _is_join_operation_current(operation):
-		return _fail("Join cancelled.")
 
 	var lookup := await _find_lobby(user, normalized, operation)
 	if not _is_join_operation_current(operation):
@@ -436,10 +500,13 @@ func join(user: Variant, code: String) -> Dictionary:
 ## or a platform join carries. Unlike join() there is no code to search for, so the
 ## five-character code is recovered from the lobby's search properties instead — it is
 ## needed for more than the UI, see _join_attached_lobby.
-func join_by_connection_string(user: Variant, connection_string: String) -> Dictionary:
+func join_by_connection_string(user: Variant, connection_string: String, deadline_msec: int = 0) -> Dictionary:
 	if not _user_is_ready(user):
 		return _fail("Sign in and load your saved data before joining.")
-	var operation := _begin_join_operation()
+	if is_cleanup_pending():
+		return _fail(recovery_error if not recovery_error.is_empty() else "The previous match is still being cleaned up.")
+	var operation := _begin_join_operation(deadline_msec)
+	await leave(false)
 	var ready_error := await _ensure_initialized(operation)
 	if not _is_join_operation_current(operation):
 		return _fail("Join cancelled.")
@@ -450,10 +517,6 @@ func join_by_connection_string(user: Variant, connection_string: String) -> Dict
 	if connection_string.is_empty():
 		return _fail("That invitation is no longer valid.")
 
-	await leave(false)
-	if not _is_join_operation_current(operation):
-		return _fail("Join cancelled.")
-
 	return await _join_lobby_by_connection_string(user, connection_string, "", operation)
 
 
@@ -461,7 +524,7 @@ func join_by_connection_string(user: Variant, connection_string: String) -> Dict
 ## the Party network the lobby advertises. `expected_code` is empty when the caller
 ## does not already know it (the invite path), in which case it comes from the lobby.
 func _join_lobby_by_connection_string(user: Variant, connection_string: String, expected_code: String, operation: int) -> Dictionary:
-	var joined: Variant = await _playfab().multiplayer.join_lobby_async(user, connection_string, null)
+	var joined: Variant = await _native_call(_playfab().multiplayer, &"join_lobby_async", [user, connection_string, null])
 	if not _is_join_operation_current(operation):
 		if joined != null and joined.ok:
 			await _leave_lobby_instance(joined.data)
@@ -481,7 +544,7 @@ func _join_lobby_by_connection_string(user: Variant, connection_string: String, 
 	if not NRProtocol.is_compatible(host_protocol):
 		push_warning("[Party] Refusing join: match protocol '%s', local protocol '%s'." % [
 			host_protocol, NRProtocol.version_string()])
-		await leave()
+		leave()
 		return _fail(NRProtocol.mismatch_message(host_protocol, NRProtocol.version_string()))
 
 	var code := expected_code
@@ -491,7 +554,7 @@ func _join_lobby_by_connection_string(user: Variant, connection_string: String, 
 	# join below cannot authenticate. See _join_attached_lobby.
 	if code.is_empty():
 		push_warning("[Party] Refusing join: the lobby advertises no join code.")
-		await leave()
+		leave()
 		return _fail(JOIN_FAILED_UNKNOWN)
 
 	return await _join_attached_lobby(user, code, operation)
@@ -534,23 +597,25 @@ func _join_attached_lobby(user: Variant, code: String, operation: int) -> Dictio
 		# Same words as the service's "not joinable" refusal, so say in the log which one
 		# this was: the lobby admitted the player but never offered a Party network.
 		push_warning("[Party] Match %s has no Party network descriptor; the host left or never published one." % code)
-		await leave()
+		leave()
 		return _fail("Match %s is no longer accepting players." % code)
 
 	var join_cfg: Variant = _make_party_config(0, code)
 	await _chat.ensure_control(user, join_cfg, func() -> bool: return _is_join_operation_current(operation))
 	if not _is_join_operation_current(operation):
 		return _fail("Join cancelled.")
-	var network: Variant = await _playfab().party.join_network_async(user, descriptor, join_cfg)
+	var network: Variant = await _native_call(_playfab().party, &"join_network_async", [user, descriptor, join_cfg])
 	if not _is_join_operation_current(operation):
 		if network != null and network.ok:
 			await _leave_network_instance(network.data)
 		return _fail("Join cancelled.")
 	if network == null or not network.ok:
-		await leave()
+		leave()
 		return _fail(_join_failure(network, "Party network join"))
 
 	_attach_network(network.data, false)
+	if not _network_is_usable():
+		return _fail("PlayFab Party did not return a usable network peer.")
 	join_code = code
 	return {"ok": true, "peer": _peer, "code": code, "error": ""}
 
@@ -558,7 +623,8 @@ func _join_attached_lobby(user: Variant, code: String, operation: int) -> Dictio
 # --- Teardown ---------------------------------------------------------------
 
 func leave(invalidate_pending: bool = true) -> void:
-	_chat.invalidate_session()
+	if _chat != null:
+		_chat.invalidate_session()
 	if invalidate_pending:
 		cancel_pending_join()
 	if _leaving:
@@ -567,31 +633,34 @@ func leave(invalidate_pending: bool = true) -> void:
 		# leave in progress waits on, this caller waits on too.
 		await _leave_completed
 		return
+	if not recovery_error.is_empty():
+		return
 	_leaving = true
-	# Clear the advertised descriptor first so late searchers can't find a dead
-	# network, then drop the lobby and the Party network itself.
-	if _lobby != null:
-		if _is_host:
-			var cleared: Variant = await _lobby.set_properties_async({DESCRIPTOR_KEY: ""})
-			if cleared != null and not cleared.ok:
-				push_warning("[Party] Could not clear the descriptor: %s" % _reason(cleared))
-		var left: Variant = await _lobby.leave_async()
-		if left != null and not left.ok:
-			push_warning("[Party] Leaving the lobby failed: %s" % _reason(left))
+	_reconcile_initialized_services()
+	var deadline := _now_msec() + int(NRConst.MATCH_CLEANUP_SECONDS * 1000.0)
+	var lobby: Variant = _lobby
+	var network: Variant = _network
+	var was_host := _is_host
 	_detach_lobby()
-
-	if _network != null:
-		var network: Variant = _network
-		_detach_network()
-		var result: Variant = await network.leave_async()
-		if result != null and not result.ok:
-			push_warning("[Party] Leaving the Party network failed: %s" % _reason(result))
-	else:
-		_detach_network()
-
+	_detach_network()
+	# Descriptor clearing must never hold either leave hostage. All three calls and
+	# any late create/join results share this one graceful deadline.
+	if was_host and lobby != null and not lobby.is_disconnected():
+		_clear_descriptor(lobby)
+	_leave_lobby_instance(lobby)
+	_leave_network_instance(network)
+	while not _pending_native.is_empty() or (_chat != null and _chat.is_control_operation_pending()):
+		if _now_msec() >= deadline:
+			break
+		await _sleep(POLL_INTERVAL)
+	if _cleanup_failed or not _pending_native.is_empty() or (_chat != null and _chat.is_control_operation_pending()):
+		await _recover_services()
+	if recovery_error.is_empty():
+		_reconcile_initialized_services()
 	_is_host = false
 	join_code = ""
-	_chat.clear_chat_restrictions()
+	if _chat != null:
+		_chat.clear_chat_restrictions()
 	# The chat control deliberately outlives the session. It is per-user, not per-match:
 	# rebuilding it on every leave and rejoin costs two native round trips for a thing
 	# that has not changed, and the destroy half of that is one of the awaits that can
@@ -602,11 +671,78 @@ func leave(invalidate_pending: bool = true) -> void:
 	_leave_completed.emit()
 
 
+func _clear_descriptor(lobby: Variant) -> void:
+	var result: Variant = await _native_call(lobby, &"set_properties_async", [{DESCRIPTOR_KEY: ""}])
+	if result == null or not result.ok:
+		push_warning("[Party] Could not clear the descriptor: %s" % _reason(result))
+
+
+func _set_cleanup_status(message: String) -> void:
+	cleanup_status = message
+	cleanup_status_changed.emit(message)
+
+
+func _recover_services() -> void:
+	_recovering = true
+	_native_epoch += 1
+	cancel_pending_join()
+	_set_cleanup_status("Recovering multiplayer services")
+	if _chat != null:
+		_chat.begin_service_reset()
+	var pf: Variant = _playfab()
+	var safe := pf != null
+	# Always attempt both scoped shutdowns. Never shut down PlayFab, accounts or saves.
+	if pf != null:
+		for service: Variant in [pf.party, pf.multiplayer]:
+			if service == null or not service.has_method("shutdown_async"):
+				safe = false
+				push_warning("[Party] Scoped multiplayer shutdown is unavailable.")
+				continue
+			var result: Variant = await service.shutdown_async()
+			if result == null or not result.ok or service.is_initialized():
+				safe = false
+				push_warning("[Party] Scoped multiplayer shutdown failed: %s" % _reason(result))
+	if safe:
+		_pending_native.clear()
+		_party_initialized = false
+		_multiplayer_initialized = false
+		_cleanup_failed = false
+		if _chat != null:
+			_chat.finish_service_reset()
+	else:
+		recovery_error = RECOVERY_FAILED
+		_set_cleanup_status(recovery_error)
+	_recovering = false
+
+
 # --- Initialization ---------------------------------------------------------
+
+## A native state-pump reset can complete an unexposed create/join without any
+## network signal reaching us. Native uninitialized state confirms its controls
+## were released; local caches and retained chat must not outlive that boundary.
+func _reconcile_initialized_services() -> void:
+	var pf: Variant = _playfab()
+	if pf == null:
+		return
+	var party_ready: bool = pf.party.is_initialized()
+	var lobby_ready: bool = pf.multiplayer.is_initialized()
+	if not party_ready and _chat != null \
+			and (_party_initialized or _chat.has_control() or _chat.is_control_operation_pending()):
+		_chat.begin_service_reset()
+		_chat.finish_service_reset()
+	_party_initialized = party_ready
+	_multiplayer_initialized = lobby_ready
+
 
 ## Brings up PlayFab, Party and the Multiplayer (lobby) service. Returns an empty
 ## string on success or a player-facing message describing what is missing.
 func _ensure_initialized(operation: int) -> String:
+	if not _is_join_operation_current(operation):
+		return "Session cancelled."
+	if not recovery_error.is_empty():
+		return recovery_error
+	if not _contract_error.is_empty():
+		return _contract_error
 	var pf: Variant = _playfab()
 	if pf == null:
 		return "The PlayFab extension is not installed in this build."
@@ -614,42 +750,47 @@ func _ensure_initialized(operation: int) -> String:
 	if not pf.is_initialized():
 		return "PlayFab is not initialized. Sign in before hosting or joining."
 
+	_reconcile_initialized_services()
 	if not _party_initialized:
-		if pf.party.is_initialized():
-			_party_initialized = true
-		else:
-			var party_init: Variant = await pf.party.initialize_async(null, _local_udp_port())
-			if not _is_join_operation_current(operation):
-				return "Session cancelled."
-			if party_init == null or not party_init.ok:
-				push_warning("[Party] PlayFab Party could not start: %s" % _reason(party_init))
-				return MULTIPLAYER_START_FAILED
-			_party_initialized = true
+		var party_init: Variant = await _native_call(pf.party, &"initialize_async", [null, _local_udp_port()])
+		if not _is_join_operation_current(operation):
+			return "Session cancelled."
+		_reconcile_initialized_services()
+		if party_init == null or not party_init.ok:
+			push_warning("[Party] PlayFab Party could not start: %s" % _reason(party_init))
+			return MULTIPLAYER_START_FAILED
+		if not _party_initialized:
+			return "PlayFab Party stopped while the match was being prepared."
 
 	if not _multiplayer_initialized:
-		if pf.multiplayer.is_initialized():
-			_multiplayer_initialized = true
-		else:
-			var mp_init: Variant = await pf.multiplayer.initialize_async()
-			if not _is_join_operation_current(operation):
-				return "Session cancelled."
-			if mp_init == null or not mp_init.ok:
-				push_warning("[Party] PlayFab Lobby could not start: %s" % _reason(mp_init))
-				return MULTIPLAYER_START_FAILED
-			_multiplayer_initialized = true
+		var mp_init: Variant = await _native_call(pf.multiplayer, &"initialize_async")
+		if not _is_join_operation_current(operation):
+			return "Session cancelled."
+		_reconcile_initialized_services()
+		if mp_init == null or not mp_init.ok:
+			push_warning("[Party] PlayFab Lobby could not start: %s" % _reason(mp_init))
+			return MULTIPLAYER_START_FAILED
 
+	if not _party_initialized or not _multiplayer_initialized:
+		return "The multiplayer services stopped while the match was being prepared."
 	return ""
 
 
-func _begin_join_operation() -> int:
+func _begin_join_operation(deadline_msec: int = 0) -> int:
 	_join_operation_token += 1
 	_operation_account_generation = Services.account_generation()
+	_operation_deadline_msec = deadline_msec if deadline_msec > 0 \
+		else _now_msec() + int(NRConst.MATCH_ESTABLISHMENT_SECONDS * 1000.0)
+	cleanup_status = ""
 	return _join_operation_token
 
 
 func _is_join_operation_current(operation: int) -> bool:
+	var connectivity := Services.connectivity()
 	return (operation == 0 or operation == _join_operation_token) \
-		and Services.is_current_account(_operation_account_generation)
+		and Services.is_current_account(_operation_account_generation) \
+		and (_operation_deadline_msec == 0 or _now_msec() < _operation_deadline_msec) \
+		and (connectivity == null or connectivity.is_online())
 
 
 func _user_is_ready(user: Variant) -> bool:
@@ -670,7 +811,7 @@ func _local_udp_port() -> int:
 # --- Lobby ------------------------------------------------------------------
 
 func _create_lobby(user: Variant, descriptor: String, max_players: int, game_mode: String, operation: int) -> String:
-	var cfg: Variant = ClassDB.instantiate("PlayFabLobbyConfig")
+	var cfg: Variant = _make_lobby_config()
 	if cfg == null:
 		return "PlayFabLobbyConfig is unavailable in this build."
 	cfg.max_players = maxi(max_players, 2)
@@ -687,15 +828,21 @@ func _create_lobby(user: Variant, descriptor: String, max_players: int, game_mod
 	}
 	cfg.lobby_properties = {DESCRIPTOR_KEY: descriptor}
 
-	var result: Variant = await _playfab().multiplayer.create_lobby_async(user, cfg)
+	var result: Variant = await _native_call(_playfab().multiplayer, &"create_lobby_async", [user, cfg])
 	if not _is_join_operation_current(operation):
 		if result != null and result.ok:
 			await _leave_lobby_instance(result.data)
 		return "Host cancelled."
 	if result == null or not result.ok:
 		return "Could not advertise the match: %s" % _reason(result)
+	if result.data == null or result.data.is_disconnected():
+		return "The match service did not return a usable lobby."
 	_attach_lobby(result.data)
 	return ""
+
+
+func _make_lobby_config() -> Variant:
+	return ClassDB.instantiate("PlayFabLobbyConfig")
 
 
 func _make_search_config(code: String) -> Variant:
@@ -725,7 +872,7 @@ func _find_lobby(user: Variant, code: String, operation: int = 0) -> Dictionary:
 	if not _is_join_operation_current(operation):
 		return lookup
 	var search: Variant = _make_search_config(code)
-	var found: Variant = await _playfab().multiplayer.find_lobbies_async(user, search)
+	var found: Variant = await _native_call(_playfab().multiplayer, &"find_lobbies_async", [user, search])
 	if not _is_join_operation_current(operation):
 		return lookup
 	if found == null or not found.ok:
@@ -814,6 +961,18 @@ func _detach_network() -> void:
 	_peer = null
 
 
+func _retain_lost_network_for_cleanup() -> void:
+	if _network != null and _network.state_changed.is_connected(_on_network_state_changed):
+		_network.state_changed.disconnect(_on_network_state_changed)
+	_peer = null
+	cancel_pending_join()
+
+
+func _network_is_usable() -> bool:
+	return _network != null and _peer is MultiplayerPeer \
+		and _peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+
+
 ## Party's aggregate network change signal. `kind` says what changed; for a state change
 ## the new state is in `change.state`.
 ##
@@ -824,27 +983,31 @@ func _detach_network() -> void:
 ## includes failures the network survives — so it is reported and the match carries on.
 ## Ending a match on a recoverable error would be its own defect.
 func _on_network_state_changed(change: Variant) -> void:
-	if change == null:
+	if change == null or _network == null or change.network != _network:
 		return
 	var kind := int(change.kind)
-	match kind:
-		NETWORK_CHANGE_STATE:
+	match _network_changes.find_key(kind):
+		&"NETWORK_CHANGE_STATE":
 			_handle_network_state(int(change.state), _change_reason(change))
-		NETWORK_CHANGE_PEER_JOINED:
+		&"NETWORK_CHANGE_PEER_JOINED":
 			peer_joined.emit(int(change.peer_id))
-		NETWORK_CHANGE_PEER_LEFT:
+		&"NETWORK_CHANGE_PEER_LEFT":
 			peer_left.emit(int(change.peer_id))
-		NETWORK_CHANGE_DESCRIPTOR_UPDATED:
+		&"NETWORK_CHANGE_DESCRIPTOR_UPDATED":
 			# Party can re-issue the descriptor (for example after a migration).
 			# Republish so late joiners resolve the current network.
 			_republish_descriptor()
-		NETWORK_CHANGE_DESTROYED:
+		&"NETWORK_CHANGE_DESTROYED":
 			var reason := _change_reason(change)
+			cancel_pending_join()
 			_detach_network()
+			var operation := _join_operation_token
 			network_destroyed.emit()
+			if operation != _join_operation_token or _network != null:
+				return
 			network_lost.emit(reason if not reason.is_empty()
 				else "The match connection was closed.")
-		NETWORK_CHANGE_ERROR:
+		&"NETWORK_CHANGE_ERROR":
 			party_failed.emit(_reason(change.result))
 
 
@@ -855,11 +1018,11 @@ func _on_network_state_changed(change: Variant) -> void:
 func _handle_network_state(state: int, reason: String) -> void:
 	match state:
 		NETWORK_STATE_DISCONNECTED:
-			_detach_network()
+			_retain_lost_network_for_cleanup()
 			network_lost.emit(reason if not reason.is_empty()
 				else "The match connection was lost.")
 		NETWORK_STATE_FAILED:
-			_detach_network()
+			_retain_lost_network_for_cleanup()
 			network_lost.emit(reason if not reason.is_empty()
 				else "The match connection failed.")
 
@@ -876,12 +1039,12 @@ func _change_reason(change: Variant) -> String:
 
 
 func _republish_descriptor() -> void:
-	if not _is_host or _network == null or _lobby == null:
+	if _leaving or _recovering or not _is_host or _network == null or _lobby == null:
 		return
 	var descriptor := String(_network.descriptor)
 	if descriptor.is_empty():
 		return
-	var result: Variant = await _lobby.set_properties_async({DESCRIPTOR_KEY: descriptor})
+	var result: Variant = await _native_call(_lobby, &"set_properties_async", [{DESCRIPTOR_KEY: descriptor}])
 	if result != null and not result.ok:
 		push_warning("[Party] Republishing the descriptor failed: %s" % _reason(result))
 
@@ -890,41 +1053,49 @@ func _republish_descriptor() -> void:
 ## returns; NETWORK_CHANGE_DESCRIPTOR_UPDATED fills it in. Poll rather than rely on
 ## the signal so a descriptor that was already populated is handled identically.
 func _await_descriptor(operation: int) -> String:
-	var waited := 0.0
-	while waited < DESCRIPTOR_TIMEOUT:
+	var deadline := _now_msec() + int(DESCRIPTOR_TIMEOUT * 1000.0)
+	while _now_msec() < deadline:
 		if not _is_join_operation_current(operation) or _network == null:
 			return ""
 		var descriptor := String(_network.descriptor)
 		if not descriptor.is_empty():
 			return descriptor
 		await _sleep(POLL_INTERVAL)
-		waited += POLL_INTERVAL
 	return ""
 
 
 func _leave_lobby_instance(lobby: Variant) -> void:
-	if lobby == null:
+	if lobby == null or _recovering or lobby.is_disconnected():
 		return
-	var left: Variant = await lobby.leave_async()
-	if left != null and not left.ok:
+	var epoch := _native_epoch
+	var left: Variant = await _native_call(lobby, &"leave_async")
+	if epoch == _native_epoch and (left == null or not left.ok):
+		_cleanup_failed = true
 		push_warning("[Party] Leaving a cancelled lobby failed: %s" % _reason(left))
 
 
 func _leave_network_instance(network: Variant) -> void:
-	if network == null:
+	if network == null or _recovering:
 		return
 	if network.state_changed.is_connected(_on_network_state_changed):
 		network.state_changed.disconnect(_on_network_state_changed)
-	var result: Variant = await network.leave_async()
-	if result != null and not result.ok:
+	# Successfully exposed networks have a local peer until native detach clears it,
+	# before peer-disconnect/DESTROYED callbacks. A terminal state alone is not proof
+	# of release: FAILED/DISCONNECTED can still own resources and require leave.
+	if network.local_peer == null:
+		return
+	var epoch := _native_epoch
+	var result: Variant = await _native_call(network, &"leave_async")
+	if epoch == _native_epoch and (result == null or not result.ok):
+		_cleanup_failed = true
 		push_warning("[Party] Leaving a cancelled Party network failed: %s" % _reason(result))
 
 
 ## Lobby properties replicate to a joining member shortly after join_lobby_async
 ## completes, so the descriptor can read back empty on the first look.
 func _await_lobby_descriptor(operation: int = 0) -> String:
-	var waited := 0.0
-	while waited < LOBBY_PROPERTY_TIMEOUT:
+	var deadline := _now_msec() + int(LOBBY_PROPERTY_TIMEOUT * 1000.0)
+	while _now_msec() < deadline:
 		if not _is_join_operation_current(operation):
 			return ""
 		if _lobby == null:
@@ -934,7 +1105,6 @@ func _await_lobby_descriptor(operation: int = 0) -> String:
 		if not descriptor.is_empty():
 			return descriptor
 		await _sleep(POLL_INTERVAL)
-		waited += POLL_INTERVAL
 	return ""
 
 

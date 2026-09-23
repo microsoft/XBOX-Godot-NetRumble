@@ -216,7 +216,9 @@ registration or authentication as save success. Resume requires fresh folder acq
 all three loads; a cached folder from before suspend is not sufficient. Missing SDK/SCID,
 canceled sync, inaccessible paths and invalid saves remain blocking Retry/Back errors.
 
-`profile.json`, `history.json` and `stats.json` belong only in that resolved folder.
+`profile.json`, `history.json` and `stats.json` belong in its `NetRumble` subdirectory,
+not directly in the SDK root. PC preparation preserves valid current-format saves from the
+previous root-level layout without deleting originals.
 No shared `settings.cfg`/history/stats or `--pf-user` cache is read or imported, and historical
 files are not moved or deleted. There is no migration setup step or alternate save backend.
 See [Game Saves behavior](platform-services.md#game-saves) and

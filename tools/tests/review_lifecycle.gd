@@ -65,7 +65,7 @@ class Activity extends ActivityService:
 class HostParty extends Doubles.SessionParty:
 	var connection := ""
 
-	func host(user: Variant, _maximum: int, _mode: String) -> Dictionary:
+	func host(user: Variant, _maximum: int, _mode: String, _deadline_msec: int = 0) -> Dictionary:
 		connection = "connection-" + user.xuid
 		return {"ok": true, "peer": OfflineMultiplayerPeer.new(), "code": user.xuid}
 

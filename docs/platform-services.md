@@ -164,6 +164,65 @@ typed text. See [the text lifecycle](multiplayer.md#chat) and
 
 ---
 
+## Multiplayer establishment and recovery
+
+`NetManager.host_match()` remains an awaited boolean; code and invite joins return an
+owned `JoinRequest`. Each attempt has one **45-second monotonic deadline**, including
+NetManager's sign-in/privilege resolution, chat setup, Party/Lobby calls, descriptor
+discovery and guest admission. The menu's preceding permissions screen is separate.
+Neither a completed transport nor a provisional admission renews that budget.
+
+Definitive offline hints and terminal Party loss fail an establishing attempt immediately,
+even before NetManager has a peer. The first reason wins. Established online sessions
+retain their **eight-second hint-loss grace**; recoverable Party ERROR events do not end
+a match. Practice is unaffected. Party network event kinds come from the loaded
+`PlayFabParty` ClassDB constants; addon-free fallbacks are 1 through 6, not 0 through 5.
+Missing or ambiguous loaded contracts explicitly refuse establishment.
+
+An unsuccessful attempt remains pending on its own loading screen while `PartyService`
+performs single-flight cleanup. The caption changes to **Cleaning up the match**, and
+repeat cancellation is disabled. Descriptor clearing is best-effort and cannot block
+lobby or network leave. All outstanding calls, including creates/joins which have not
+yet returned a resource and chat-control operations, share a separate **15-second
+graceful-cleanup budget**.
+
+An ordinary native network destruction is already cleaned up, not a reason to reset
+both services. The addon detaches a successfully exposed network's `local_peer` before
+peer-disconnect and DESTROYED callbacks; cleanup recognizes that exact detached wrapper
+and skips its redundant leave, including late operation results. FAILED/DISCONNECTED
+alone do not prove release, and genuine leave failures still escalate. Notifications
+from an old network cannot clear a replacement. Valid per-user chat remains retained.
+
+If cleanup stalls or leave fails, the caption changes to **Recovering multiplayer
+services**. The game awaits scoped Party and Lobby `shutdown_async()` operations, never
+PlayFab-root, account or save shutdown. Invalidating a continuation does not release
+SDK-owned state. Online entry stays fenced through reset; only confirmed successful
+shutdown releases that fence and invalidates retained chat controls and initialization
+flags. A later **manual** retry initializes both services and recreates chat lazily,
+without signing in again. There is no automatic reconnect or network retry.
+Native services can also reset themselves before returning any network. Cleanup and
+initialization reconcile both readiness caches with native `is_initialized()`; an
+uninitialized Party invalidates retained chat controls even when no network was attached.
+A manual retry initializes only missing services, preserving a still-valid sibling service
+and its resources. A service lost during initialization fails that attempt rather than
+restarting it automatically.
+
+If scoped recovery reports failure, the attempt explicitly reports that online play is
+blocked and requires a restart; it never reports successful cleanup or a usable session.
+Late results cannot publish activity, bind a peer, clear a replacement's chat control,
+or dismiss another attempt's loading screen. Host failure still offers Practice for a
+ready account. Superseded joins stay silent so only the replacement reports a recovery
+failure; explicit cancellation stays silent unless recovery itself fails. Suspend,
+account removal and application quit retain their own
+ownership and readiness safeguards.
+
+The isolated failure suite in `tools\tests\multiplayer_failure_tests.gd` drives production
+PartyService, NetManager and the actual menu/invite screens with SDK-boundary doubles.
+It is game-side regression evidence, not proof of native SDK lifetime safety or live
+PC/console connectivity behavior.
+
+---
+
 ## Moderation and reporting
 Chat is the only content a player authors in this title, making it the whole UGC surface
 (XR-018). `ModerationService` owns both halves.
@@ -266,7 +325,7 @@ See [Configuration](configuration.md#configuration-checklist) and
 `GDK.game_save.get_folder_async(xbox_user)`, which wraps `XGameSaveFilesGetFolderWithUiAsync`.
 The addon uses the XboxUser native handle and SCID from initialized `XboxServices.get_scid()`.
 The completed XboxResult has dictionary data `{path: String}`, not a bare path string.
-There is no PlayFab Game Saves onboarding requirement, save API call, fallback or migration.
+There is no PlayFab Game Saves onboarding requirement, save API call or fallback.
 PlayFab authentication and multiplayer remain separate existing requirements.
 The title uses the files API only, never `XGameSaveInitializeProvider`.
 Microsoft's [folder API remarks](https://learn.microsoft.com/gaming/gdk/docs/reference/system/xgamesavefiles/functions/xgamesavefilesgetfolderwithuiasync)
@@ -290,7 +349,21 @@ resume has no match notice, and account loss cancels the departing account's not
 The invite router likewise releases a join claim whose outcome dialog was replaced by resume,
 without discarding a newer buffered invitation. An old outcome cannot release the new claim.
 
-The folder holds **`profile.json`** for settings, **`history.json`** for the newest 50 completed
+The title creates one **`NetRumble` subdirectory** below the returned SDK root, using a single
+absolute-path directory operation. All file operations use absolute paths; neither preparation
+nor reads require `DirAccess.open()` or a working-directory change. This follows the Files API's
+[subdirectory requirement for cloud storage](https://learn.microsoft.com/gaming/gdk/docs/reference/system/xgamesavefiles/functions/xgamesavefilesgetfolderwithuiresult).
+No explicit XGameSave container APIs are used.
+
+On PC only, preparation preserves current-format saves from the earlier root-level layout.
+It validates the source records, copies the newest intact record per logical save through a
+verified temporary file, and publishes only into an absent destination. Existing destination
+saves take precedence. Originals are never removed; failed or interrupted copies can be retried.
+A verified `root-files-v1.complete` marker prevents subsequent reimport. This is a layout correction,
+not an importer for shared/token saves or older payload formats. Console never probes root-level
+files for migration.
+
+The subdirectory holds **`profile.json`** for settings, **`history.json`** for the newest 50 completed
 matches, and **`stats.json`** for lifetime achievement counters. Each has an **`.alt`** companion:
 two current-format slots containing a sequence, serialized JSON payload and SHA-256 integrity
 envelope. Writes update only the inactive slot and verify its bytes after closing/reopening.

@@ -88,12 +88,10 @@ const MATCH_CLOCK_HZ := 2.0
 ## (on average half an interval). Dispatch runs from _physics_process, so raising this
 ## above physics/common/physics_ticks_per_second buys nothing.
 const INPUT_SEND_HZ := 60.0
-## Backstop for a typed-code join whose PlayFab/Party async call never resumes. A real
-## join now does one FindLobbies round trip, one JoinLobby round trip, up to
-## LOBBY_PROPERTY_TIMEOUT (20s) for descriptor replication, then the chat-control and
-## Party-network joins; 45 seconds leaves roughly 25 seconds for those service calls
-## without replacing the fast "no match found" path for a typo.
-const JOIN_CODE_TIMEOUT_SECONDS := 45.0
+## Absolute monotonic budgets; neither is renewed at individual await boundaries.
+const MATCH_ESTABLISHMENT_SECONDS := 45.0
+const MATCH_CLEANUP_SECONDS := 15.0
+const JOIN_CODE_TIMEOUT_SECONDS := MATCH_ESTABLISHMENT_SECONDS
 
 # --- Practice mode ---------------------------------------------------------
 ## Ceiling on AI opponents in a practice match. The lobby roster draws eight slots,
