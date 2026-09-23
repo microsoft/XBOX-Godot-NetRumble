@@ -48,7 +48,7 @@ var committed: Dictionary = {}
 
 
 func open(root: Node, path: String) -> bool:
-	folder = path
+	folder = path.path_join(GameSaveService.SAVE_DIRECTORY)
 	identity.target = Doubles.User.new("suspend-fixture")
 	store.sdk.folder = path
 	party.store = store

@@ -100,7 +100,7 @@ function Assert-SuspendDiagnostics([string] $Output, [int] $ExpectedCount) {
 }
 
 function Initialize-IntegrityFixture([string] $Name) {
-    $folder = Join-Path $sandbox "test-data\$Name"
+    $folder = Join-Path $sandbox "test-data\$Name\NetRumble"
     New-Item -ItemType Directory -Force -Path $folder | Out-Null
     $payload = '{"musicVolume":0.3}'
     $hash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("1`n$payload"))

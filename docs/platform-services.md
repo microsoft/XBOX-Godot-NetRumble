@@ -325,7 +325,7 @@ See [Configuration](configuration.md#configuration-checklist) and
 `GDK.game_save.get_folder_async(xbox_user)`, which wraps `XGameSaveFilesGetFolderWithUiAsync`.
 The addon uses the XboxUser native handle and SCID from initialized `XboxServices.get_scid()`.
 The completed XboxResult has dictionary data `{path: String}`, not a bare path string.
-There is no PlayFab Game Saves onboarding requirement, save API call, fallback or migration.
+There is no PlayFab Game Saves onboarding requirement, save API call or fallback.
 PlayFab authentication and multiplayer remain separate existing requirements.
 The title uses the files API only, never `XGameSaveInitializeProvider`.
 Microsoft's [folder API remarks](https://learn.microsoft.com/gaming/gdk/docs/reference/system/xgamesavefiles/functions/xgamesavefilesgetfolderwithuiasync)
@@ -349,7 +349,21 @@ resume has no match notice, and account loss cancels the departing account's not
 The invite router likewise releases a join claim whose outcome dialog was replaced by resume,
 without discarding a newer buffered invitation. An old outcome cannot release the new claim.
 
-The folder holds **`profile.json`** for settings, **`history.json`** for the newest 50 completed
+The title creates one **`NetRumble` subdirectory** below the returned SDK root, using a single
+absolute-path directory operation. All file operations use absolute paths; neither preparation
+nor reads require `DirAccess.open()` or a working-directory change. This follows the Files API's
+[subdirectory requirement for cloud storage](https://learn.microsoft.com/gaming/gdk/docs/reference/system/xgamesavefiles/functions/xgamesavefilesgetfolderwithuiresult).
+No explicit XGameSave container APIs are used.
+
+On PC only, preparation preserves current-format saves from the earlier root-level layout.
+It validates the source records, copies the newest intact record per logical save through a
+verified temporary file, and publishes only into an absent destination. Existing destination
+saves take precedence. Originals are never removed; failed or interrupted copies can be retried.
+A verified `root-files-v1.complete` marker prevents subsequent reimport. This is a layout correction,
+not an importer for shared/token saves or older payload formats. Console never probes root-level
+files for migration.
+
+The subdirectory holds **`profile.json`** for settings, **`history.json`** for the newest 50 completed
 matches, and **`stats.json`** for lifetime achievement counters. Each has an **`.alt`** companion:
 two current-format slots containing a sequence, serialized JSON payload and SHA-256 integrity
 envelope. Writes update only the inactive slot and verify its bytes after closing/reopening.

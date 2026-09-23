@@ -167,6 +167,8 @@ own progress. Repeat with a B that already has nonempty Game Saves.
 | Original A -> fresh B reproduction, then alternate A/B | B starts empty/default; A's own Game Saves remain recoverable; neither account overwrites the other |
 | B has existing settings/history/counters | B loads exactly B's state, with no A rows, preferences, counters or achievement reports |
 | Both integrity slots missing in an initialized folder; valid empty history | Defaults/empty history/zero counters as applicable are authoritative, not previous memory |
+| Console first acquisition, save, normal exit and relaunch | Uses `NetRumble` below the SDK root without a directory-change requirement; saved state survives relaunch. Verify roaming separately |
+| Existing root-level current-format PC saves | Verified copies preserve data in `NetRumble`, originals remain untouched, existing destination saves win, and interrupted copies retry without resetting progress |
 | Shared `settings.cfg`, `match_history.json`, `achievement_stats.json` and token variants pre-seeded in isolated fixtures | Never read, imported, copied, modified, moved or deleted; no migration, old-wrapper reader or compatibility path |
 | New profile and explicitly saved music `0.7` | New profile defaults to `0.25`; explicit `0.7` stays `0.7`, with no value remapping |
 | Initialization/folder failure, unreadable slot, neither slot intact or wrong current-schema payload shape | Specific reason plus Retry/Back; no gameplay, partial account publication or default overwrite of existing files |

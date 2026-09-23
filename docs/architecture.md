@@ -121,11 +121,15 @@ to recreate it rather than expecting live network reconfiguration.
 
 **PC and console share the Xbox XGameSaveFiles backend.** `GameSaveService` owns
 `profile.json` (settings), `history.json` (the newest 50 completed matches), and `stats.json`
-(lifetime achievement counters) in the account folder returned by `GDK.game_save.get_folder_async`.
+(lifetime achievement counters) under `NetRumble` in the account folder returned by
+`GDK.game_save.get_folder_async`. Absolute-path I/O avoids changing the process working directory
+to the console's virtual save root.
 The addon wraps `XGameSaveFilesGetFolderWithUiAsync`, using the signed-in XboxUser and the
 initialized Xbox services SCID. Its result data is a dictionary with a `path` string.
 The verified owner is the XboxUser, not the separate PlayFab authentication/multiplayer user.
-There is no second desktop persistence backend, PlayFab save fallback or migration.
+There is no second desktop persistence backend or PlayFab save fallback. PC preparation preserves
+valid current-format files from the earlier root-level layout using verified copies; originals
+remain untouched, existing destination saves win, and an interrupted copy can be retried.
 
 Resume invalidates the old save binding and generation, then returns through account acquisition.
 Acquisition waits cancellably for pending Party/chat teardown before starting new account

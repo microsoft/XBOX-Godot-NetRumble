@@ -49,7 +49,7 @@ func _interrupted_slots(test: Node) -> void:
 		# Exercise both physical slots as the previous committed save.
 		for round_index in 2:
 			var active := file_name if round_index == 0 else file_name + GameSaveService.SLOT_SUFFIX
-			var active_path := folder.path_join(active)
+			var active_path := folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(active)
 			var committed := FileAccess.get_file_as_bytes(active_path)
 			var new_value: Variant = _value(test, file_name, round_index + 2)
 			for length in store.candidate_size:
@@ -98,7 +98,7 @@ func _windows_locks(test: Node) -> void:
 	for fault: String in ["locked-target", "locked-current", "locked-candidate-delete", "locked-flush"]:
 		var folder := ProjectSettings.globalize_path("res://test-data/" + fault)
 		var store := await _open(test, folder, user)
-		var before := FileAccess.get_file_as_bytes(folder.path_join("profile.json"))
+		var before := FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json"))
 		test._check(store.read(user, 1, "profile.json").data == {"musicVolume": 0.3}, "locked fixture has valid committed slot")
 		var written := store.write_now(user, 1, "profile.json", {"musicVolume": 0.8})
 		if fault in ["locked-current", "locked-candidate-delete"]:
@@ -108,11 +108,11 @@ func _windows_locks(test: Node) -> void:
 			test._status(written, GameSaveService.Status.FAILED, "locked inactive slot fails explicitly")
 			if fault == "locked-flush":
 				test._check(written.reason.contains("verify"), "actual buffered write/fflush failure detected on reopen")
-				test._check(FileAccess.get_file_as_bytes(folder.path_join("profile.json.alt")).is_empty(),
+				test._check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json.alt")).is_empty(),
 					"actual byte-range lock reproduces zero-byte candidate after cached fwrite success")
 			var restarted := await _open(test, folder, user)
 			test._check(restarted.read(user, 1, "profile.json").data == {"musicVolume": 0.3}, "failed locked write preserves previous value after reload")
-		test._check(FileAccess.get_file_as_bytes(folder.path_join("profile.json")) == before, "Windows failure never deletes or replaces committed slot")
+		test._check(FileAccess.get_file_as_bytes(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json")) == before, "Windows failure never deletes or replaces committed slot")
 
 
 func _process_crashes(test: Node) -> void:
@@ -124,7 +124,7 @@ func _process_crashes(test: Node) -> void:
 		var current := store.read(user, 1, "profile.json")
 		test._status(current, GameSaveService.Status.OK, "reload after writer process termination")
 		test._check(current.data == {"musicVolume": 0.3 if mode == "partial" else 0.8}, "interrupted process yields old or fully complete value")
-		var original: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("profile.json")))
+		var original: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json")))
 		test._check(JSON.parse_string(original.payload) == {"musicVolume": 0.3}, "terminated writer preserved original committed file")
 
 
@@ -133,20 +133,23 @@ func _record_validation(test: Node) -> void:
 	var folder: String = test._folder()
 	var user := Doubles.User.new("record")
 	var store := await _open(test, folder, user)
-	var raw := FileAccess.open(folder.path_join("profile.json"), FileAccess.WRITE)
+	var raw := FileAccess.open(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json"), FileAccess.WRITE)
 	raw.store_string('{"musicVolume":0.7}')
 	raw.close()
 	test._status(store.read(user, 1, "profile.json"), GameSaveService.Status.FAILED, "bare payload is not imported as an integrity record")
 	test._status(store.write_now(user, 1, "profile.json", {}), GameSaveService.Status.FAILED, "invalid existing store cannot be overwritten with defaults")
 	test._json(folder, "profile.json", {"musicVolume": 0.7})
 	test._check(store.read(user, 1, "profile.json").data == {"musicVolume": 0.7}, "current envelope retains explicit music 0.7")
-	var record: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("profile.json")))
+	var record: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json")))
 	record.payload = '{"musicVolume":0.9}'
 	record.sha256 = ("%d\n%s" % [int(record.sequence), record.payload]).sha256_text()
-	raw = FileAccess.open(folder.path_join("profile.json.alt"), FileAccess.WRITE)
+	raw = FileAccess.open(folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join("profile.json.alt"), FileAccess.WRITE)
 	raw.store_string(JSON.stringify(record))
 	raw.close()
 	test._status(store.read(user, 1, "profile.json"), GameSaveService.Status.FAILED, "conflicting same-sequence slots fail closed")
 	test._status(store.write_now(user, 1, "profile.json", {}), GameSaveService.Status.FAILED, "conflicting records cannot be overwritten")
-	test._check(not FileAccess.get_file_as_string("res://scripts/services/game_save_service.gd").contains("DirAccess.rename_absolute"),
-		"storage never uses destructive Windows rename-overwrite")
+	var source := FileAccess.get_file_as_string("res://scripts/services/game_save_service.gd")
+	test._check(not source.get_slice("func write_now(", 1).get_slice("func _write_bytes(", 0).contains("DirAccess.rename_absolute("),
+		"normal storage never uses destructive Windows rename-overwrite")
+	test._check(not source.contains("DirAccess.open(") and not source.contains("make_dir_recursive"),
+		"save paths never require changing working directory or walking the SDK root")
