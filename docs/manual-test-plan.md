@@ -53,6 +53,14 @@ stepping the relevant `await` in a debugger in an authorized development environ
 commit fault-injection hooks to make these reproducible**, and do not record an interleaving as
 passing unless it was actually observed.
 
+The full-lobby preflight and search-failure wording (cases 3.32–3.36) are covered by
+`tools/tests/join_failure_tests.gd` against fake search results; the live cases are **not
+exercised**. What a real full lobby's search result reports has not been observed yet: record
+its `member_count`/`max_member_count` with 3.32. For a quick repro, lower the Deathmatch
+`player_count` in `assets/tuning/mode_deathmatch.tres` to 2 locally so three clients suffice —
+the Lobby minimum is 2 — and **do not commit it**. 3.34 needs a deliberately failed search,
+under the same rule as above.
+
 ## Prerequisites
 
 | Tier | Needs |
@@ -258,6 +266,11 @@ the required XboxUser and cannot supply playable Lobby/Party/UI coverage.
 | 3.29 | Fail the activity delete once, then let it succeed | The activity is only recorded as cleared on the successful attempt; exactly one retry is sent, after ~1 s |
 | 3.30 | Fail every activity write while players keep joining and leaving | Four attempts total in that episode (initial + 1 s, 2 s, 4 s); roster changes add no attempts; a warning names the operation and the count, and no dialog appears |
 | 3.31 | Fail an activity publish, then close the match | A delete is still sent despite the publish never being confirmed; the close starts a fresh budget |
+| 3.32 | Another client types the code of a lobby that already has four members | "Join Failed" reads **"That match is full."**; the log shows `[Party] Not joining <code>: the lobby search reported it full (4/4).` and no `Lobby join failed` line; the code stays editable |
+| 3.33 | One player leaves that full lobby, then the refused client retries the same code | A fresh search admits the client; no stale "full" answer |
+| 3.34 | Force the lobby search to fail | The dialog gives the mapped reason ("Too many attempts…", "Your sign-in expired…") or "Could not look up that join code.", never "No match found"; the code stays editable |
+| 3.35 | Open Join Friend while every friend's match is full | Full sessions are not listed; the empty state reads "None of your friends have a joinable match right now." |
+| 3.36 | Accept an invite to a match that filled after the invite was sent | A readable refusal and no lobby. It is not claimed as "full": the invite path has no search-count preflight |
 
 ### Tier 3 fast path
 

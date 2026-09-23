@@ -47,16 +47,29 @@ alone or a lower-level unchecked privilege verdict cannot enable gameplay.
 
 1. `NetManager` calls `_require_multiplayer_privilege()`.
 2. The **sample wrapper** `PartyService.join()` normalizes the code.
-   `_find_lobby_connection_string()` makes **one** `PlayFab.multiplayer.find_lobbies_async()`
-   lookup for `string_key1`. Search is eventually consistent and rate-limited; a miss returns
-   to the still-editable code entry so the player can correct it or retry. No automatic backoff loop runs.
-3. `PlayFab.multiplayer.join_lobby_async()` attaches the Lobby. The wrapper checks its protocol
+   `_find_lobby()` makes **one** `PlayFab.multiplayer.find_lobbies_async()`
+   lookup for `string_key1`. Search is eventually consistent and rate-limited; a miss
+   ("No match found for code …") returns to the still-editable code entry so the player can
+   correct it or retry. No automatic backoff loop runs. A search that *fails* is not a miss:
+   its HRESULT goes through the same player-facing table as a join refusal (rate limit,
+   expired sign-in, service error), falling back to "Could not look up that join code."
+3. If the selected result's `member_count` has reached its `max_member_count`, the join stops
+   with **"That match is full."** before any Lobby or Party call. PlayFab documents no
+   lobby-full error, so the search counts are the only signal that can say so. They are a
+   snapshot, not a reservation: a lobby that fills after the search is still refused by
+   Lobby join, with the generic mapped message rather than "full". A capacity of 0 is treated
+   as unknown, never as full. The counts come from the same result the connection string does.
+4. `PlayFab.multiplayer.join_lobby_async()` attaches the Lobby. The wrapper checks its protocol
    version before reading `party_descriptor` and joining Party.
-4. After ensuring a local chat control, `PlayFab.party.join_network_async()` uses that descriptor
+5. After ensuring a local chat control, `PlayFab.party.join_network_async()` uses that descriptor
    and the same code as invitation id. `NetManager` attaches the peer and exchanges the roster.
-5. The client reaches the lobby. A code-join attempt has a **45-second overall timeout**
+6. The client reaches the lobby. A code-join attempt has a **45-second overall timeout**
    (`NRConst.JOIN_CODE_TIMEOUT_SECONDS`); descriptor waits are independently bounded at 20 seconds.
    Cancel/timeout invalidates pending work so a late SDK result cannot seat a canceled join.
+
+Every join failure shows a title-owned string, never the SDK's message; the SDK's HRESULT,
+code and message go to the `[Party] <stage> failed (…)` warning instead. See
+`PartyService.JOIN_FAILURE_MESSAGES`.
 
 ### Join by friend / invite
 
@@ -75,6 +88,12 @@ alone or a lower-level unchecked privilege verdict cannot enable gameplay.
 Join Friend and shell invites require a registered XBOX session. Custom-ID has no XBOX friends
 or activity; the UI explains that unavailability. An ended/full/in-progress/incompatible session
 can still refuse a valid-looking activation. See the [invite walkthrough](walkthroughs.md#friends-and-cold-launch-invites).
+
+Full sessions are left out of Join Friend (`ActivityService.joinable_activities()` drops an
+activity whose `current_players` has reached `max_players`), which is why its empty state speaks
+of *joinable* matches. The "That match is full." preflight above covers **code joins only**: the
+friend and invite path does no lobby search, so a session that fills after its activity was read
+is refused by Lobby join with the generic mapped message.
 
 Both join paths reach the host through `_on_peer_connected()`, so both are refused the same
 way if the match has already started — see [Closing a match to newcomers](#closing-a-match-to-newcomers). The

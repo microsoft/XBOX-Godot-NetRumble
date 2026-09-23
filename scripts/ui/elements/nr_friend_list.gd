@@ -100,10 +100,11 @@ func _refresh() -> void:
 ## so rather than claim the player has no friends playing, and an account that is not
 ## allowed online should hear that instead of a roster that merely looks empty.
 ##
-## The last case covers two situations this list cannot tell apart -- an account with no
-## friends, and an account whose friends are all doing something else -- because
-## joinable_friends() returns an empty array for both. It is worded for the second, which
-## is overwhelmingly the common one, and which does not read as a remark about the player.
+## The last case covers several situations this list cannot tell apart -- an account with
+## no friends, friends who are all doing something else, and friends whose matches are
+## full, which ActivityService.joinable_activities() drops -- because joinable_friends()
+## returns an empty array for all of them. It is worded around joinability, which is true
+## of every one of them, and which does not read as a remark about the player.
 func _empty_reason() -> String:
 	if not Services.is_current_account(_account_generation):
 		return NetManager.ACCOUNT_NOT_READY
@@ -111,7 +112,7 @@ func _empty_reason() -> String:
 		return _online_denial
 	if Services == null or not Services.social_available():
 		return "Joining a friend needs an Xbox sign-in on a console or PC GDK build."
-	return "None of your friends are in a NetRumble match right now."
+	return "None of your friends have a joinable match right now."
 
 
 func _add_friend(friend: Dictionary) -> void:

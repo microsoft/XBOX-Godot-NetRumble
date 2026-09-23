@@ -64,6 +64,7 @@ func _run() -> void:
 	await preload("res://tools/tests/suspend_tests.gd").new().run(self)
 	await preload("res://tools/tests/leaderboard_tests.gd").new().run(self)
 	await preload("res://tools/tests/pr_feedback_tests.gd").new().run(self)
+	await preload("res://tools/tests/join_failure_tests.gd").new().run(self)
 	await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
 	_source_guards()
 	await _complete()
