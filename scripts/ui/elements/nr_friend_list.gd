@@ -112,7 +112,7 @@ func _empty_reason() -> String:
 		return _online_denial
 	if Services == null or not Services.social_available():
 		return "Joining a friend needs an Xbox sign-in on a console or PC GDK build."
-	return "None of your friends have a joinable NetRumble match right now."
+	return "None of your friends have a joinable match right now."
 
 
 func _add_friend(friend: Dictionary) -> void:

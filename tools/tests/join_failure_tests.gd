@@ -283,7 +283,7 @@ func _friend_list(test: Node, user: Variant) -> void:
 	list._account_generation = Services.account_generation()
 	var social: SocialService = Services._social
 	Services._social = Doubles.Social.new()
-	test._check(list._empty_reason() == "None of your friends have a joinable NetRumble match right now.",
+	test._check(list._empty_reason() == "None of your friends have a joinable match right now.",
 		"empty state describes joinable matches: " + list._empty_reason())
 	Services._social = null
 	test._check(list._empty_reason() == "Joining a friend needs an Xbox sign-in on a console or PC GDK build.",

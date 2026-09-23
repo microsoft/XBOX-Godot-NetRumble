@@ -267,7 +267,7 @@ the required XboxUser and cannot supply playable Lobby/Party/UI coverage.
 | 3.32 | Another client types the code of a lobby that already has four members | "Join Failed" reads **"That match is full."**; the log shows `[Party] Not joining <code>: the lobby search reported it full (4/4).` and no `Lobby join failed` line; the code stays editable |
 | 3.33 | One player leaves that full lobby, then the refused client retries the same code | A fresh search admits the client; no stale "full" answer |
 | 3.34 | Force the lobby search to fail | The dialog gives the mapped reason ("Too many attempts…", "Your sign-in expired…") or "Could not look up that join code.", never "No match found"; the code stays editable |
-| 3.35 | Open Join Friend while every friend's match is full | Full sessions are not listed; the empty state reads "None of your friends have a joinable NetRumble match right now." |
+| 3.35 | Open Join Friend while every friend's match is full | Full sessions are not listed; the empty state reads "None of your friends have a joinable match right now." |
 | 3.36 | Accept an invite to a match that filled after the invite was sent | A readable refusal and no lobby. It is not claimed as "full": the invite path has no search-count preflight |
 
 ### Tier 3 fast path
