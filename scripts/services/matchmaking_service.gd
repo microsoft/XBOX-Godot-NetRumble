@@ -58,6 +58,15 @@ const REQUIRED_JOIN_CONFIG_CAPABILITIES := [
 
 const _JOIN_CONFIG_CLASS := "PlayFabLobbyJoinConfig"
 
+## Flipped by the change that actually lands the search and arranged-join flow.
+##
+## The addon probe alone must not enable Quick Match. The addon surface and the title
+## implementation move independently — bumping the submodule pin makes the properties
+## appear while this file still has no flow behind them — so gating on the probe alone
+## would advertise a button that does nothing. Three things must be true: the addon can
+## configure an arranged lobby, a queue is configured, and the flow exists.
+const _FLOW_IMPLEMENTED := false
+
 ## A property the join config is known to expose today. If this is missing, the probe is
 ## looking at the wrong class rather than an addon that is merely too old — which is the
 ## difference between "wait for the upstream change" and "this code needs updating".
@@ -82,6 +91,12 @@ func is_available() -> bool:
 ## player could act on: a build that cannot arrange a lobby correctly will not be fixed
 ## by signing in.
 func availability_reason() -> String:
+	# Ordered by what a reader can act on. The flow's absence is the honest answer while
+	# it is absent, even on a build whose addon and queue are both ready.
+	if not _FLOW_IMPLEMENTED:
+		return "Quick Match is not available in this build yet."
+	if QUEUE_NAME.strip_edges().is_empty():
+		return "Matchmaking is unavailable: no matchmaking queue is configured."
 	var pf: Variant = _playfab()
 	if pf == null:
 		return "Matchmaking needs the PlayFab extension, which this build does not have."
@@ -90,6 +105,14 @@ func availability_reason() -> String:
 	if missing_join_config_properties().size() > 0:
 		return "This build's PlayFab addon cannot configure a matched lobby, so Quick Match is unavailable."
 	return ""
+
+
+## Whether the installed addon can configure an arranged lobby, independent of whether
+## this title implements Quick Match yet. Kept separate from `is_available()` so moving
+## the submodule pin can be verified without implying the feature is ready.
+func addon_supports_arranged_config() -> bool:
+	return _playfab() != null and _join_config_recognised() \
+		and missing_join_config_properties().size() == 0
 
 
 ## False when the probe cannot see a property the join config is known to expose, which
