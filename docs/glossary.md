@@ -41,7 +41,10 @@ You do not need to read this page front to back. Skim it once, then come back to
 
 | Term | Meaning |
 |---|---|
-| **PlayFab Lobby** | The PlayFab service used here to discover a session and carry the information needed to join it. This sample uses Lobby discovery, not PlayFab Matchmaking. |
+| **PlayFab Lobby** | The PlayFab service used here to discover a session and carry the information needed to join it. Hosted play uses Lobby discovery; the disabled matchmaking foundation also retains staging and arranged Lobby handles. |
+| **PlayFab Matchmaking** | PlayFab's queue-and-ticket service. A title submits ticket members, observes status, and receives an arranged-lobby connection string when a match succeeds. NetRumble has a disabled service foundation, but Quick Match remains unavailable. |
+| **match ticket** | One PlayFab Matchmaking request. It has a queue, member set, timeout and terminal result; a local timeout is not automatically the same as the service reporting no match. |
+| **arranged lobby** | A PlayFab Lobby created from a successful match arrangement rather than ordinary code/activity discovery. Every participant joins it independently using the arrangement string. |
 | **PlayFab Party** | The PlayFab service that provides the actual networking and voice transport. It is wrapped as a Godot `MultiplayerPeer`. |
 | **Party descriptor** | The serialized handle to a Party network. A joining client reads it from the Lobby and passes it to Party to connect. |
 | **chat control** | A Party object representing one player's voice and text endpoint. Each participant needs one before audio or text can flow. |

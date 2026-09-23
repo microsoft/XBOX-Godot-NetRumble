@@ -61,6 +61,10 @@ signal host_status_changed(message: String, cancelling: bool)
 ## outlives the lobby that answers it, and a guest's is just as visible to its friends
 ## as the host's.
 signal join_admission_changed(open: bool)
+## The matchmaking flow started, ended, or changed phase or outcome. The lobby redraws
+## from flow_snapshot(), PlatformSession re-derives the activity, and InviteRouter learns
+## when a flow it waited on has finished releasing.
+signal flow_changed()
 
 # --- Simulation traffic. The world node connects to these. -------------------
 signal match_created(payload: Dictionary)
@@ -177,6 +181,23 @@ var _account_teardown_pending := false
 var _account_teardown_running := false
 var _entry_epoch := 0
 const ACCOUNT_NOT_READY := "Sign in and load your saved data before starting a match."
+const _PREVIOUS_SESSION_FINISHING := "The previous session operation is still finishing. Please try again."
+const _PREVIOUS_SEARCH_FINISHING := "The previous search is still being cancelled. Please try again in a moment."
+const FLOW_BUSY := "Leave the matchmaking group before starting another match."
+
+## The matchmaking attempt in progress, from its staging lobby to its arranged match, or
+## null. Holding one is the online-entry lease: Host, Join and Practice are refused until
+## it and its native cleanup have finished, whether or not a transport is bound.
+var _flow: MatchmakingFlow = null
+var _flow_sequence := 0
+## A staging lobby an ordinary invite or connection-string join entered, held until the
+## host admits this player and a guest flow adopts it. PartyService keeps it as a scoped
+## context rather than the legacy session, so every abort path has to leave it by name.
+var _pending_join_context: Variant = null
+var _pending_join_kind := ""
+## The last owner phase broadcast, kept for a guest flow that is created a moment after
+## the broadcast arrived: admission is answered on a poll, the phase on an RPC.
+var _last_owner_phase: Dictionary = {}
 
 
 func _ready() -> void:
@@ -206,6 +227,14 @@ func _ready() -> void:
 			party.party_failed.connect(_on_party_failed)
 		if not party.cleanup_status_changed.is_connected(_on_party_cleanup_status):
 			party.cleanup_status_changed.connect(_on_party_cleanup_status)
+		# A scoped matchmaking lobby reports its own membership and property changes; the
+		# flow re-reads its group and its search envelope from them. Its transport losses and
+		# failures arrive on the two signals above, carrying the lobby's context.
+		if not party.context_updated.is_connected(_on_context_changed):
+			party.context_updated.connect(_on_context_changed)
+	# The flow re-reads its group on every roster change; that is how a ready group starts
+	# a search and how a frozen one notices a player leaving or un-readying.
+	roster_changed.connect(_on_roster_changed_for_flow)
 	var connectivity: ConnectivityService = Services.connectivity() if Services != null else null
 	if connectivity != null:
 		connectivity.connectivity_changed.connect(_on_connectivity_changed)
@@ -249,8 +278,13 @@ func _account_is_current(generation: int) -> bool:
 func _entry_error(allow_join_cleanup: bool = false) -> String:
 	if Services == null or Services.is_shutting_down() or not Services.is_account_ready():
 		return ACCOUNT_NOT_READY
+	# A matchmaking flow holds the lease with or without a bound transport. Letting Host,
+	# Join or Practice through here would globally replace its two lobbies and its ticket
+	# without the flow ever retiring them.
+	if _flow != null:
+		return FLOW_BUSY if _flow.is_live() else _PREVIOUS_SESSION_FINISHING
 	if _host_in_flight or _account_teardown_pending or (_join_cleanup_running and not allow_join_cleanup):
-		return "The previous session operation is still finishing. Please try again."
+		return _PREVIOUS_SESSION_FINISHING
 	return ""
 
 
@@ -260,6 +294,9 @@ func _on_account_lost() -> void:
 	_entry_epoch += 1
 	_abort_host(ACCOUNT_NOT_READY)
 	_platform.invalidate_account()
+	# Retired before the early return below: the flow is gone the moment its account is,
+	# and its native cleanup waits for the deferred teardown like everything else.
+	_retire_flow(true)
 	if _account_teardown_pending:
 		return
 	_account_teardown_pending = true
@@ -284,6 +321,9 @@ func _finish_account_teardown() -> void:
 	_account_teardown_running = true
 	var party := _party()
 	var chat := _chat()
+	if _flow != null:
+		await _release_flow(_flow)
+	await _release_pending_join_context()
 	if party != null:
 		await party.leave()
 	if chat != null:
@@ -484,6 +524,53 @@ func _on_party_cleanup_status(message: String) -> void:
 		request.set_status(message)
 
 
+## Opens a matchmaking group -- a public staging lobby of up to four -- with this player
+## as its owner. Awaitable like host_match(); the lobby screen takes over once it returns
+## true, and the group then searches for a four-player match the moment everyone in it
+## is ready. Refused, with the reason in last_error, while matchmaking is unavailable, while
+## an earlier session's Party cleanup is still settling, while the requested mode's
+## configuration does not fit the four-player queue, and while an earlier search's ticket
+## is still being cancelled.
+func start_matchmaking(mode: NRTypes.GameModeType = NRTypes.GameModeType.DEATHMATCH) -> bool:
+	last_error = ""
+	if Services == null or not Services.quick_match_available():
+		_fail_connection(Services.quick_match_unavailable_reason() if Services != null else ACCOUNT_NOT_READY)
+		return false
+	var error := _entry_error()
+	if not error.is_empty():
+		_fail_connection(error)
+		return false
+	if _active_join_request != null:
+		_fail_connection("A join is still finishing. Cancel it before matchmaking.")
+		return false
+	# The same fence Host Match and every join observe: online entry stays closed until
+	# the previous session's Party cleanup has confirmed.
+	var party := _party()
+	if party != null and (party.is_cleanup_pending() or not party.recovery_error.is_empty()):
+		_fail_connection(_online_cleanup_error())
+		return false
+	# The mode's real configuration, read by the service, not a constant restated here:
+	# a Deathmatch retuned away from four players must not quietly fill four-player
+	# matches. The service checks again at every ticket.
+	var matchmaking := Services.matchmaking()
+	var profile: Dictionary = matchmaking.runtime_profile(mode)
+	if not bool(profile.get("ok", false)):
+		var reason := String(profile.get("reason", ""))
+		_fail_connection(reason if not reason.is_empty() else "Quick Match is unavailable for this game mode.")
+		return false
+	# A ticket whose cancellation was never confirmed may still match this player.
+	# Searching again before the service has finished with it would be a second search.
+	if matchmaking.has_pending_cleanup():
+		_fail_connection(_PREVIOUS_SEARCH_FINISHING)
+		return false
+	# The previous session is cleared before the lease is claimed and before anything is
+	# awaited, so this teardown can never reach the flow it is making room for.
+	_leave_match_internal()
+	var flow := _new_flow(MatchmakingFlow.Role.OWNER, mode)
+	flow.match_size = int(profile.get("player_count", MatchmakingFlow.CAPACITY))
+	return await flow.start_owner()
+
+
 ## Starts joining the session behind a five-character join code.
 ##
 ## Returns the handle for the attempt immediately, before it has done anything, rather
@@ -640,12 +727,33 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 	else:
 		result = await _party().join_by_connection_string(user, connection_string, request.deadline_msec)
 	if not _is_join_current(request) or not _account_is_current(generation):
+		# A scoped lobby the join entered is not the legacy session the aborting teardown
+		# leaves, so a late success releases it through its own handle.
+		await _release_join_result_context(result)
 		return ""
 	if not bool(result.get("ok", false)):
 		var error := String(result.get("error", ""))
 		return error if not error.is_empty() else "Could not join the match."
 
+	# A matchmaking staging lobby is entered through this same path -- invites, activities
+	# and Join Friend all carry its connection string -- and is recognized by its lobby
+	# kind rather than by a join code, which it does not have.
+	var kind := String(result.get("kind", ""))
+	if not kind.is_empty():
+		var refusal := ""
+		if kind != PartyService.LOBBY_KIND_STAGING:
+			refusal = "That match cannot be joined from an invitation."
+		elif not Services.quick_match_available():
+			refusal = Services.quick_match_unavailable_reason()
+		if not refusal.is_empty():
+			await _release_join_result_context(result)
+			return refusal
+		_pending_join_kind = kind
+		_pending_join_context = result.get("context")
+
 	if not _bind_peer(result.get("peer")):
+		# The abort this failure starts runs the join cleanup, which leaves the Party
+		# session and releases a pending staging context by its own handle.
 		push_warning("[Net] PlayFab Party did not return a usable network peer for the join.")
 		return PartyService.JOIN_FAILED_UNKNOWN
 
@@ -687,13 +795,23 @@ func _consume_admission(request: JoinRequest) -> void:
 	if _active_join_request == request:
 		_active_join_request = null
 	_join_aborts.erase(request.id)
+	# Admitted into a matchmaking staging lobby: this player is now a member of the
+	# owner's group, and a guest flow takes over the scoped lobby the join entered.
+	if _pending_join_kind == PartyService.LOBBY_KIND_STAGING and _pending_join_context != null and _flow == null:
+		var flow := _new_flow(MatchmakingFlow.Role.GUEST, game_mode_type)
+		flow.start_guest(_pending_join_context)
+		_pending_join_context = null
+		_pending_join_kind = ""
+		if not _last_owner_phase.is_empty():
+			flow.on_owner_phase(int(_last_owner_phase.get("epoch", 0)), int(_last_owner_phase.get("phase", 0)),
+				_last_owner_phase.get("detail", {}))
 	# Published only now, once the join is answered and cannot still be cancelled out from
 	# under it. Advertising the session on the strength of an acceptance the player was in
 	# the middle of walking away from is the whole reason this is not done in _accept_join.
 	connection_succeeded.emit()
 	if joined_session_is_live(request):
 		_platform.publish_activity()
-		_platform.update_presence("In a match")
+		_platform.update_presence("In a matchmaking group" if _flow != null else "In a match")
 
 
 ## Records that a join should stop, and why. The answer is not written here: aborting
@@ -706,6 +824,11 @@ func _request_join_abort(request: JoinRequest, outcome: JoinRequest.Outcome, rea
 		return
 	_join_aborts[request.id] = {"outcome": outcome, "reason": reason, "request": request}
 	request.set_status(_cleanup_message())
+	# A matchmaking flow's admission request never reaches the global cancellation token:
+	# the flow's own contexts carry their operations, and cancelling everything to stop one
+	# guest's wait would cut the scoped work the flow still owns.
+	if request.is_flow_owned():
+		return
 	# Invalidates whatever PartyService call this join left in flight. Safe even when a
 	# replacement has already claimed the seat: the replacement awaits this teardown
 	# before it starts a Party call of its own, so there is nothing newer to invalidate.
@@ -777,6 +900,10 @@ func _abort_join_for_lost_session(reason: String) -> bool:
 	var request := _active_join_request
 	if request == null or not request.is_pending():
 		return false
+	# A matchmaking flow's admission request is answered by the flow's own teardown, and
+	# the lost session is reported to the lobby that is already on screen.
+	if request.is_flow_owned():
+		return false
 	_request_join_abort(request, JoinRequest.Outcome.FAILED, reason)
 	return true
 
@@ -809,6 +936,10 @@ func joined_session_is_live(request: JoinRequest) -> bool:
 
 
 func leave_match() -> void:
+	# A matchmaking flow is retired first, while its transport is still bound: a guest
+	# leaving mid-search tells the owner, and the flow's scoped lobbies and ticket are
+	# released through their own handles rather than only by the global leave below.
+	_retire_flow()
 	_detach_peer()
 	# Party teardown is asynchronous (clear the descriptor, leave the lobby, leave the
 	# network). Local state is reset immediately so the UI never waits on the service,
@@ -817,6 +948,7 @@ func leave_match() -> void:
 	var party := _party()
 	if party != null:
 		party.leave()
+	_release_pending_join_context()
 	_reset_after_leave()
 
 
@@ -828,14 +960,74 @@ func leave_match() -> void:
 ## the addons pump their async completions on. Awaiting here is what keeps the frames coming
 ## until the teardown lands. See main.gd::_quit_now().
 func leave_match_and_wait() -> void:
+	var flow := _flow
+	_retire_flow(true)
 	_detach_peer()
+	if flow != null:
+		await _release_flow(flow)
 	var party := _party()
 	if party != null:
 		await party.leave()
+	await _release_pending_join_context()
 	# Left until the network is actually gone, matching _leave_match_for_join_abort():
 	# nothing is waiting to observe the cleared state, and the activity and presence calls
 	# this starts are then issued while there are still frames left to carry them.
 	_reset_after_leave()
+
+
+## True while anything this title owns online is still live or still unwinding: a session,
+## a matchmaking flow or its quarantine, a staging lobby a join entered, stale PartyService
+## results cleaning up their own handles, Party's own cleanup or recovery, or tickets the
+## matchmaking service still owns. The quit path waits on all of it, peer or no peer.
+func has_pending_online_work() -> bool:
+	if has_session() or _flow != null or _pending_join_context != null:
+		return true
+	var party := _party()
+	if party != null and (party.has_owned_work() or _party_cleanup_running(party)):
+		return true
+	var matchmaking: MatchmakingService = Services.matchmaking() if Services != null else null
+	return matchmaking != null and matchmaking.has_pending_cleanup()
+
+
+## Party's own cleanup is still running: a global leave inside its grace, or the scoped
+## Party/Lobby reset it falls back to. A hosted session whose leave failed leaves exactly
+## this behind, with no peer, flow or scoped context to report it, and the native shutdown
+## it waits on only lands while frames keep coming. A failed recovery is not counted: it is
+## terminal until the title restarts, no wait can finish it, and online entry already stays
+## refused with its restart-required reason.
+func _party_cleanup_running(party: PartyService) -> bool:
+	return party.is_cleanup_pending() and party.recovery_error.is_empty()
+
+
+## Leaves everything and waits, until `deadline_msec`, for the native work to settle. The
+## shutdown drain: bounded by the caller's single quit budget, never renewed here.
+##
+## Party's own cleanup is waited out first. Leaving while it runs would join it inside
+## PartyService.leave(), which returns only once it has finished -- and a recovery held on
+## a native shutdown may never finish. If the budget runs out first, the drain stops there
+## and the caller's deadline ends the quit.
+func drain_online_work(deadline_msec: int) -> void:
+	var party := _party()
+	if party != null:
+		await _drain_party_cleanup(party, deadline_msec)
+		if _party_cleanup_running(party):
+			return
+	await leave_match_and_wait()
+	party = _party()
+	if party != null:
+		await party.drain_owned_work(deadline_msec)
+	var matchmaking: MatchmakingService = Services.matchmaking() if Services != null else null
+	if matchmaking != null:
+		await matchmaking.drain_owned_work(deadline_msec)
+
+
+## Polled on the service clock -- in production the engine clock the quit budget is measured
+## on -- so the wait keeps frames coming for the native shutdown and ends at the caller's
+## deadline. Returns at once when no cleanup is running.
+func _drain_party_cleanup(party: PartyService, deadline_msec: int) -> void:
+	var clock := Services.clock()
+	while _party_cleanup_running(party) and clock.now_msec() < deadline_msec:
+		await clock.sleep_seconds(PartyService.POLL_INTERVAL)
 
 
 func retire_activity_and_wait() -> void:
@@ -847,6 +1039,7 @@ func _leave_match_for_join_abort() -> void:
 	var party := _party()
 	if party != null:
 		await party.leave()
+	await _release_pending_join_context()
 	_reset_after_leave()
 
 
@@ -878,6 +1071,7 @@ func _reset_after_leave(reset_platform: bool = true) -> void:
 	join_code = ""
 	last_chat_error = ""
 	last_disconnect_reason = ""
+	_last_owner_phase = {}
 	if reset_platform:
 		_set_match_state(NRTypes.MatchState.LOADING)
 		roster_changed.emit()
@@ -919,7 +1113,10 @@ func session_id() -> int:
 ## if the platform terminates instead of resuming. Either outcome is correct, because the
 ## network is going away regardless of whether this process is alive to watch it go.
 func abandon_for_suspend() -> bool:
-	var had_session := has_session()
+	# A matchmaking flow is interrupted by a suspend even between its staging and
+	# arranged sessions, when there is no peer to report; the resume notice still owes the
+	# player an explanation.
+	var had_session := has_session() or (_flow != null and _flow.is_live())
 	_entry_epoch += 1
 	_abort_host("The game was suspended.")
 	_account_teardown_pending = true
@@ -929,6 +1126,9 @@ func abandon_for_suspend() -> bool:
 	if party != null:
 		party.cancel_pending_join()
 	_platform.invalidate_account(true)
+	# Retired synchronously; its tickets, lobbies and transport are released by the
+	# deferred teardown on resume, exactly like the Party session below.
+	_retire_flow(true)
 	_detach_peer()
 	_reset_after_leave(false)
 	return had_session
@@ -999,7 +1199,7 @@ func _peer_is_connected() -> bool:
 
 
 func _sleep(seconds: float) -> void:
-	await get_tree().create_timer(seconds).timeout
+	await Services.clock().sleep_seconds(seconds)
 
 
 func _party() -> PartyService:
@@ -1008,6 +1208,358 @@ func _party() -> PartyService:
 
 func _chat() -> ChatService:
 	return Services.chat() if Services != null else null
+
+
+# --- Matchmaking flow -------------------------------------------------------
+#
+# The flow (scripts/services/matchmaking_flow.gd) owns what a matchmaking attempt means;
+# NetManager keeps what it must: the transport, the roster, the admission gate and every
+# RPC. The underscored functions below are the flow's hooks into that state and are called
+# only by MatchmakingFlow.
+
+## Whether a matchmaking flow or its cleanup is still live. has_session() deliberately is
+## not this: a flow holds the online-entry lease with no transport bound, between its
+## staging and arranged sessions and while quarantined.
+func has_online_flow() -> bool:
+	return _flow != null
+
+
+## Whether the current flow is still an active group, as opposed to one that has been
+## retired and is only finishing its native cleanup.
+func is_online_flow_live() -> bool:
+	return _flow != null and _flow.is_live()
+
+
+## True between binding an invited group's staging transport and the owner's admission
+## turning this player into a guest member. Nothing is advertised in that gap: a guest's
+## activity describes the group, and the group is not this player's yet.
+func is_entering_matchmaking() -> bool:
+	return _flow == null and not _pending_join_kind.is_empty()
+
+
+## What the lobby draws for the current flow, or empty when there is none.
+func flow_snapshot() -> Dictionary:
+	return _flow.presentation() if _flow != null else {}
+
+
+## The activity the current flow should publish, or empty when there is no flow.
+func flow_social_snapshot() -> Dictionary:
+	if _flow == null:
+		return {}
+	return _flow.social_snapshot(has_session() and not _is_offline and _accepting_joins)
+
+
+## Players the current session holds: four for a matchmaking group or match, the game
+## mode's count otherwise. The roster slots and the published activity read this one
+## number, so they cannot disagree about how big the lobby is.
+func session_capacity() -> int:
+	if _flow != null:
+		return MatchmakingFlow.CAPACITY
+	var mode := Assets.game_mode(game_mode_type)
+	return mode.player_count if mode != null else 0
+
+
+## Whether players may change readiness or appearance now. A frozen group holds both:
+## the ticket describes the group as it was at the freeze.
+func can_customize() -> bool:
+	return _flow == null or _flow.allows_customization()
+
+
+## The owner's Cancel Search. Cancellation is confirmed by the service before the group
+## is told it can ready up again.
+func cancel_matchmaking_search() -> void:
+	if _flow != null and _flow.is_current():
+		_flow.cancel_search()
+
+
+## Retries a restoration whose unlock or metadata write was not confirmed.
+func retry_matchmaking_restore() -> void:
+	if _flow != null and _flow.is_current():
+		_flow.retry_restore()
+
+
+## Records that this member's lobby has shown the current outcome once.
+func mark_flow_outcome_presented(presented_epoch: int) -> void:
+	if _flow != null:
+		_flow.mark_reason_presented(presented_epoch)
+
+
+## Ends the current flow so an accepted invite can replace it, then waits -- bounded by
+## the cancellation grace -- for its native cleanup. True once online entry is safe; false
+## while the old work is still quarantined, in which case the invite is kept rather than
+## spent on an entry refusal.
+func retire_flow_for_replacement() -> bool:
+	var flow := _flow
+	if flow == null:
+		return true
+	leave_match()
+	var clock := Services.clock()
+	var deadline := clock.deadline_after(MatchmakingFlow.CANCEL_GRACE_SECONDS)
+	while _flow == flow and not clock.has_expired(deadline):
+		await clock.sleep_seconds(MatchmakingFlow.POLL_SECONDS)
+	return _flow == null
+
+
+func _new_flow(role: MatchmakingFlow.Role, mode: NRTypes.GameModeType) -> MatchmakingFlow:
+	_flow_sequence += 1
+	var flow := MatchmakingFlow.new(_flow_sequence, role, Services.account_generation(), _entry_epoch, mode, Services.clock())
+	flow.changed.connect(_on_flow_changed.bind(flow))
+	_flow = flow
+	flow_changed.emit()
+	return flow
+
+
+func _on_flow_changed(flow: MatchmakingFlow) -> void:
+	if flow == _flow:
+		flow_changed.emit()
+
+
+func _on_roster_changed_for_flow() -> void:
+	if _flow != null:
+		_flow.on_group_changed()
+
+
+## Retires the current flow for good. `defer_native` leaves its SDK calls to the deferred
+## teardown account loss and suspend already run; otherwise its scoped lobbies, transport
+## and ticket are released now, in the background, while the lease stays held.
+func _retire_flow(defer_native: bool = false) -> void:
+	var flow := _flow
+	if flow == null or flow.retired:
+		return
+	flow.retire(defer_native)
+	# Its admission request, if any, is settled; the seat must not keep refusing Practice.
+	if _active_join_request != null and _active_join_request.is_flow_owned():
+		_join_aborts.erase(_active_join_request.id)
+		_active_join_request = null
+	flow_changed.emit()
+	if not defer_native:
+		_release_flow(flow)
+
+
+## Releases a retired flow's native work and, once it has settled, the lease. Past the
+## cancellation grace the flow reports itself quarantined, so the menu can say why new
+## online entry is still refused.
+func _release_flow(flow: MatchmakingFlow) -> void:
+	if flow == null or flow.native_release_started:
+		return
+	_mark_flow_quarantined_after_grace(flow)
+	await flow.release_native()
+	if _flow == flow:
+		_flow = null
+		flow_changed.emit()
+
+
+func _mark_flow_quarantined_after_grace(flow: MatchmakingFlow) -> void:
+	await Services.clock().sleep_seconds(MatchmakingFlow.CANCEL_GRACE_SECONDS)
+	if _flow == flow:
+		flow.mark_quarantined()
+
+
+## The synchronous half of activating a flow transport: bind, set the session, register the
+## local player and open the local gate -- or, for an arranged guest, install its fresh
+## admission request. Nothing here awaits or asks PartyService anything, so a joiner who
+## reaches the network the instant its descriptor is published already finds admission
+## open. The caller sets the flow's phase first, so its social veto is in place before the
+## registration and gate signals fire.
+func _flow_activate_transport(flow: MatchmakingFlow, peer: Variant, hosting: bool) -> bool:
+	if flow != _flow or not flow.is_current():
+		return false
+	if not _bind_peer(peer):
+		return false
+	_is_offline = false
+	game_mode_type = flow.mode
+	join_code = ""
+	if hosting:
+		_register_local_player(HOST_PEER_ID)
+		_set_accepting_joins(true)
+		_set_match_state(NRTypes.MatchState.PLAYERS_JOINING)
+	else:
+		# Created here and nowhere earlier: no request of any kind spans the transport swap,
+		# and this one can only be stamped by an acceptance on the session just bound.
+		_join_request_sequence += 1
+		var request := JoinRequest.new()
+		request.id = _join_request_sequence
+		request.flow_id = flow.id
+		_active_join_request = request
+		flow.install_admission_request(request)
+		_set_match_state(NRTypes.MatchState.LOADING)
+	return true
+
+
+## The staging lobby is open and published: the owner is in a joinable group.
+func _flow_session_opened(flow: MatchmakingFlow) -> void:
+	if flow != _flow:
+		return
+	connection_succeeded.emit()
+	_platform.publish_activity()
+	_platform.update_presence("In a matchmaking group")
+
+
+## The staging lobby never opened. Everything the attempt built is released and the reason
+## reaches the menu the way a failed host does.
+func _flow_start_failed(flow: MatchmakingFlow, reason: String) -> void:
+	if flow != _flow:
+		return
+	leave_match()
+	_fail_connection(reason)
+
+
+## A terminal failure once the lobby is on screen: everything is left and the screen is
+## told the session ended, with the reason it shows.
+func _flow_fail(flow: MatchmakingFlow, reason: String) -> void:
+	if flow != _flow or flow.retired:
+		return
+	var message := reason if not reason.is_empty() else "The matchmaking group ended."
+	leave_match()
+	last_disconnect_reason = message
+	server_disconnected.emit()
+
+
+func _flow_set_admission(open: bool) -> void:
+	_set_accepting_joins(open)
+
+
+## Every human in the group back to unready, replicated by the existing ready RPC.
+func _flow_reset_readiness() -> void:
+	if not is_host():
+		return
+	for peer_id: int in players.keys():
+		var state: PlayerState = players.get(peer_id, null)
+		if state != null and not state.is_bot and state.is_ready:
+			_apply_ready_state(peer_id, false)
+
+
+func _flow_broadcast_phase(flow: MatchmakingFlow, detail: Dictionary) -> void:
+	if flow != _flow or _peer == null or not is_host():
+		return
+	_receive_flow_phase.rpc(flow.epoch, int(flow.phase), detail)
+
+
+func _flow_send_report(epoch: int, phase: int) -> void:
+	if _peer == null or is_host():
+		return
+	_submit_flow_ack.rpc_id(HOST_PEER_ID, epoch, phase)
+
+
+func _flow_send_leave(epoch: int) -> void:
+	if _peer == null or is_host():
+		return
+	_submit_flow_leave.rpc_id(HOST_PEER_ID, epoch)
+
+
+## The arranged guest was admitted on the session bound for it. Consumed on the flow's own
+## deadline, and checked against the session that exists now, like any other acceptance.
+func _consume_flow_admission(flow: MatchmakingFlow, request: JoinRequest) -> void:
+	if flow != _flow or request != _active_join_request:
+		return
+	if not _session_account_is_current() or not _peer_is_connected() or _session_generation == 0 \
+			or _session_generation != request.session_id or local_player() == null:
+		_flow_fail(flow, "The match ended before you could join it.")
+		return
+	if not request.settle(JoinRequest.Outcome.SUCCEEDED):
+		return
+	_active_join_request = null
+	_join_aborts.erase(request.id)
+	flow_changed.emit()
+
+
+## The staging-to-arranged handoff's local session end.
+##
+## A bare detach is not enough: the roster, the verified-name cache and the session identity
+## would all go on describing a transport that no longer exists, and with no peer bound
+## local_peer_id() falls back to 1 -- which on a staging guest resolves local_player() to
+## the old host. So the old session is ended completely, synchronously and before anything
+## is awaited: the leave/reset core of _leave_match_internal() without its global Party
+## leave and without its activity hold. PartyService contexts and the flow's own identity,
+## epochs and lease are not touched; the flow leaves the old staging transport through its
+## context next, and the new roster is rebuilt only from the new transport.
+##
+## `_suppress_activity_delete` only avoids a redundant retirement and a presence flicker --
+## the flow retired the activity when it froze. It is not the handover hold and never keeps
+## a searching activity published.
+func _end_local_session_for_handoff(flow: MatchmakingFlow) -> bool:
+	if flow != _flow or not flow.is_current() or not flow.armed:
+		push_warning("[Net] The matchmaking handoff was not armed; the session was not reset.")
+		return false
+	if flow.phase != MatchmakingFlow.Phase.ARMING_HANDOFF and flow.phase != MatchmakingFlow.Phase.SWITCHING_TRANSPORT:
+		push_warning("[Net] The matchmaking handoff reset was requested outside the handoff.")
+		return false
+	if _active_join_request != null:
+		push_warning("[Net] A join request is still pending; the matchmaking handoff cannot reset the session.")
+		return false
+	if _platform.wants_activity():
+		push_warning("[Net] The matchmaking activity was not retired before the handoff.")
+		return false
+	# The reset retires any offline grace for the session it ends; a grace belongs to the
+	# flow, matched by id, and the flow is continuing, so its token is carried across.
+	var connectivity_token := _connectivity_token
+	_suppress_activity_delete = true
+	_detach_peer()
+	_reset_after_leave()
+	_suppress_activity_delete = false
+	_connectivity_token = connectivity_token
+	return true
+
+
+## Whether a transport loss is the armed member's old staging transport going away, which
+## the handoff expects, rather than a session ending.
+func _flow_expects_staging_loss() -> bool:
+	return _flow != null and _flow.is_current() and _flow.armed \
+		and _flow.phase == MatchmakingFlow.Phase.ARMING_HANDOFF \
+		and _session_generation != 0 and _session_generation == _flow.staging_session
+
+
+func _release_join_result_context(result: Dictionary) -> void:
+	var context: Variant = result.get("context")
+	var party := _party()
+	if context == null or party == null:
+		return
+	await party.leave_lobby(context)
+	await party.leave_transport(context)
+
+
+func _release_pending_join_context() -> void:
+	var context: Variant = _pending_join_context
+	_pending_join_context = null
+	_pending_join_kind = ""
+	var party := _party()
+	if context == null or party == null:
+		return
+	await party.leave_lobby(context)
+	await party.leave_transport(context)
+
+
+## A scoped matchmaking transport went down. The armed member's old staging transport is
+## expected to; any other context the flow holds ending ends the flow with its reason; a
+## staging lobby joined but not yet adopted ends like any other join.
+func _on_context_transport_lost(context: Variant, reason: String) -> void:
+	var message := reason if not reason.is_empty() else "The match connection was lost."
+	if _flow != null and _flow.is_current():
+		if context == _flow.staging_context and _flow.armed:
+			# The retired staging transport. Expected once the handoff is armed; before the
+			# local reset it is also the cue to end the old session early.
+			if _flow.phase == MatchmakingFlow.Phase.ARMING_HANDOFF:
+				_flow.on_armed_staging_loss()
+			return
+		if context in _flow.held_contexts():
+			_flow_fail(_flow, message)
+			return
+	if context != null and context == _pending_join_context:
+		_on_server_disconnected(message)
+
+
+## A recoverable failure on a matchmaking context. Kept as a diagnostic while a flow is
+## live even with no peer bound; the terminal cases arrive as transport losses instead.
+func _on_context_failed(_context: Variant, message: String) -> void:
+	if _flow == null and not has_session():
+		return
+	last_error = message
+	push_warning("[NetManager] Matchmaking reported a non-fatal failure: %s" % message)
+
+
+func _on_context_changed(context: Variant) -> void:
+	if _flow != null:
+		_flow.on_lobby_changed(context)
 
 
 # --- Voice chat -------------------------------------------------------------
@@ -1306,6 +1858,43 @@ func _accept_join() -> void:
 	request.admitted = true
 
 
+# --- Matchmaking flow RPCs ------------------------------------------------------
+#
+# Declared here, like every other RPC, because Godot routes an RPC by the declaring node's
+# path. Their meaning lives in MatchmakingFlow. Adding them changed the RPC set, which is
+# why NRProtocol.RPC_SET_VERSION moved with them.
+
+## The staging owner's phase for the current attempt -- FREEZING, SEARCHING, CANCELLING,
+## RESTORING_STAGING or GATHERING -- with the durable outcome and, while searching, the
+## milliseconds of search budget left. See MatchmakingFlow.on_owner_phase().
+@rpc("authority", "call_remote", "reliable")
+func _receive_flow_phase(epoch: int, phase: int, detail: Dictionary) -> void:
+	if not _session_account_is_current() or is_host():
+		return
+	_last_owner_phase = {"epoch": epoch, "phase": phase, "detail": detail.duplicate(true)}
+	if _flow != null:
+		_flow.on_owner_phase(epoch, phase, detail)
+
+
+## A member's report to the staging owner for the current attempt. FREEZING acknowledges
+## the freeze over the authenticated transport; CANCELLING asks the owner to stop the
+## search because this member could not join the owner's ticket.
+@rpc("any_peer", "call_remote", "reliable")
+func _submit_flow_ack(epoch: int, phase: int) -> void:
+	if not is_host() or _flow == null:
+		return
+	_flow.on_member_report(multiplayer.get_remote_sender_id(), epoch, phase)
+
+
+## A guest's binding Leave Group, sent before it disconnects so the owner cancels the
+## group's ticket instead of mistaking the departure for a transport fault.
+@rpc("any_peer", "call_remote", "reliable")
+func _submit_flow_leave(epoch: int) -> void:
+	if not is_host() or _flow == null:
+		return
+	_flow.on_member_leave(multiplayer.get_remote_sender_id(), epoch)
+
+
 # --- Peer plumbing ----------------------------------------------------------
 
 func _on_peer_connected(peer_id: int) -> void:
@@ -1334,7 +1923,8 @@ func _on_peer_connected(peer_id: int) -> void:
 ## rather than needing a rejection path of its own.
 @rpc("authority", "call_remote", "reliable")
 func _reject_join(reason: String) -> void:
-	_on_server_disconnected(reason)
+	# A refusal is never the expected loss of an armed handoff's old transport.
+	_on_server_disconnected(reason, false)
 
 
 func _on_peer_disconnected(peer_id: int) -> void:
@@ -1374,6 +1964,12 @@ func _on_connected_to_server() -> void:
 func _on_connection_failed() -> void:
 	if _abort_host("Connection to host failed.") or _abort_join_for_lost_session("Connection to host failed."):
 		return
+	# A matchmaking transport that failed to connect ends the flow through its own
+	# teardown; nulling the peer alone would leave both lobbies joined behind a lobby
+	# screen that never hears about it.
+	if _flow != null and _flow.is_current() and _peer != null:
+		_flow_fail(_flow, "Connection to the match host failed.")
+		return
 	_detach_peer()
 	_fail_connection("Connection to host failed.")
 
@@ -1382,8 +1978,18 @@ func _on_connection_failed() -> void:
 ##
 ## `_peer` is the re-entry guard: both the host's departure and a genuine transport drop
 ## can reach here for the same session, and the screens must not be told twice.
-func _on_server_disconnected(reason: String = "") -> void:
+##
+## `transport_loss` is false for a refusal or a sustained-offline end, which are never the
+## old staging transport going away as an armed matchmaking handoff expects.
+func _on_server_disconnected(reason: String = "", transport_loss: bool = true) -> void:
 	var message := reason if not reason.is_empty() else "You were disconnected from the match."
+	# An armed matchmaking member losing its captured staging transport: the handoff ends
+	# the old session locally and carries on, rather than leaving both lobbies and sending
+	# the player to the menu. Only that transport, only once armed -- and checked first,
+	# because no host or join attempt can be establishing while a handoff is armed.
+	if transport_loss and _flow_expects_staging_loss():
+		_flow.on_armed_staging_loss()
+		return
 	if _abort_host(message):
 		return
 	if _abort_join_for_lost_session(message):
@@ -1407,7 +2013,14 @@ func _on_server_disconnected(reason: String = "") -> void:
 ## and a host whose network died has no session left either. Its `_peer` guard swallows
 ## the duplicate when Party reports both a state change and a destroy for the same loss,
 ## and makes this a no-op when the player already left under their own steam.
-func _on_party_network_lost(reason: String) -> void:
+##
+## `context` is the scoped matchmaking lobby whose transport went down -- so an expected
+## staging loss can be told apart from an arranged one -- or null for the one hosted or
+## code-joined session.
+func _on_party_network_lost(reason: String, context: Variant = null) -> void:
+	if context != null:
+		_on_context_transport_lost(context, reason)
+		return
 	_on_server_disconnected(reason)
 
 
@@ -1415,8 +2028,11 @@ func _on_party_network_lost(reason: String) -> void:
 ## the addon raises this for state-change batches that fail recoverably, so ending the
 ## match here would drop players over errors the session survives. The terminal cases
 ## arrive as `network_lost` instead.
-func _on_party_failed(message: String) -> void:
-	if not has_session():
+func _on_party_failed(message: String, context: Variant = null) -> void:
+	if context != null:
+		_on_context_failed(context, message)
+		return
+	if not has_session() and _flow == null:
 		return
 	last_error = message
 	push_warning("[NetManager] Party reported a non-fatal failure: %s" % message)
@@ -1450,25 +2066,46 @@ func _on_connectivity_changed(online: bool) -> void:
 			reason = "This console has no internet connection."
 		if _abort_host(reason) or _abort_join_for_lost_session(reason):
 			return
-	if online or _is_offline or _peer == null:
+	if online or _is_offline:
 		return
-	_end_match_if_still_offline(_connectivity_token)
+	# A matchmaking flow is online work even with no peer bound -- between its staging and
+	# arranged sessions -- so its grace starts here too.
+	var flow_id := _flow.id if _flow != null and _flow.is_live() else 0
+	if _peer == null and flow_id == 0:
+		return
+	_end_match_if_still_offline(_connectivity_token, flow_id)
 
 
-func _end_match_if_still_offline(token: int) -> void:
+func _end_match_if_still_offline(token: int, flow_id: int = 0) -> void:
 	var deadline := _now_msec() + int(_CONNECTIVITY_GRACE_SECONDS * 1000.0)
 	while _now_msec() < deadline:
-		if token != _connectivity_token or _is_offline or _peer == null:
+		if token != _connectivity_token or _is_offline or (_peer == null and not _flow_live_by_id(flow_id)):
 			return
 		await _sleep(_JOIN_RESULT_POLL_INTERVAL)
 	# Re-checked rather than trusted: the token catches a reported change, and the live
-	# query catches the case where the grace period simply outlasted the problem.
-	if token != _connectivity_token or _is_offline or _peer == null:
+	# query catches the case where the grace period simply outlasted the problem. The flow
+	# is matched by id, not by peer or session: a grace that began before the transport
+	# swap still belongs to the same attempt after it.
+	if token != _connectivity_token or _is_offline:
+		return
+	var flow_live := _flow_live_by_id(flow_id)
+	if _peer == null and not flow_live:
 		return
 	var connectivity: ConnectivityService = Services.connectivity() if Services != null else null
 	if connectivity == null or connectivity.is_online():
 		return
-	_on_server_disconnected(connectivity.offline_reason())
+	if flow_live:
+		# Sustained offline ends the attempt in every phase, armed or not: an expected
+		# staging-transport loss is not an outage, and an outage is not expected.
+		_flow_fail(_flow, connectivity.offline_reason())
+		return
+	_on_server_disconnected(connectivity.offline_reason(), false)
+
+
+## Whether the flow a grace period was started for is still the live one, matched by id so
+## the grace survives the flow's own transport swap.
+func _flow_live_by_id(flow_id: int) -> bool:
+	return flow_id != 0 and _flow != null and _flow.id == flow_id and _flow.is_live()
 
 
 # --- Roster RPCs ------------------------------------------------------------
@@ -1580,6 +2217,9 @@ func _first_free_color(peer_id: int, preferred: int) -> int:
 func set_local_ready(is_ready: bool) -> void:
 	if not _session_account_is_current():
 		return
+	# A frozen matchmaking group holds readiness: the ticket was built from it.
+	if not can_customize():
+		return
 	var state := local_player()
 	if state == null:
 		return
@@ -1602,6 +2242,10 @@ func _apply_ready_state(peer_id: int, is_ready: bool) -> void:
 	var state: PlayerState = players.get(peer_id, null)
 	if state == null:
 		return
+	# While a matchmaking group is frozen an unready still lands -- it is a player
+	# withdrawing consent, and it stops the search -- but a ready changes nothing.
+	if is_ready and _flow != null and _flow.is_frozen():
+		return
 	state.is_ready = is_ready
 	if not _is_offline:
 		_receive_ready_state.rpc(peer_id, is_ready)
@@ -1619,6 +2263,8 @@ func _receive_ready_state(peer_id: int, is_ready: bool) -> void:
 
 func set_local_appearance(color_id: int, style_id: int) -> void:
 	if not _session_account_is_current():
+		return
+	if not can_customize():
 		return
 	var state := local_player()
 	if state == null:
@@ -1645,6 +2291,10 @@ func _submit_appearance(color_id: int, style_id: int) -> void:
 func _apply_appearance(peer_id: int, color_id: int, style_id: int) -> void:
 	var state: PlayerState = players.get(peer_id, null)
 	if state == null:
+		return
+	# The authoritative guard, not just the lobby's disabled selectors: a frozen group's
+	# appearance is held on the host whatever a client sends.
+	if not can_customize():
 		return
 	state.ship_color_id = color_id
 	state.ship_style_id = style_id

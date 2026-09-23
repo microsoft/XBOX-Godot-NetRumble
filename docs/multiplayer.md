@@ -7,10 +7,13 @@
 **PlayFab Lobby** discovers sessions and carries the Party descriptor. **PlayFab Party**
 authenticates peers and carries Godot gameplay traffic plus its separate voice/text channel.
 **XBOX multiplayer activity** makes that Lobby session discoverable through friends and invites.
-This sample does not use the PlayFab Matchmaking queue/ticket product.
+The shipped menu flow still uses hosted Lobby discovery. A disabled service foundation for
+PlayFab Matchmaking tickets and arranged lobbies is documented in
+[Matchmaking foundations](matchmaking.md); it does not make Quick Match available yet.
 
 See also: [Architecture](architecture.md) · [Platform Services](platform-services.md) ·
-[Configuration](configuration.md) · [Walkthroughs](walkthroughs.md).
+[Configuration](configuration.md) · [Matchmaking foundations](matchmaking.md) ·
+[Walkthroughs](walkthroughs.md).
 The [README matrix](../README.md#what-works-where) defines environment coverage.
 
 ---

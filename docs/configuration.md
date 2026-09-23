@@ -6,7 +6,7 @@ paths and console export traps. For environment capabilities, use the
 [README matrix](../README.md#what-works-where), not the presence of a loaded addon.
 
 See also: [Architecture](architecture.md) · [Multiplayer](multiplayer.md) ·
-[Platform Services](platform-services.md)
+[Matchmaking foundations](matchmaking.md) · [Platform Services](platform-services.md)
 
 ---
 
@@ -84,6 +84,13 @@ to create a studio and a title. Background reading:
 
 You do **not** need your own title for the primary XBOX path; the committed sample title serves
 it. You need one for the custom-ID path below, and for any game of your own.
+
+The disabled matchmaking foundation names queue `godotnr_q` and reads the exported
+`GameModeConfig.player_count` for Deathmatch at runtime. It is available only when that real
+configuration is four players, matching the independently configured queue, and uses a
+600-second native ticket timeout. A title using that future flow must provision a matching queue
+in Game Manager; retuning the game mode without changing the queue makes Quick Match unavailable
+rather than silently matching a different cohort.
 
 ### 3. Get XBOX title and sandbox access
 
@@ -369,7 +376,8 @@ PlayFab's lobby search index is **eventually consistent** and `FindLobbies` is r
 `PartyService._find_lobby()` performs a **single lookup**; a miss or a failed search leaves
 the code editable for an explicit retry, and a result already at its `max_member_count` is
 refused as full without joining. The code-join operation times out after 45 seconds.
-See [connection flows](multiplayer.md#connection-flows). No Matchmaking queue/ticket setup is used.
+See [connection flows](multiplayer.md#connection-flows). The shipping hosted flow does not use a
+Matchmaking queue; the disabled foundation described above expects `godotnr_q` when enabled.
 
 ---
 

@@ -463,6 +463,10 @@ for PC builds using XBOX sign-in, through Game Bar.
 - `ActivityService` publishes an activity on host and join, keeps player count, the
   `followed` join restriction and a `group_id` (the join code) in step with the roster,
   and deletes the activity on leave. Updates are coalesced, so a join storm is one call.
+- A [matchmaking](matchmaking.md) group, which is not enabled in this build yet, publishes the
+  same way from its lobby with a capacity of four and the lobby id as its `group_id`. It takes
+  the activity down while the group searches, so the shell never offers a group that has stopped
+  admitting players, and an arranged rematch lobby publishes with the `invite_only` restriction.
 - It subscribes to the GDK singleton's `activation` for `invite_accepted`,
   `pending_invite_received` and `protocol_activated`, normalizing all three into one
   `join_requested` signal.

@@ -50,6 +50,9 @@ func _ready() -> void:
 	# watched too — see _ready_to_join().
 	ScreenManager.screen_pushed.connect(_on_screen_changed)
 	ScreenManager.screen_popped.connect(_on_screen_changed)
+	# An invite kept while a matchmaking flow finished releasing gets its turn the moment
+	# the flow is gone. Deferred: the flow ends from inside a teardown that is still running.
+	NetManager.flow_changed.connect(_on_flow_changed)
 
 
 ## Every activation is buffered first and redeemed second, even when it could be acted
@@ -91,6 +94,11 @@ func _on_screen_changed(_screen: NRScreen) -> void:
 	_redeem_pending()
 
 
+func _on_flow_changed() -> void:
+	if not NetManager.has_online_flow() and not _pending_request.is_empty():
+		_redeem_pending.call_deferred()
+
+
 ## True when a buffered activation has an identity to join with and a front end to come
 ## back to. Both halves matter, and the second one is easy to miss: sign_in_completed
 ## fires from inside Services.sign_in(), which the acquire-user screen is still
@@ -101,6 +109,10 @@ func _ready_to_join() -> bool:
 	if _pending_request.is_empty() or _joining:
 		return false
 	if Services == null or Services.is_shutting_down() or not Services.is_account_ready():
+		return false
+	# A matchmaking flow that is already ending -- its cleanup still releasing -- is waited
+	# out rather than asked about again; flow_changed redeems the invite once it is gone.
+	if NetManager.has_online_flow() and not NetManager.is_online_flow_live():
 		return false
 	# Nothing to return to yet; the join's own screens would be the whole stack.
 	if ScreenManager.current_screen() == null:
@@ -118,8 +130,9 @@ func _redeem_pending() -> void:
 	if not _ready_to_join():
 		return
 	var request := _pending_request
+	var arrived_msec := _pending_since_msec
 	_clear_pending()
-	await _join(request)
+	await _join(request, arrived_msec)
 
 
 ## True while an activation is waiting on sign-in or on the front end. The acquire-user
@@ -156,7 +169,10 @@ func _clear_pending() -> void:
 ## main_menu_screen._on_join_code_submitted so an invite ends up exactly where a typed
 ## join code would, including the entry-point privilege check that keeps a restricted
 ## account from being seated by a platform activation that skipped the menu.
-func _join(request: Dictionary) -> void:
+##
+## `arrived_msec` is when the activation first arrived, kept so an invite that has to wait
+## for a matchmaking flow to finish releasing is buffered again under its original TTL.
+func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 	if not Services.is_account_ready():
 		return
 	var generation: int = Services.account_generation()
@@ -178,8 +194,10 @@ func _join(request: Dictionary) -> void:
 		return
 
 	# Accepting an invite while already playing means abandoning the current match, so
-	# it is the player's call rather than ours.
-	if NetManager.has_session():
+	# it is the player's call rather than ours. A matchmaking flow counts as playing even
+	# with no transport bound -- between its staging and arranged sessions -- and it is
+	# retired, cleanly, before the ordinary join below is allowed to start.
+	if NetManager.has_session() or NetManager.has_online_flow():
 		var confirmed: bool = await ScreenManager.show_dialog(
 			"Join Match",
 			"Leave the current match and join your friend's match?",
@@ -189,6 +207,21 @@ func _join(request: Dictionary) -> void:
 		if not Services.is_current_account(generation) or not confirmed:
 			_finish_join(generation)
 			return
+		if NetManager.has_online_flow():
+			var safe: bool = await NetManager.retire_flow_for_replacement()
+			if not Services.is_current_account(generation):
+				_finish_join(generation)
+				return
+			if not safe:
+				# The group's cleanup is still finishing. The invite is kept, under the TTL it
+				# arrived with, and redeemed once the flow is gone -- not spent on an entry
+				# refusal the player would have to repeat by hand.
+				if _pending_request.is_empty():
+					_pending_request = request
+					_pending_since_msec = arrived_msec if arrived_msec > 0 else Time.get_ticks_msec()
+					pending_invite_changed.emit()
+				_finish_join(generation)
+				return
 
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Joining match"})
 

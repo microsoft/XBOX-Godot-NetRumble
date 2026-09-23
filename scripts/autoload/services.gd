@@ -46,6 +46,10 @@ var _social: SocialService = null
 var _profiles: ProfileService = null
 var _devices: DeviceService = null
 var _connectivity: ConnectivityService = null
+## One monotonic time source for every online deadline, shared by NetManager, the
+## matchmaking flow, PlatformSession and the services it configures below. Initialized
+## here rather than in _ready() so a Services subclass that replaces _ready() still has it.
+var _clock: OnlineFlowClock = OnlineFlowClock.new()
 
 ## The current account's working copy, newest first.
 var _history: Array[Dictionary] = []
@@ -75,6 +79,7 @@ func _ready() -> void:
 	_achievements = AchievementService.new()
 	_leaderboards = LeaderboardService.new()
 	_matchmaking = MatchmakingService.new()
+	_matchmaking.configure_clock(_clock)
 	_achievement_tracker = AchievementTracker.new()
 	_achievement_tracker.progress_changed.connect(_on_achievement_progress)
 	_game_saves = GameSaveService.new()
@@ -82,6 +87,7 @@ func _ready() -> void:
 	# exists alongside a Party network.
 	_chat = ChatService.new()
 	_party = PartyService.new(_chat)
+	_party.configure_clock(_clock)
 	_activity = ActivityService.new()
 	_privileges = PrivilegeService.new()
 	_privacy = PrivacyService.new()
@@ -813,9 +819,9 @@ func _clear_leaderboard_submission() -> void:
 
 # --- Matchmaking ------------------------------------------------------------
 
-## PlayFab Matchmaking (Quick Match). Present but switched off: the addon cannot yet
-## configure an arranged lobby, so the search flow is deliberately unwritten rather than
-## half-working. See scripts/services/matchmaking_service.gd.
+## PlayFab Matchmaking (Quick Match). Present but switched off until the matchmaking flow
+## is complete: MatchmakingService reports it unavailable, and NetManager.start_matchmaking()
+## and staging-lobby joins both refuse while it does. See scripts/services/matchmaking_service.gd.
 func matchmaking() -> MatchmakingService:
 	return _matchmaking
 
@@ -830,6 +836,27 @@ func quick_match_unavailable_reason() -> String:
 	if _matchmaking == null:
 		return "Matchmaking is unavailable in this build."
 	return _matchmaking.availability_reason()
+
+
+# --- Time ---------------------------------------------------------------------
+
+## The shared online clock. See OnlineFlowClock.
+func clock() -> OnlineFlowClock:
+	return _clock
+
+
+## Replaces the shared clock and hands it to whichever Party and matchmaking services are
+## installed now. Only the harness does this, before any online work starts; a service
+## refuses a replacement while its own work is live, so an operation never changes clocks
+## half-way through.
+func use_clock(clock: OnlineFlowClock) -> void:
+	if clock == null:
+		return
+	_clock = clock
+	if _party != null:
+		_party.configure_clock(clock)
+	if _matchmaking != null:
+		_matchmaking.configure_clock(clock)
 
 
 # --- Achievements -----------------------------------------------------------

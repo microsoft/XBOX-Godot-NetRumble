@@ -48,6 +48,35 @@ an exit as a workaround.
 The full technical detail, including what the coordinated run did and did not prove, is in the
 [manual test plan](manual-test-plan.md#known-cleanup-blocker).
 
+## A full group of four cannot use Quick Match
+
+Quick Match is not enabled in this build yet. This is a limit of the matchmaking flow being
+integrated behind it, written down now so that nobody is surprised by it when it is switched on.
+
+Quick Match fills four-player Deathmatch matches from the `godotnr_q` queue. A group of one to
+three players readies up together in its lobby, and the group's owner submits one matchmaking
+ticket for all of them, which PlayFab fills with other players. A full group of four takes exactly
+the same path, and PlayFab refuses it. The rule is documented in
+[Configuring matchmaking queues][mm-queues]:
+
+> If a ticket already meets the maximum requirement for a match, however, it is rejected.
+
+A ticket that already carries four players meets this queue's four-player maximum, so it can never
+match. The sample submits it anyway rather than refusing the group itself, so the queue's own
+configuration stays the one authority on what can match.
+
+What the players see: PlayFab can refuse the ticket as it is created or fail it moments later, and
+both end the same way. The whole group is returned to the same lobby, every member is shown
+*"A full group of four cannot match in this four-player queue."* once, everyone is set back to not
+ready, the lobby is unlocked and reopened, and each member's XBOX activity is published again.
+Nothing has to be restarted.
+
+What to do instead: a group of four that wants to play together can use **Host Match** and share
+the room code. That path does not go through the matchmaking queue at all.
+
+A follow-up called *Private Start* has been proposed, in which a full group would skip the queue
+and start its match directly. It is not part of this sample, and nothing falls back to it today.
+
 ## What is not on this list
 
 Deliberate limits are not bugs. The sample has no host migration and no join-in-progress, it uses
@@ -80,3 +109,4 @@ problem, say what each player saw, since the host and the client often see diffe
 [issue-3]: https://github.com/microsoft/XBOX-Godot-NetRumble/issues/3
 [issue-4]: https://github.com/microsoft/XBOX-Godot-NetRumble/issues/4
 [issue-169]: https://github.com/microsoft/XBOX-Godot-Sample/issues/169
+[mm-queues]: https://learn.microsoft.com/en-us/xbox/playfab/multiplayer/matchmaking/config-queues

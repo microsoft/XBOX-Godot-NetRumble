@@ -43,13 +43,15 @@ const WIRE_VERSION := 1
 ## That is deferred, not abandoned -- `version_string()` already renders this part as
 ## an opaque token so the hash can replace it without changing the wire format or any
 ## of the comparison logic.
-const RPC_SET_VERSION := 2
+##
+## 3: the matchmaking flow's phase broadcast, member report and Leave Group RPCs.
+const RPC_SET_VERSION := 3
 
 ## Lobby search property the host advertises `version_string()` under.
 ##
 ## PlayFab only indexes its reserved search keys, so this has to be one of them.
-## string_key1 and string_key2 are already taken by the join code and the game mode
-## (see PartyService).
+## string_key1 and string_key2 are already taken by the join code and the game mode,
+## and string_key4 by the matchmaking lobby kind (see PartyService).
 const LOBBY_KEY := "string_key3"
 
 

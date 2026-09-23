@@ -41,7 +41,7 @@ not over Godot RPCs.
 ## RPC routing note
 
 Godot routes every `@rpc` call by the *node path* of the node the method is declared
-on. All 30 entry points live on `NetManager` (the autoload at `/root/NetManager`).
+on. All RPC entry points live on `NetManager` (the autoload at `/root/NetManager`).
 Moving any one of them to a different node changes its route; peers running the old
 path and peers running the new path silently miss each other, and neither a headless
 import pass nor a single-instance run catches the mismatch. Anything that needs a
@@ -121,6 +121,7 @@ peers that reach the transport without passing the lobby check.
 |---|---|
 | `1.1` | First versioned release. |
 | `1.2` | `RPC_SET_VERSION` → 2: `_accept_join` and `_receive_join_admission` added for [host admission and lobby locking](multiplayer.md#closing-a-match-to-newcomers).  No payload schema changed, so `WIRE_VERSION` stayed at 1. |
+| `1.3` | `RPC_SET_VERSION` → 3: `_receive_flow_phase`, `_submit_flow_ack` and `_submit_flow_leave` added for a [matchmaking](matchmaking.md) group's search. No payload schema changed, so `WIRE_VERSION` stayed at 1. |
 
 ---
 
@@ -150,6 +151,20 @@ missed roster entry leaves a peer with a permanently stale view.
 | `_receive_appearance` | host → all | reliable | Host fans out a confirmed color/style pair |
 | `_submit_player_loaded` | client → host | reliable | Client reports its gameplay scene is ready |
 | `_receive_player_loaded` | host → all | reliable | Host fans out the loaded flag; MatchDirector waits for all before unblocking |
+
+### Matchmaking group
+
+Used only inside a [matchmaking](matchmaking.md) group's lobby, while the group readies, searches
+and comes back from a search. All are **reliable**, and all carry the attempt's epoch, so a late
+message from an earlier attempt is recognized and ignored rather than applied to the current one.
+The ticket id is not sent here: it travels in the lobby's `nr_search` property, and these messages
+only say when to look for it.
+
+| RPC method | Direction | Reliability | Purpose |
+|---|---|---|---|
+| `_receive_flow_phase` | host → all | reliable | The group owner's phase for the current attempt (freezing, searching, cancelling, restoring or gathering), the outcome to show, and while searching the milliseconds of search time left. Each console's clock is its own, so time crosses the wire as time remaining |
+| `_submit_flow_ack` | client → host | reliable | A member acknowledges the freeze, or asks the owner to stop the search because it could not join the group's ticket |
+| `_submit_flow_leave` | client → host | reliable | A member leaving mid-search says so first, so the owner cancels the group's ticket instead of mistaking the departure for a network fault |
 
 ### Match lifecycle
 
