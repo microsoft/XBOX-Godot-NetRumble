@@ -100,7 +100,8 @@ and exercise the leave-current-match confirmation.
 (`gdk.multiplayer_activity.get_activities_async()`). `PlatformSession.publish_activity()` uses
 `ActivityService.set_activity()` and `gdk.multiplayer_activity.set_activity_async()`;
 `show_invite_ui_async()` opens the system invite picker.
-`ActivityService` normalizes `gdk.activation` events and `InviteRouter` buffers them until
+`ActivityService` normalizes `gdk.activation` events, reading the Lobby connection string from
+the raw activation URI, and `InviteRouter` buffers them until
 account identity, saves and the front end are ready. `NetManager.join_by_invite()` calls the sample
 `PartyService.join_by_connection_string()`; addon `join_lobby_async()` still runs before
 `PlayFab.party.join_network_async()`, but code search is skipped.

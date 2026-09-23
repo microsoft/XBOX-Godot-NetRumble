@@ -192,8 +192,9 @@ func _join(request: Dictionary) -> void:
 
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Joining match"})
 
-	# An Xbox activation names the host, not the session, so the session has to be looked
-	# up from their published activity before there is anything to join.
+	# A Multiplayer Activity invite or shell join carries the connection string itself.
+	# An activation that names only the host has it looked up from their published
+	# activity before there is anything to join.
 	var connection_string := String(request.get("connection_string", ""))
 	if connection_string.is_empty():
 		connection_string = await Services.connection_string_for_xuid(String(request.get("xuid", "")))

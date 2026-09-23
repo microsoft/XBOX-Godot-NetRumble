@@ -271,6 +271,8 @@ the required XboxUser and cannot supply playable Lobby/Party/UI coverage.
 | 3.34 | Force the lobby search to fail | The dialog gives the mapped reason ("Too many attempts…", "Your sign-in expired…") or "Could not look up that join code.", never "No match found"; the code stays editable |
 | 3.35 | Open Join Friend while every friend's match is full | Full sessions are not listed; the empty state reads "None of your friends have a joinable match right now." |
 | 3.36 | Accept an invite to a match that filled after the invite was sent | A readable refusal and no lobby. It is not claimed as "full": the invite path has no search-count preflight |
+| 3.37 | Console A: Host Match → Invite To Game → pick console B → Send Invite; B accepts with its title at the main menu, not running, and suspended | B lands in A's lobby every time without typing a code. Repeat with at least three fresh host lobbies: whether a lobby's connection string holds a `+` differs per lobby |
+| 3.38 | B accepts an invite sent from the XBOX Friends list, then separately uses **Join Game** on A's Friends-list card | Both land in A's lobby. B's log shows `[Activity] … URI:`, with each query value shown only as its length, then `[Activity] … parsed: … -> connection string (N chars)`; capture both lines if a join fails. Neither line may contain the connection string or a XUID |
 
 ### Tier 3 fast path
 
