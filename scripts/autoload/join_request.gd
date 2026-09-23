@@ -25,6 +25,7 @@ extends RefCounted
 ## Raised once, when the attempt reaches a terminal outcome. Use wait(), which also
 ## covers an attempt that finished before the caller got round to awaiting it.
 signal finished()
+signal status_changed(message: String, cancelling: bool)
 
 enum Outcome {
 	## Still running: connecting, or waiting on the host to admit this player.
@@ -57,6 +58,15 @@ var session_id: int = 0
 ## a player who asked to stop should not be seated because the answer overtook them. The
 ## poll consumes this, checks the session is still there, and only then settles.
 var admitted := false
+var deadline_msec := 0
+var status := ""
+var cleaning_up := false
+
+
+func set_status(message: String, cancelling: bool = true) -> void:
+	status = message
+	cleaning_up = cancelling
+	status_changed.emit(message, cancelling)
 
 
 func is_pending() -> bool:

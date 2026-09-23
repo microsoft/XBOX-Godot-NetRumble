@@ -259,6 +259,8 @@ func _on_play() -> void:
 		_online_action_in_flight = false
 		return
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Creating match"})
+	if loading != null:
+		loading.follow_host()
 	var hosted: bool = await NetManager.host_match(NRTypes.GameModeType.DEATHMATCH)
 	ScreenManager.remove(loading)
 	if not _account_current():
@@ -453,6 +455,8 @@ func _on_friend_join_requested(connection_string: String) -> void:
 
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Joining match"})
 	var request := NetManager.join_by_invite(connection_string)
+	if loading != null:
+		loading.follow_join(request)
 	await request.wait()
 	# Named rather than popped: an invite accepted while this was waiting would have
 	# pushed its own loading screen above, and popping there takes down the replacement's
@@ -499,6 +503,8 @@ func _on_join_code_submitted(code: String) -> void:
 		"allow_cancel": true,
 	})
 	var request := NetManager.join_by_code(code)
+	if loading != null:
+		loading.follow_join(request)
 	# LoadingScreen declares `cancelled`, but screens carry no class_name (they are
 	# referenced by scene path), so the signal is looked up by name on the base type.
 	# Bound to this request: Cancel on this screen must stop the join this screen was

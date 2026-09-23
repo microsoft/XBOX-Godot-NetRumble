@@ -55,6 +55,7 @@ signal player_loaded(peer_id: int)
 signal connection_succeeded()
 signal connection_failed(reason: String)
 signal server_disconnected()
+signal host_status_changed(message: String, cancelling: bool)
 ## Whether the session is taking new players. Raised on every member, host and guest
 ## alike, so each one can retire or republish its own platform activity — an activity
 ## outlives the lobby that answers it, and a guest's is just as visible to its friends
@@ -170,6 +171,8 @@ var _session_generation := 0
 var _session_sequence := 0
 var _session_account_generation := -1
 var _host_in_flight := false
+var _host_attempt: Dictionary = {}
+var _clock: Callable = Time.get_ticks_msec
 var _account_teardown_pending := false
 var _account_teardown_running := false
 var _entry_epoch := 0
@@ -201,6 +204,8 @@ func _ready() -> void:
 			party.network_lost.connect(_on_party_network_lost)
 		if not party.party_failed.is_connected(_on_party_failed):
 			party.party_failed.connect(_on_party_failed)
+		if not party.cleanup_status_changed.is_connected(_on_party_cleanup_status):
+			party.cleanup_status_changed.connect(_on_party_cleanup_status)
 	var connectivity: ConnectivityService = Services.connectivity() if Services != null else null
 	if connectivity != null:
 		connectivity.connectivity_changed.connect(_on_connectivity_changed)
@@ -253,6 +258,7 @@ func _entry_error(allow_join_cleanup: bool = false) -> String:
 ## is deferred until the process can safely pump asynchronous platform completions.
 func _on_account_lost() -> void:
 	_entry_epoch += 1
+	_abort_host(ACCOUNT_NOT_READY)
 	_platform.invalidate_account()
 	if _account_teardown_pending:
 		return
@@ -336,44 +342,80 @@ func host_match(mode: NRTypes.GameModeType = NRTypes.GameModeType.DEATHMATCH) ->
 	if _active_join_request != null:
 		_fail_connection("A join is still finishing. Cancel it before hosting.")
 		return false
+	var party := _party()
+	if party != null and party.is_cleanup_pending():
+		_fail_connection(_online_cleanup_error())
+		return false
 	_host_in_flight = true
-	var generation: int = Services.account_generation()
-	var hosted := await _host_match(mode, generation, _entry_epoch)
+	_entry_epoch += 1
+	var attempt := {
+		"generation": Services.account_generation(), "epoch": _entry_epoch,
+		"deadline": _now_msec() + int(NRConst.MATCH_ESTABLISHMENT_SECONDS * 1000.0),
+		"reason": "", "ready": false,
+	}
+	_host_attempt = attempt
+	_host_match(mode, attempt)
+	while _host_is_current(attempt) and not attempt.ready:
+		await _sleep(_JOIN_RESULT_POLL_INTERVAL)
+	var hosted: bool = _host_is_current(attempt) and attempt.ready and _peer_is_connected()
+	if not hosted:
+		if String(attempt.reason).is_empty():
+			_abort_host("The match connection ended before hosting completed.")
+		host_status_changed.emit(_cleanup_message(), true)
+		await _cleanup_after_join()
+		last_error = String(attempt.reason)
+		if party != null and not party.recovery_error.is_empty() and not last_error.contains(party.recovery_error):
+			last_error += "\n" + party.recovery_error
 	_host_in_flight = false
+	_host_attempt = {}
+	if not hosted:
+		connection_failed.emit(last_error)
+		return false
+	var session := _session_generation
+	connection_succeeded.emit()
+	if not _session_account_is_current() or session != _session_generation or not _peer_is_connected():
+		last_error = last_disconnect_reason if not last_disconnect_reason.is_empty() else "The match ended before hosting completed."
+		return false
+	_platform.publish_activity()
+	_platform.update_presence("Hosting a match")
 	return hosted
 
 
-func _host_match(mode: NRTypes.GameModeType, generation: int, epoch: int) -> bool:
+func _host_match(mode: NRTypes.GameModeType, attempt: Dictionary) -> void:
+	if not _host_is_current(attempt):
+		return
 	var resolved: Dictionary = await _resolve_signed_in_user()
-	if not _account_is_current(generation) or epoch != _entry_epoch:
-		return false
+	if not _host_is_current(attempt):
+		return
 	var user: Variant = resolved.get("user")
 	if user == null:
-		_fail_connection(String(resolved.get("error", "Could not host the match.")))
-		return false
+		_abort_host(String(resolved.get("error", "Could not host the match.")))
+		return
+	if _party() == null:
+		_abort_host("The multiplayer services are unavailable in this build.")
+		return
 
 	_leave_match_internal()
+	await _party().leave(false)
+	if not _host_is_current(attempt):
+		return
 
-	await _platform.apply_chat_privilege()
-	if not _account_is_current(generation) or epoch != _entry_epoch:
-		return false
+	await _platform.apply_chat_privilege(func() -> bool: return _host_is_current(attempt))
+	if not _host_is_current(attempt):
+		return
 
 	var max_players := Assets.game_mode(mode).player_count
 	var mode_name := String(NRTypes.GameModeType.keys()[mode])
-	var result: Dictionary = await _party().host(user, max_players, mode_name)
-	if not _account_is_current(generation) or epoch != _entry_epoch:
-		await _party().leave()
-		return false
+	var result: Dictionary = await _party().host(user, max_players, mode_name, int(attempt.deadline))
+	if not _host_is_current(attempt):
+		return
 	if not bool(result.get("ok", false)):
-		_fail_connection(String(result.get("error", "Could not host the match.")))
-		return false
+		_abort_host(String(result.get("error", "Could not host the match.")))
+		return
 
 	if not _bind_peer(result.get("peer")):
-		await _party().leave()
-		if not _account_is_current(generation) or epoch != _entry_epoch:
-			return false
-		_fail_connection("PlayFab Party did not return a usable network peer.")
-		return false
+		_abort_host("PlayFab Party did not return a usable network peer.")
+		return
 
 	_is_offline = false
 	game_mode_type = mode
@@ -382,10 +424,64 @@ func _host_match(mode: NRTypes.GameModeType, generation: int, epoch: int) -> boo
 	_register_local_player(HOST_PEER_ID)
 	_set_accepting_joins(true)
 	_set_match_state(NRTypes.MatchState.PLAYERS_JOINING)
-	connection_succeeded.emit()
-	_platform.publish_activity()
-	_platform.update_presence("Hosting a match")
+	attempt.ready = true
+
+
+func _now_msec() -> int:
+	return int(_clock.call())
+
+
+func _offline_reason() -> String:
+	var connectivity := Services.connectivity()
+	return connectivity.offline_reason() if connectivity != null and not connectivity.is_online() else ""
+
+
+func _online_cleanup_error() -> String:
+	var party := _party()
+	if party == null:
+		return "The multiplayer services are unavailable in this build."
+	if party != null and not party.recovery_error.is_empty():
+		return party.recovery_error
+	return "The previous multiplayer operation is still finishing. Please try again."
+
+
+func _cleanup_message() -> String:
+	var party := _party()
+	if party != null and party.is_cleanup_pending() and not party.cleanup_status.is_empty():
+		return party.cleanup_status
+	return "Cleaning up the match"
+
+
+func _host_is_current(attempt: Dictionary) -> bool:
+	if not _host_in_flight or _host_attempt != attempt or not String(attempt.reason).is_empty():
+		return false
+	if not _account_is_current(int(attempt.generation)) or int(attempt.epoch) != _entry_epoch:
+		_abort_host(ACCOUNT_NOT_READY)
+	elif not _offline_reason().is_empty():
+		_abort_host(_offline_reason())
+	elif _now_msec() >= int(attempt.deadline):
+		_abort_host("Creating the match timed out. Please try again.")
+	return String(attempt.reason).is_empty()
+
+
+func _abort_host(reason: String) -> bool:
+	if not _host_in_flight or _host_attempt.is_empty():
+		return false
+	if String(_host_attempt.reason).is_empty():
+		_host_attempt.reason = reason
+		var party := _party()
+		if party != null:
+			party.cancel_pending_join()
+		host_status_changed.emit(_cleanup_message(), true)
 	return true
+
+
+func _on_party_cleanup_status(message: String) -> void:
+	if _host_in_flight:
+		host_status_changed.emit(message, true)
+	for abort: Dictionary in _join_aborts.values():
+		var request: JoinRequest = abort.request
+		request.set_status(message)
 
 
 ## Starts joining the session behind a five-character join code.
@@ -417,7 +513,10 @@ func _begin_join(code: String, connection_string: String) -> JoinRequest:
 	_join_request_sequence += 1
 	var request := JoinRequest.new()
 	request.id = _join_request_sequence
+	request.deadline_msec = _now_msec() + int(NRConst.MATCH_ESTABLISHMENT_SECONDS * 1000.0)
 	var error := _entry_error(true)
+	if error.is_empty() and (_party() == null or not _party().recovery_error.is_empty()):
+		error = _online_cleanup_error()
 	if not error.is_empty():
 		request.settle(JoinRequest.Outcome.FAILED, error)
 		return request
@@ -471,13 +570,18 @@ func _drive_join(request: JoinRequest, code: String, connection_string: String, 
 	# connection itself.
 	if not _account_is_current(generation):
 		_request_join_abort(request, JoinRequest.Outcome.CANCELLED, ACCOUNT_NOT_READY)
+	elif not _party().recovery_error.is_empty():
+		_request_join_abort(request, JoinRequest.Outcome.FAILED, _party().recovery_error)
 	else:
 		_attach_transport(request, code, connection_string, generation)
 
-	var waited := 0.0
 	while true:
 		if not _account_is_current(generation):
 			_request_join_abort(request, JoinRequest.Outcome.CANCELLED, ACCOUNT_NOT_READY)
+		elif not _offline_reason().is_empty():
+			_request_join_abort(request, JoinRequest.Outcome.FAILED, _offline_reason())
+		elif _now_msec() >= request.deadline_msec:
+			_request_join_abort(request, JoinRequest.Outcome.FAILED, _JOIN_CODE_TIMEOUT_MESSAGE)
 		# Cancellation is read before the acceptance, not after it. The host's answer and
 		# the player's Cancel can land between the same two polls, and a join the player
 		# walked away from must not seat them because the answer arrived first.
@@ -491,14 +595,9 @@ func _drive_join(request: JoinRequest, code: String, connection_string: String, 
 			request.settle(JoinRequest.Outcome.SUPERSEDED)
 			return
 		if request.admitted:
-			_consume_admission(request)
-			return
-		if waited >= NRConst.JOIN_CODE_TIMEOUT_SECONDS:
-			_request_join_abort(request, JoinRequest.Outcome.FAILED, _JOIN_CODE_TIMEOUT_MESSAGE)
-			await _finish_aborted_join(request)
+			await _consume_admission(request)
 			return
 		await _sleep(_JOIN_RESULT_POLL_INTERVAL)
-		waited += _JOIN_RESULT_POLL_INTERVAL
 
 
 ## Builds the transport for one join, then leaves it to the host. A bound peer is not an
@@ -527,16 +626,19 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 	var user: Variant = resolved.get("user")
 
 	_leave_match_internal()
+	await _party().leave(false)
+	if not _is_join_current(request) or not _account_is_current(generation):
+		return ""
 
-	await _platform.apply_chat_privilege()
+	await _platform.apply_chat_privilege(func() -> bool: return _is_join_current(request) and _account_is_current(generation))
 	if not _is_join_current(request) or not _account_is_current(generation):
 		return ""
 
 	var result: Dictionary
 	if connection_string.is_empty():
-		result = await _party().join(user, code)
+		result = await _party().join(user, code, request.deadline_msec)
 	else:
-		result = await _party().join_by_connection_string(user, connection_string)
+		result = await _party().join_by_connection_string(user, connection_string, request.deadline_msec)
 	if not _is_join_current(request) or not _account_is_current(generation):
 		return ""
 	if not bool(result.get("ok", false)):
@@ -544,9 +646,6 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 		return error if not error.is_empty() else "Could not join the match."
 
 	if not _bind_peer(result.get("peer")):
-		await _party().leave()
-		if not _is_join_current(request) or not _account_is_current(generation):
-			return ""
 		return "PlayFab Party did not return a usable network peer."
 
 	_is_offline = false
@@ -559,7 +658,13 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 ## no id never claimed a seat, so it can never be current: it cannot be cancelled or timed
 ## out against, and must not be allowed to proceed on the strength of that.
 func _is_join_current(request: JoinRequest) -> bool:
-	return request != null and request.id != 0 and _active_join_request == request and not _join_aborts.has(request.id)
+	if request == null or request.id == 0 or _active_join_request != request or _join_aborts.has(request.id):
+		return false
+	if not _offline_reason().is_empty():
+		_request_join_abort(request, JoinRequest.Outcome.FAILED, _offline_reason())
+	elif _now_msec() >= request.deadline_msec:
+		_request_join_abort(request, JoinRequest.Outcome.FAILED, _JOIN_CODE_TIMEOUT_MESSAGE)
+	return not _join_aborts.has(request.id)
 
 
 ## Turns the host's provisional acceptance into the join's answer.
@@ -569,11 +674,12 @@ func _is_join_current(request: JoinRequest) -> bool:
 ## refusal crosses the acceptance in flight — and the session generation is what tells
 ## them apart, where "is there a peer?" would happily accept the next session as this one.
 func _consume_admission(request: JoinRequest) -> void:
-	if not _session_account_is_current() or _peer == null or _session_generation == 0 or _session_generation != request.session_id or local_player() == null:
+	if not _is_join_current(request) or not _session_account_is_current() or not _peer_is_connected() or _session_generation == 0 or _session_generation != request.session_id or local_player() == null:
 		var reason := last_disconnect_reason
 		if reason.is_empty():
 			reason = "The match ended before you could join it."
-		request.settle(JoinRequest.Outcome.FAILED, reason)
+		_request_join_abort(request, JoinRequest.Outcome.FAILED, reason)
+		await _finish_aborted_join(request)
 		return
 	if not request.settle(JoinRequest.Outcome.SUCCEEDED):
 		return
@@ -584,8 +690,9 @@ func _consume_admission(request: JoinRequest) -> void:
 	# under it. Advertising the session on the strength of an acceptance the player was in
 	# the middle of walking away from is the whole reason this is not done in _accept_join.
 	connection_succeeded.emit()
-	_platform.publish_activity()
-	_platform.update_presence("In a match")
+	if joined_session_is_live(request):
+		_platform.publish_activity()
+		_platform.update_presence("In a match")
 
 
 ## Records that a join should stop, and why. The answer is not written here: aborting
@@ -596,7 +703,8 @@ func _request_join_abort(request: JoinRequest, outcome: JoinRequest.Outcome, rea
 		return
 	if not request.is_pending():
 		return
-	_join_aborts[request.id] = {"outcome": outcome, "reason": reason}
+	_join_aborts[request.id] = {"outcome": outcome, "reason": reason, "request": request}
+	request.set_status(_cleanup_message())
 	# Invalidates whatever PartyService call this join left in flight. Safe even when a
 	# replacement has already claimed the seat: the replacement awaits this teardown
 	# before it starts a Party call of its own, so there is nothing newer to invalidate.
@@ -609,6 +717,8 @@ func _request_join_abort(request: JoinRequest, outcome: JoinRequest.Outcome, rea
 ## replacement waiting on it arrive here, which is why the teardown underneath is
 ## single-flight and why settling is one-shot.
 func _finish_aborted_join(request: JoinRequest) -> void:
+	if not request.is_pending():
+		return
 	var abort: Dictionary = _join_aborts.get(request.id, {})
 	var outcome: JoinRequest.Outcome = abort.get("outcome", JoinRequest.Outcome.CANCELLED)
 	var reason := String(abort.get("reason", ""))
@@ -618,6 +728,11 @@ func _finish_aborted_join(request: JoinRequest) -> void:
 	if _active_join_request == request:
 		_active_join_request = null
 	await _cleanup_after_join()
+	var party := _party()
+	if outcome != JoinRequest.Outcome.SUPERSEDED and party != null and not party.recovery_error.is_empty():
+		outcome = JoinRequest.Outcome.FAILED
+		if not reason.contains(party.recovery_error):
+			reason = (reason + "\n" if not reason.is_empty() else "") + party.recovery_error
 	_join_aborts.erase(request.id)
 	if outcome == JoinRequest.Outcome.FAILED and reason.is_empty():
 		reason = _JOIN_CODE_TIMEOUT_MESSAGE
@@ -659,11 +774,7 @@ func _leave_match_internal() -> void:
 ## abort rather than left to resume against a torn-down session.
 func _abort_join_for_lost_session(reason: String) -> bool:
 	var request := _active_join_request
-	if request == null or not request.is_pending() or _join_aborts.has(request.id):
-		return false
-	# A join the host already answered is past what this can reach: its next poll consumes
-	# the acceptance, and the session check there is the guard that catches this.
-	if request.admitted:
+	if request == null or not request.is_pending():
 		return false
 	_request_join_abort(request, JoinRequest.Outcome.FAILED, reason)
 	return true
@@ -693,7 +804,7 @@ func join_failure_reason(request: JoinRequest) -> String:
 func joined_session_is_live(request: JoinRequest) -> bool:
 	if not _session_account_is_current() or request == null or not request.succeeded():
 		return false
-	return _peer != null and _session_generation != 0 and _session_generation == request.session_id and local_player() != null
+	return _peer_is_connected() and _session_generation != 0 and _session_generation == request.session_id and local_player() != null
 
 
 func leave_match() -> void:
@@ -746,6 +857,7 @@ func _detach_peer() -> void:
 
 
 func _reset_after_leave(reset_platform: bool = true) -> void:
+	_connectivity_token += 1
 	_clear_match_chat()
 	var chat := _chat()
 	if chat != null:
@@ -808,6 +920,7 @@ func session_id() -> int:
 func abandon_for_suspend() -> bool:
 	var had_session := has_session()
 	_entry_epoch += 1
+	_abort_host("The game was suspended.")
 	_account_teardown_pending = true
 	if _active_join_request != null:
 		_request_join_abort(_active_join_request, JoinRequest.Outcome.CANCELLED, "The game was suspended.")
@@ -867,7 +980,8 @@ func _multiplayer_privilege_denial() -> String:
 ## PlayFabPartyPeer inherits MultiplayerPeerExtension, so it is a MultiplayerPeer as far
 ## as Godot is concerned and drives every @rpc below.
 func _bind_peer(candidate: Variant) -> bool:
-	if not Services.is_account_ready() or candidate == null or not (candidate is MultiplayerPeer):
+	if not Services.is_account_ready() or candidate == null or not (candidate is MultiplayerPeer) \
+			or candidate.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED or not _offline_reason().is_empty():
 		return false
 	_peer = candidate
 	_session_account_generation = Services.account_generation()
@@ -877,6 +991,10 @@ func _bind_peer(candidate: Variant) -> bool:
 	_session_generation = _session_sequence
 	multiplayer.multiplayer_peer = _peer
 	return true
+
+
+func _peer_is_connected() -> bool:
+	return _peer != null and _peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
 
 
 func _sleep(seconds: float) -> void:
@@ -1253,8 +1371,9 @@ func _on_connected_to_server() -> void:
 
 
 func _on_connection_failed() -> void:
-	multiplayer.multiplayer_peer = null
-	_peer = null
+	if _abort_host("Connection to host failed.") or _abort_join_for_lost_session("Connection to host failed."):
+		return
+	_detach_peer()
 	_fail_connection("Connection to host failed.")
 
 
@@ -1263,13 +1382,13 @@ func _on_connection_failed() -> void:
 ## `_peer` is the re-entry guard: both the host's departure and a genuine transport drop
 ## can reach here for the same session, and the screens must not be told twice.
 func _on_server_disconnected(reason: String = "") -> void:
+	var message := reason if not reason.is_empty() else "You were disconnected from the match."
+	if _abort_host(message):
+		return
+	if _abort_join_for_lost_session(message):
+		return
 	if _peer == null:
 		return
-	var message := reason if not reason.is_empty() else "You were disconnected from the match."
-	# Claimed before the leave: a join still waiting on the host is answered by the abort,
-	# which also invalidates PartyService's in-flight awaits. This is the path a refusal
-	# arrives on, so it is what stops a rejected join from ever reporting success.
-	var owned_by_join := _abort_join_for_lost_session(message)
 	# A full leave, not just a local reset. The Party network and the PlayFab lobby are
 	# still joined at this point, and the activity is still advertised -- the host going
 	# away does not retract any of that -- so without this the player returns to the menu
@@ -1277,10 +1396,6 @@ func _on_server_disconnected(reason: String = "") -> void:
 	leave_match()
 	# Set after the leave, because the leave is what clears the previous session's reason.
 	last_disconnect_reason = message
-	if owned_by_join:
-		# The join reports this reason itself, on a player who never left the loading
-		# screen. Emitting here as well would put a second dialog behind the first.
-		return
 	server_disconnected.emit()
 
 
@@ -1328,13 +1443,23 @@ var _connectivity_token := 0
 ## other is swallowed by the `_peer` guard in `_on_server_disconnected()`.
 func _on_connectivity_changed(online: bool) -> void:
 	_connectivity_token += 1
+	if not online:
+		var reason := _offline_reason()
+		if reason.is_empty():
+			reason = "This console has no internet connection."
+		if _abort_host(reason) or _abort_join_for_lost_session(reason):
+			return
 	if online or _is_offline or _peer == null:
 		return
 	_end_match_if_still_offline(_connectivity_token)
 
 
 func _end_match_if_still_offline(token: int) -> void:
-	await get_tree().create_timer(_CONNECTIVITY_GRACE_SECONDS).timeout
+	var deadline := _now_msec() + int(_CONNECTIVITY_GRACE_SECONDS * 1000.0)
+	while _now_msec() < deadline:
+		if token != _connectivity_token or _is_offline or _peer == null:
+			return
+		await _sleep(_JOIN_RESULT_POLL_INTERVAL)
 	# Re-checked rather than trusted: the token catches a reported change, and the live
 	# query catches the case where the grace period simply outlasted the problem.
 	if token != _connectivity_token or _is_offline or _peer == null:

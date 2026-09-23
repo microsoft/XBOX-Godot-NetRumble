@@ -164,8 +164,9 @@ means a new save. Do not manually replace either slot with bare JSON.
 **Action**: Record the failed stage/reason and inspect registration, account/title access and
 the platform sync result. After resolving the cause, choose **Retry** to reload the store;
 **Back** abandons the attempt without enabling play. Do not overwrite existing saves with
-defaults or copy shared/token files into the folder. No migration/compatibility reader exists,
-and historical files are left untouched. A custom-ID user cannot resolve this by retrying
+defaults or copy shared/token files into the folder. Only current-format root-level PC saves
+are copied into the new `NetRumble` subdirectory; historical/shared/token files are left untouched.
+A custom-ID user cannot resolve this by retrying
 authentication alone. See [Game Saves](platform-services.md#game-saves).
 
 `GameSaveService` calls `GDK.game_save.get_folder_async(xbox_user)` on both platforms.
@@ -178,6 +179,15 @@ describes SCID/access failures including `0x80830002`; a sync dialog alone does 
 Capture `[SavePrepare]` entry, the `GDK.game_save.get_folder_async` calling/returned/completed
 lines, folder access result and exit status. Completion logs retain recognized addon error
 codes and numeric HRESULTs without account identifiers, raw paths, payloads or native messages.
+The game no longer opens the SDK root as a working directory. It creates a single `NetRumble`
+child and uses absolute file paths. A folder failure includes `stage=create-directory` or
+`stage=read`, Godot's numeric `error` and description, and a `directory_exists` check.
+Record those fields when console logs are unavailable. `directory_exists=false` can mean a
+missing directory or a failed attribute query, not permission to load defaults. These fields
+do not expose the SDK path and are not native Windows error codes. If the child-directory
+approach still fails on console, native Win32 error capture is the next diagnostic step.
+Re-export before testing: the previous `stage=prepare, open_error=31` diagnostic belongs to
+the old working-directory check, not the corrected path.
 `[SaveLoad]` then records each logical payload's load status. A returned call still awaiting its
 Signal is not a completed sync. Retry repeats a failed folder operation; there is no AddUser
 session-lifetime rule in this backend. Resume invalidates the cached provider and reloads.

@@ -215,6 +215,8 @@ func _join(request: Dictionary) -> void:
 		return
 
 	var join_request := NetManager.join_by_invite(connection_string)
+	if loading != null:
+		loading.follow_join(join_request)
 	await join_request.wait()
 	ScreenManager.remove(loading)
 	if not Services.is_current_account(generation):
