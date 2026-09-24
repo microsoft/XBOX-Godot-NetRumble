@@ -88,6 +88,7 @@ func _ready() -> void:
 	_chat = ChatService.new()
 	_party = PartyService.new(_chat)
 	_party.configure_clock(_clock)
+	bind_party_signals()
 	_activity = ActivityService.new()
 	_privileges = PrivilegeService.new()
 	_privacy = PrivacyService.new()
@@ -819,14 +820,16 @@ func _clear_leaderboard_submission() -> void:
 
 # --- Matchmaking ------------------------------------------------------------
 
-## PlayFab Matchmaking (Quick Match). Present but switched off until the matchmaking flow
-## is complete: MatchmakingService reports it unavailable, and NetManager.start_matchmaking()
-## and staging-lobby joins both refuse while it does. See scripts/services/matchmaking_service.gd.
+## PlayFab Matchmaking (Quick Match). The Matchmaking row is always offered; it opens a
+## group only while MatchmakingService reports Quick Match available -- a configured queue,
+## the PlayFab extension, a capable addon and the four-player profile -- and otherwise shows
+## the service's reason. NetManager.start_matchmaking() and matchmaking-lobby joins refuse
+## on the same answer. See scripts/services/matchmaking_service.gd.
 func matchmaking() -> MatchmakingService:
 	return _matchmaking
 
 
-## Whether a Quick Match row should offer to run. False on this build.
+## Whether the Matchmaking row may run.
 func quick_match_available() -> bool:
 	return _matchmaking != null and _matchmaking.is_available()
 
@@ -836,6 +839,26 @@ func quick_match_unavailable_reason() -> String:
 	if _matchmaking == null:
 		return "Matchmaking is unavailable in this build."
 	return _matchmaking.availability_reason()
+
+
+## Connects the installed PartyService's service-wide notices here, once. Called when the
+## services are built; the harness calls it again after installing a party of its own.
+func bind_party_signals() -> void:
+	if _party == null:
+		return
+	if not _party.multiplayer_invalidated.is_connected(_on_multiplayer_invalidated):
+		_party.multiplayer_invalidated.connect(_on_multiplayer_invalidated)
+
+
+## A confirmed Multiplayer shutdown: the lobbies and tickets of the old runtime are gone.
+## The flow is retired first, synchronously, keeping its own reason, so the attempts the
+## matchmaking service then discharges are already its to discard -- none of their
+## failures can start a staging restoration over a lobby that no longer exists.
+func _on_multiplayer_invalidated(recovery_epoch: int) -> void:
+	if NetManager != null:
+		NetManager.on_multiplayer_invalidated(recovery_epoch)
+	if _matchmaking != null:
+		_matchmaking.multiplayer_invalidated(recovery_epoch)
 
 
 # --- Time ---------------------------------------------------------------------

@@ -3,9 +3,8 @@ extends RefCounted
 
 ## PlayFab Matchmaking service boundary.
 ##
-## The title flow remains disabled until Phase 1, but this class already owns the native
-## ticket lifecycle so a late result can clean up the exact attempt that created it
-## instead of mutating whichever screen or session happens to be active later.
+## Quick Match uses this boundary for group tickets, arranged lobbies, deadline ownership and
+## cleanup, so every late result affects only the exact attempt that created it.
 
 const QUEUE_NAME := "godotnr_q"
 const PROTOCOL_MEMBER_KEY := "nr_protocol"
@@ -17,7 +16,7 @@ const FULL_PARTY_REASON := "A full group of four cannot match in this four-playe
 const SEARCH_TIMEOUT_REASON_CODE := &"search_timeout"
 const SEARCH_TIMEOUT_REASON := "Matchmaking timed out before the service found a match."
 
-const _FLOW_IMPLEMENTED := false
+const _FLOW_IMPLEMENTED := true
 const _JOIN_CONFIG_CLASS := "PlayFabLobbyJoinConfig"
 const _JOIN_CONFIG_SENTINEL := "member_properties"
 const _TICKET_CONFIG_CLASS := "PlayFabMatchmakingTicketConfig"
@@ -86,6 +85,7 @@ class TicketAttempt extends RefCounted:
 	signal cleanup_changed(attempt)
 
 	var operation_id := 0
+	var multiplayer_epoch := 0
 	var account_generation := -1
 	var flow_epoch := 0
 	var owner := false
@@ -111,6 +111,7 @@ class TicketAttempt extends RefCounted:
 	var create_in_flight := false
 	var cancel_in_flight := false
 	var state_callback: Callable = Callable()
+	var deadline_alarm: Variant = null
 
 	func is_pending() -> bool:
 		return outcome == 0
@@ -128,6 +129,10 @@ class TicketAttempt extends RefCounted:
 	) -> bool:
 		if not is_pending():
 			return false
+		if deadline_alarm != null:
+			if deadline_alarm.has_method("cancel"):
+				deadline_alarm.cancel()
+			deadline_alarm = null
 		outcome = next_outcome
 		reason_code = next_reason_code
 		reason = next_reason
@@ -136,9 +141,10 @@ class TicketAttempt extends RefCounted:
 		return true
 
 
-var _clock: OnlineFlowClock = null
+var _clock: OnlineFlowClock = OnlineFlowClock.new()
 var _attempts: Array[TicketAttempt] = []
 var _next_operation_id := 1
+var _multiplayer_epoch := 0
 var _missing_properties_cache: PackedStringArray = []
 var _missing_properties_cached := false
 var _missing_group_cache: PackedStringArray = []
@@ -148,6 +154,9 @@ var _missing_group_cached := false
 func configure_clock(clock: OnlineFlowClock) -> void:
 	if _has_live_attempt():
 		push_warning("[Matchmaking] Cannot replace the online-flow clock while work is active.")
+		return
+	if clock == null:
+		push_warning("[Matchmaking] Cannot configure a null online-flow clock.")
 		return
 	_clock = clock
 
@@ -159,7 +168,7 @@ func is_available() -> bool:
 func availability_reason() -> String:
 	if not _flow_implemented():
 		return "Quick Match is not available in this build yet."
-	if QUEUE_NAME.strip_edges().is_empty():
+	if _queue_name().strip_edges().is_empty():
 		return "Matchmaking is unavailable: no matchmaking queue is configured."
 	if _playfab() == null:
 		return "Matchmaking needs the PlayFab extension, which this build does not have."
@@ -285,7 +294,7 @@ func begin_create(spec: SearchSpec) -> TicketAttempt:
 			String(validation.get("reason", "The matchmaking request is invalid.")))
 		return attempt
 	_attempts.append(attempt)
-	_watch_deadline(attempt)
+	_arm_deadline(attempt)
 	_create_ticket(attempt)
 	return attempt
 
@@ -300,13 +309,13 @@ func begin_join(spec: SearchSpec) -> TicketAttempt:
 			String(validation.get("reason", "The matchmaking request is invalid.")))
 		return attempt
 	_attempts.append(attempt)
-	_watch_deadline(attempt)
+	_arm_deadline(attempt)
 	_join_ticket(attempt)
 	return attempt
 
 
 func request_cancel(attempt: TicketAttempt) -> void:
-	if attempt == null or attempt.native_terminal:
+	if attempt == null or attempt.native_terminal or not _attempt_epoch_current(attempt):
 		return
 	attempt.abandon_requested = true
 	if attempt.ticket != null and not attempt.cancel_in_flight:
@@ -319,6 +328,7 @@ func retire(attempt: TicketAttempt) -> void:
 	if attempt == null or attempt.retired:
 		return
 	attempt.retired = true
+	_cancel_deadline_alarm(attempt)
 	if attempt.is_pending():
 		attempt.settle(Outcome.SUPERSEDED)
 	if attempt.native_terminal:
@@ -331,6 +341,30 @@ func retire(attempt: TicketAttempt) -> void:
 		_set_cleanup_pending(
 			attempt,
 			attempt.create_in_flight or attempt.cancel_in_flight)
+	_prune_attempts()
+
+
+func multiplayer_invalidated(recovery_epoch: int) -> void:
+	if recovery_epoch <= _multiplayer_epoch:
+		return
+	_multiplayer_epoch = recovery_epoch
+	for attempt: TicketAttempt in _attempts.duplicate():
+		if attempt.multiplayer_epoch >= recovery_epoch:
+			continue
+		_cancel_deadline_alarm(attempt)
+		attempt.retired = true
+		attempt.abandon_requested = true
+		if attempt.is_pending():
+			attempt.settle(
+				Outcome.FAILED,
+				&"multiplayer_invalidated",
+				"Matchmaking stopped while multiplayer services recovered.")
+		_disconnect_ticket(attempt)
+		attempt.ticket = null
+		attempt.native_terminal = true
+		attempt.create_in_flight = false
+		attempt.cancel_in_flight = false
+		_set_cleanup_pending(attempt, false)
 	_prune_attempts()
 
 
@@ -368,6 +402,7 @@ func _new_attempt(spec: SearchSpec, owner: bool) -> TicketAttempt:
 	var attempt := TicketAttempt.new()
 	attempt.operation_id = _next_operation_id
 	_next_operation_id += 1
+	attempt.multiplayer_epoch = _multiplayer_epoch
 	attempt.owner = owner
 	attempt.clock = _clock
 	if spec == null:
@@ -429,7 +464,7 @@ func _validate_attempt(attempt: TicketAttempt, owner: bool) -> Dictionary:
 
 
 func _capability_reason() -> String:
-	if QUEUE_NAME.strip_edges().is_empty():
+	if _queue_name().strip_edges().is_empty():
 		return "No matchmaking queue is configured."
 	if not addon_supports_group_matchmaking():
 		return "The installed PlayFab addon cannot create group matchmaking tickets."
@@ -442,6 +477,10 @@ func _flow_implemented() -> bool:
 
 func _game_mode_config(mode: NRTypes.GameModeType) -> Variant:
 	return Assets.game_mode(mode) if Assets != null else null
+
+
+func _queue_name() -> String:
+	return QUEUE_NAME
 
 
 func _profile_failure(
@@ -470,6 +509,8 @@ func _validation_failure(
 
 
 func _create_ticket(attempt: TicketAttempt) -> void:
+	if not _attempt_epoch_current(attempt):
+		return
 	attempt.create_in_flight = true
 	var config: Variant = _make_ticket_config(attempt)
 	if config == null:
@@ -493,6 +534,9 @@ func _create_ticket(attempt: TicketAttempt) -> void:
 	# Until that change is approved, recover this rejection to gathering; do not silently host.
 	var result: Variant = await multiplayer.create_match_ticket_async(attempt.user, config)
 	attempt.create_in_flight = false
+	if not _attempt_epoch_current(attempt):
+		_prune_attempts()
+		return
 	if attempt.retired or not attempt.is_pending() \
 		or not _account_is_current(attempt.account_generation):
 		_cleanup_late_result(attempt, result)
@@ -512,6 +556,8 @@ func _create_ticket(attempt: TicketAttempt) -> void:
 
 
 func _join_ticket(attempt: TicketAttempt) -> void:
+	if not _attempt_epoch_current(attempt):
+		return
 	attempt.create_in_flight = true
 	var multiplayer: Variant = _multiplayer()
 	if multiplayer == null:
@@ -528,9 +574,12 @@ func _join_ticket(attempt: TicketAttempt) -> void:
 	var result: Variant = await multiplayer.join_match_ticket_async(
 		attempt.user,
 		attempt.ticket_id,
-		QUEUE_NAME,
+		_queue_name(),
 		[local_member])
 	attempt.create_in_flight = false
+	if not _attempt_epoch_current(attempt):
+		_prune_attempts()
+		return
 	if attempt.retired or not attempt.is_pending() \
 		or not _account_is_current(attempt.account_generation):
 		_cleanup_late_result(attempt, result)
@@ -561,7 +610,7 @@ func _make_ticket_config(attempt: TicketAttempt) -> Variant:
 		var normalized := _copy_entity_key(key)
 		if _entity_fingerprint(normalized) != _entity_fingerprint(local_key):
 			remotes.append(normalized)
-	config.queue_name = QUEUE_NAME
+	config.queue_name = _queue_name()
 	config.timeout_seconds = SEARCH_TIMEOUT_SECONDS
 	config.members = [local_member]
 	config.members_to_match_with = remotes
@@ -586,6 +635,8 @@ func _new_matchmaking_member() -> Variant:
 
 
 func _attach_ticket(attempt: TicketAttempt, ticket: Variant) -> void:
+	if not _attempt_epoch_current(attempt):
+		return
 	attempt.ticket = ticket
 	attempt.ticket_id = String(_object_value(ticket, &"ticket_id", attempt.ticket_id))
 	var callback := Callable(self, "_on_ticket_changed").bind(attempt)
@@ -610,7 +661,7 @@ func _on_ticket_changed(change: Variant, attempt: TicketAttempt) -> void:
 
 
 func _reconcile_ticket(attempt: TicketAttempt, terminal_result: Variant = null) -> void:
-	if attempt == null or attempt.ticket == null:
+	if attempt == null or attempt.ticket == null or not _attempt_epoch_current(attempt):
 		return
 	var observed := _observe_terminal_snapshot(attempt, terminal_result)
 	if bool(observed.get("terminal", false)):
@@ -651,17 +702,20 @@ func _observe_terminal_snapshot(
 			attempt.arrangement = String(_object_value(
 				attempt.ticket, &"arranged_lobby_connection_string", ""))
 			attempt.native_terminal = true
+			_cancel_deadline_alarm(attempt)
 			if attempt.is_pending():
 				attempt.settle(Outcome.MATCHED)
 			_complete_native_cleanup(attempt)
 		STATUS_CANCELLED:
 			attempt.native_terminal = true
+			_cancel_deadline_alarm(attempt)
 			if attempt.is_pending():
 				attempt.settle(Outcome.CANCELLED)
 			_complete_native_cleanup(attempt)
 		STATUS_FAILED:
 			var diagnostic := _ticket_diagnostic(attempt.ticket, terminal_result)
 			attempt.native_terminal = true
+			_cancel_deadline_alarm(attempt)
 			if attempt.is_pending():
 				if attempt.owner and attempt.frozen_members.size() == EXPECTED_MATCH_COUNT:
 					attempt.settle(
@@ -686,13 +740,15 @@ func _complete_native_cleanup(attempt: TicketAttempt) -> void:
 	if attempt == null or not attempt.native_terminal:
 		return
 	_disconnect_ticket(attempt)
+	_cancel_deadline_alarm(attempt)
 	attempt.ticket = null
 	_set_cleanup_pending(attempt, false)
 	_prune_attempts()
 
 
 func _cancel_ticket(attempt: TicketAttempt) -> void:
-	if attempt == null or attempt.ticket == null or attempt.cancel_in_flight:
+	if attempt == null or attempt.ticket == null or attempt.cancel_in_flight \
+		or not _attempt_epoch_current(attempt):
 		return
 	if bool(_observe_terminal_snapshot(attempt).get("terminal", false)):
 		return
@@ -700,12 +756,16 @@ func _cancel_ticket(attempt: TicketAttempt) -> void:
 	_set_cleanup_pending(attempt, true)
 	var result: Variant = await attempt.ticket.cancel_async()
 	attempt.cancel_in_flight = false
+	if not _attempt_epoch_current(attempt):
+		_prune_attempts()
+		return
 	if attempt.native_terminal:
 		_complete_native_cleanup(attempt)
 		return
 	if not _result_ok(result):
 		var diagnostic := _diagnostic(result)
 		if attempt.is_pending():
+			_cancel_deadline_alarm(attempt)
 			attempt.settle(
 				Outcome.FAILED,
 				&"cancel_unconfirmed",
@@ -718,6 +778,7 @@ func _cancel_ticket(attempt: TicketAttempt) -> void:
 	_reconcile_ticket(attempt, result)
 	if not attempt.native_terminal:
 		if attempt.is_pending():
+			_cancel_deadline_alarm(attempt)
 			attempt.settle(
 				Outcome.FAILED,
 				&"cancel_unconfirmed",
@@ -726,13 +787,23 @@ func _cancel_ticket(attempt: TicketAttempt) -> void:
 		_set_cleanup_pending(attempt, true)
 
 
-func _watch_deadline(attempt: TicketAttempt) -> void:
-	while attempt.is_pending() and not attempt.retired:
-		var remaining_msec := attempt.deadline_msec - _now_msec(attempt.clock)
-		if remaining_msec <= 0:
-			break
-		await _sleep_with_clock(attempt.clock, minf(0.1, float(remaining_msec) / 1000.0))
-	if not attempt.is_pending() or attempt.retired:
+func _arm_deadline(attempt: TicketAttempt) -> void:
+	if attempt == null or not attempt.is_pending() \
+		or attempt.retired or not _attempt_epoch_current(attempt):
+		return
+	if attempt.clock == null:
+		attempt.clock = OnlineFlowClock.new()
+	attempt.deadline_alarm = attempt.clock.alarm_at(
+		attempt.deadline_msec,
+		_on_ticket_deadline.bind(attempt.operation_id))
+
+
+func _on_ticket_deadline(operation_id: int) -> void:
+	var attempt := _attempt_for_operation(operation_id)
+	if attempt == null:
+		return
+	attempt.deadline_alarm = null
+	if not attempt.is_pending() or attempt.retired or not _attempt_epoch_current(attempt):
 		return
 	_set_cleanup_pending(
 		attempt,
@@ -740,6 +811,25 @@ func _watch_deadline(attempt: TicketAttempt) -> void:
 	attempt.settle(Outcome.TIMEOUT, SEARCH_TIMEOUT_REASON_CODE, SEARCH_TIMEOUT_REASON)
 	if attempt.ticket != null and not attempt.cancel_in_flight:
 		_cancel_after_timeout(attempt)
+
+
+func _cancel_deadline_alarm(attempt: TicketAttempt) -> void:
+	if attempt == null or attempt.deadline_alarm == null:
+		return
+	if attempt.deadline_alarm.has_method("cancel"):
+		attempt.deadline_alarm.cancel()
+	attempt.deadline_alarm = null
+
+
+func _attempt_for_operation(operation_id: int) -> TicketAttempt:
+	for attempt: TicketAttempt in _attempts:
+		if attempt.operation_id == operation_id:
+			return attempt
+	return null
+
+
+func _attempt_epoch_current(attempt: TicketAttempt) -> bool:
+	return attempt != null and attempt.multiplayer_epoch == _multiplayer_epoch
 
 
 func _cancel_after_timeout(attempt: TicketAttempt) -> void:
@@ -756,6 +846,9 @@ func _cleanup_retired_ticket(attempt: TicketAttempt) -> void:
 
 
 func _cleanup_late_result(attempt: TicketAttempt, result: Variant) -> void:
+	if not _attempt_epoch_current(attempt):
+		_prune_attempts()
+		return
 	if _result_ok(result):
 		var ticket: Variant = _result_data(result)
 		if ticket != null:
@@ -784,6 +877,7 @@ func _finish_failed(
 	message: String,
 	result: Variant
 ) -> void:
+	_cancel_deadline_alarm(attempt)
 	if attempt.ticket == null and not attempt.create_in_flight and not attempt.cancel_in_flight:
 		attempt.native_terminal = true
 		_set_cleanup_pending(attempt, false)
@@ -800,6 +894,7 @@ func _prune_attempts() -> void:
 			continue
 		if attempt.is_pending():
 			continue
+		_cancel_deadline_alarm(attempt)
 		_attempts.remove_at(index)
 
 

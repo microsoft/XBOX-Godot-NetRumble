@@ -22,6 +22,7 @@ See also: [Troubleshooting](troubleshooting.md) · [Manual test plan](manual-tes
 | Shots sometimes bounce off another player's ship instead of counting as a hit. | PC | [#3][issue-3] |
 | Backing out of the lobby code screen with **B** can leave the menu unresponsive. Pressing **B** again gets you out and restores it. | Console | [#4][issue-4] |
 | The ready indicator on the lobby roster is slightly too big for the circle it sits in. | PC | [#1][issue-1] |
+| A full group of four that chooses **Matchmaking** is refused by the queue: everyone sees *"A full group of four cannot match in this four-player queue."* and stays in the same lobby. | PC and console | [Below](#a-full-group-of-four-cannot-use-quick-match) |
 
 ## The chat cleanup hang
 
@@ -50,9 +51,6 @@ The full technical detail, including what the coordinated run did and did not pr
 
 ## A full group of four cannot use Quick Match
 
-Quick Match is not enabled in this build yet. This is a limit of the matchmaking flow being
-integrated behind it, written down now so that nobody is surprised by it when it is switched on.
-
 Quick Match fills four-player Deathmatch matches from the `godotnr_q` queue. A group of one to
 three players readies up together in its lobby, and the group's owner submits one matchmaking
 ticket for all of them, which PlayFab fills with other players. A full group of four takes exactly
@@ -79,9 +77,9 @@ and start its match directly. It is not part of this sample, and nothing falls b
 
 ## What is not on this list
 
-Deliberate limits are not bugs. The sample has no host migration and no join-in-progress, it uses
-PlayFab Lobby discovery instead of matchmaking queues, and its typed text is in-match only with no
-persistence. Those are design decisions, and they are explained in
+Deliberate limits are not bugs. The sample has no host migration and no join-in-progress, Host
+Match finds its sessions through PlayFab Lobby discovery rather than a matchmaking queue, and its
+typed text is in-match only with no persistence. Those are design decisions, and they are explained in
 [what this sample does not do](multiplayer.md#scope-and-non-goals).
 
 Setup and build failures are not on this list either. If the game will not start, will not export

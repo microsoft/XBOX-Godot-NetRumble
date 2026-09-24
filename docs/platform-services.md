@@ -98,9 +98,11 @@ title-side (see [XBOX Requirements](xr-compliance.md), XR-045 and XR-015).
 `XUserCheckPrivilege()` without named constants, so the two the title needs are declared locally:
 `MULTIPLAYER` (254) and `COMMUNICATIONS` (252), taken from the GDK `XUserPrivilege` reference.
 
-- **Multiplayer** is required before hosting and before every join path. `NetManager` funnels
-  host, join by code and join by invite through `_require_multiplayer_privilege()`, so a denial
-  fails the connection with the privilege's own message rather than a generic error.
+- **Multiplayer** is required before hosting, before opening a [matchmaking](matchmaking.md)
+  group and before every join path. `NetManager` funnels host, join by code, join by invite and
+  a matchmaking group's opening through `_resolve_signed_in_user()`, which asks
+  `_multiplayer_privilege_denial()`, so a denial fails the connection with the privilege's own
+  message rather than a generic error.
 - **Communications** decides `enable_voice_chat` and `enable_text_chat` and whether a local chat
   control is created at all. Denied chat is *absent*, not just muted; gameplay transport may
   still work when multiplayer is allowed.
@@ -220,6 +222,34 @@ The isolated failure suite in `tools\tests\multiplayer_failure_tests.gd` drives 
 PartyService, NetManager and the actual menu/invite screens with SDK-boundary doubles.
 It is game-side regression evidence, not proof of native SDK lifetime safety or live
 PC/console connectivity behavior.
+
+### Matchmaking budgets and recovery
+
+A [matchmaking](matchmaking.md) group keeps the same fences with budgets of its own, each taken
+once and never renewed by an event: **45 seconds** for the owner to open the group (privilege,
+chat, native lobby and Party creation, descriptor), the ordinary 45-second join budget for an
+invited member, **15 seconds** each for a freeze, a restoration and a member's state request,
+**600 seconds** for the search, then **30 seconds** for the arranged join, a separate **90** for
+the cohort, fresh network and admission -- with a 30-second slice for the arranged owner's
+network preparation -- and **30** from the exact four's admission to the first running game. A
+Matchmaking press is refused before any work while an earlier group's scoped Party work is still
+draining, while a ticket's cancellation is unconfirmed, while Party cleanup or recovery stands,
+and while the console is definitively offline.
+
+A lobby the group holds going away unexpectedly ends it: the arranged lobby at any point, and the
+staging lobby until this member's own leave of it has begun. Arming for the handoff changes only
+what the old Party transport's going away means. Each member leaves its old staging lobby once it
+is in the arranged session -- a guest at once, the group's staging owner last, once no other
+member is connected in it, because PlayFab clears a lobby's owner when its owner leaves and every
+member still inside would read that as the group's owner lost. That wait is not retirement: a
+loss during it still ends the group, and a wait past the handoff budget fails. Retirement counts
+only once the leave answered OK and the old lobby's work is finished; each member then marks it
+in the arranged lobby, and the first match commits only once all four have.
+
+The Multiplayer runtime owns lobbies and tickets alike. Only a **confirmed** Multiplayer shutdown
+during recovery is taken as proof that every old lobby and ticket is gone: the flow is retired
+first, synchronously, and the matchmaking service then discharges the old tickets. A Party-only
+loss, or a shutdown that failed, proves nothing, and a ticket still owed stays quarantined.
 
 ---
 

@@ -50,6 +50,8 @@ signal network_destroyed()
 signal party_failed(message: String, context: Variant)
 signal cleanup_status_changed(message: String)
 signal context_updated(context: Variant)
+signal context_lost(reason: String, context: Variant)
+signal multiplayer_invalidated(recovery_epoch: int)
 signal _owned_work_changed()
 
 ## Lobby property the host publishes the Party descriptor under. Matches the key used
@@ -64,12 +66,17 @@ const LOBBY_KIND_STAGING := "matchmaking_staging"
 const LOBBY_KIND_ARRANGED := "arranged"
 const SEARCH_CONTROL_KEY := "nr_search"
 const SESSION_PHASE_KEY := "nr_phase"
+const ROUND_GENERATION_KEY := "nr_round"
 const MATCH_ID_MEMBER_KEY := "nr_match_id"
 const MATCH_ORIGIN_MEMBER_KEY := "nr_matchmaking_origin"
 const MATCH_ORIGIN_VALUE := "matchmaking"
 const HANDOFF_READY_MEMBER_KEY := "nr_handoff_ready"
+const STAGING_RETIRED_MEMBER_KEY := "nr_staging_retired"
 const MATCHMAKING_INVITATION_ID := "NetRumble"
 const SEARCH_CONTROL_SCHEMA := 1
+const ARRANGED_PHASE_BOOTSTRAP := "bootstrap"
+const ARRANGED_PHASE_GAMEPLAY := "gameplay"
+const ARRANGED_PHASE_REMATCH := "rematch_gathering"
 
 ## The descriptor is finalized asynchronously after the network is created, and lobby
 ## properties replicate on their own schedule. Both are polled rather than raced.
@@ -87,6 +94,8 @@ const MEMBERSHIP_LOCK_LOCKED := 1
 ## A lock is on the path between pressing ready and the match starting, so it cannot be
 ## allowed to hang the lobby indefinitely.
 const LOBBY_LOCK_TIMEOUT := 15.0
+const ARRANGED_OPERATION_TIMEOUT := 30.0
+const ARRANGED_HANDOFF_TIMEOUT := 90.0
 
 ## Membership-lock failures the caller can show. The SDK's own message is a developer
 ## diagnostic (see _reason), so it is logged rather than displayed.
@@ -127,6 +136,8 @@ const RECOVERY_FAILED := "Multiplayer cleanup could not complete safely. Online 
 ## _handle_network_state().
 const NETWORK_STATE_DISCONNECTED := 5
 const NETWORK_STATE_FAILED := 6
+const LOBBY_CHANGE_OWNER_CHANGED := 5
+const LOBBY_CHANGE_DISCONNECTED := 6
 
 ## Local UDP bind ports. Party binds a socket at initialization; 0 asks the OS for an
 ## ephemeral port, -1 keeps the platform's own preferred multiplayer port.
@@ -197,6 +208,7 @@ class LobbyContext extends RefCounted:
 	signal transport_leave_finished(result)
 
 	var context_id: int = 0
+	var service_owner: WeakRef = null
 	var role: StringName = &""
 	var kind: String = ""
 	var lobby: Variant = null
@@ -208,6 +220,7 @@ class LobbyContext extends RefCounted:
 	var flow_epoch: int = 0
 	var recovery_epoch: int = 0
 	var operation_id: int = 0
+	var expected_count: int = 0
 	var local_creator: bool = false
 	var owner_key: Dictionary = {}
 	var active_permit: int = 0
@@ -230,6 +243,35 @@ class LobbyContext extends RefCounted:
 	var clock: OnlineFlowClock = null
 	var network_callback: Callable = Callable()
 	var lobby_callback: Callable = Callable()
+	var loss_emitted := false
+
+
+class ScopedOperation extends RefCounted:
+	signal cleanup_changed(operation)
+	signal settled_changed(operation)
+
+	var id: int = 0
+	var context_id: int = 0
+	var account_generation: int = -1
+	var flow_epoch: int = 0
+	var recovery_epoch: int = 0
+	var operation_id: int = 0
+	var deadline_msec: int = 0
+	var clock: OnlineFlowClock = null
+	var outcome: int = -1
+	var reason_code: StringName = &""
+	var reason: String = ""
+	var diagnostic: String = ""
+	var cleanup_pending := false
+	var retired := false
+	var settled := false
+	var native_done := false
+	var publication_permit := 0
+	var required_permit := 0
+	var kind: StringName = &""
+	var timeout_reason_code: StringName = &""
+	var timeout_reason: String = ""
+	var deadline_alarm: Variant = null
 
 
 class PartyResult extends RefCounted:
@@ -254,6 +296,7 @@ class PartyResult extends RefCounted:
 	var descriptor := ""
 	var publication_permit := 0
 	var cleanup_pending := false
+	var operation: ScopedOperation = null
 
 	func ok() -> bool:
 		return outcome == Outcome.OK
@@ -304,11 +347,13 @@ var _clock: OnlineFlowClock = null
 var _contexts: Dictionary = {}
 var _next_context_id := 1
 var _next_context_operation := 1
+var _next_scoped_operation_id := 1
 var _next_publication_permit := 1
 var _attached_context: LobbyContext = null
 var _owned_operation_count := 0
 var _legacy_attach_succeeded := true
 var _scoped_recovery_epoch := 0
+var _scoped_operations: Dictionary = {}
 
 
 func _init(chat: ChatService) -> void:
@@ -456,8 +501,8 @@ func set_lobby_locked(locked: bool) -> Dictionary:
 		return {"ok": false, "error": LOCK_FAILED_NO_LOBBY}
 	if not _is_host:
 		return {"ok": false, "error": LOCK_FAILED_NOT_HOST}
-	# The pinned submodule predating microsoft/XBOX-Godot-Sample#179 has no lock API, and
-	# an addons/ tree built from it would otherwise fail with an unrelated script error.
+	# The matchmaking lock contract requires the addon API introduced by
+	# microsoft/XBOX-Godot-Sample#179.
 	if not _lobby.has_method("set_membership_lock_async"):
 		return {"ok": false, "error": LOCK_FAILED_UNSUPPORTED}
 	if _lobby.is_disconnected():
@@ -483,8 +528,8 @@ func set_lobby_locked(locked: bool) -> Dictionary:
 
 func _post_membership_lock(lobby: Variant, membership_lock: int, operation: int) -> void:
 	var result: Variant = await _native_call(lobby, &"set_membership_lock_async", [membership_lock])
-	# The lobby this answers for may have been left, or a later update may already own the
-	# outcome. Either way this result is no longer anybody's answer.
+	# The lobby may have been left, or a later update may own the outcome. In either case,
+	# this result belongs to no current caller.
 	if operation != _lock_operation:
 		return
 	if result != null and result.ok:
@@ -709,39 +754,96 @@ func _join_scoped_lobby(
 	var state := snapshot(context)
 	var protocol := String((state.search_properties as Dictionary).get(
 		NRProtocol.LOBBY_KEY, ""))
+	var destination := "staging_gathering"
+	var match_id := ""
+	var round := 0
+	var owner_key: Dictionary = state.owner_key
+	context.expected_count = int(state.max_members)
+	if bool(state.disconnected) or context.expected_count != MatchmakingService.EXPECTED_MATCH_COUNT:
+		await leave_lobby(context)
+		return _kind_refusal(
+			"That matchmaking lobby is no longer available.",
+			kind)
+	if bool(state.membership_locked):
+		await leave_lobby(context)
+		return _kind_refusal(
+			"That matchmaking lobby is no longer accepting players.",
+			kind)
 	if kind == LOBBY_KIND_ARRANGED:
-		for member: Dictionary in state.members:
-			if _entity_keys_match(member.key, state.owner_key):
-				protocol = String((member.properties as Dictionary).get(
-					MatchmakingService.PROTOCOL_MEMBER_KEY, ""))
-				break
-		if String(state.phase) != "rematch_gathering":
+		var arranged := _validate_arranged_rematch_state(state, true)
+		if not bool(arranged.get("ok", false)):
 			await leave_lobby(context)
-			return _fail("That arranged match is not accepting rematch players.")
+			return _kind_refusal(String(arranged.get(
+				"error",
+				"That arranged match is not accepting rematch players.")), kind)
+		protocol = String(arranged.get("protocol", ""))
+		match_id = String(arranged.get("match_id", ""))
+		round = int(arranged.get("round", 0))
+		owner_key = (arranged.get("owner_key", {}) as Dictionary).duplicate()
+		context.owner_key = owner_key.duplicate()
+		destination = "arranged_rematch"
+	else:
+		var search_control: Dictionary = state.search_control
+		if bool(search_control.get("valid", false)) \
+			and String(search_control.get("phase", "")) != "gathering":
+			await leave_lobby(context)
+			return _kind_refusal(
+				"That matchmaking group has already started searching.",
+				kind)
 	if not NRProtocol.is_compatible(protocol):
 		await leave_lobby(context)
-		return _fail(NRProtocol.mismatch_message(protocol, NRProtocol.version_string()))
+		return _kind_refusal(
+			NRProtocol.mismatch_message(protocol, NRProtocol.version_string()),
+			kind)
+
+	var member_properties := {
+		MatchmakingService.PROTOCOL_MEMBER_KEY: NRProtocol.version_string(),
+		MATCH_ORIGIN_MEMBER_KEY: MATCH_ORIGIN_VALUE,
+	}
+	if kind == LOBBY_KIND_ARRANGED:
+		member_properties[MATCH_ID_MEMBER_KEY] = match_id
+	var member_post := await post_context_update(
+		context, {}, {}, member_properties, _operation_deadline_msec)
+	if not member_post.ok():
+		await leave_lobby(context)
+		return _kind_refusal(
+			member_post.reason if not member_post.reason.is_empty() \
+				else "Could not verify this matchmaking lobby member.",
+			kind)
+	if kind == LOBBY_KIND_ARRANGED:
+		state = snapshot(context)
+		var confirmed := _validate_arranged_rematch_state(state)
+		if not bool(confirmed.get("ok", false)) \
+			or String(confirmed.get("match_id", "")) != match_id \
+			or int(confirmed.get("round", -1)) != round \
+			or not _entity_keys_match(
+				confirmed.get("owner_key", {}) as Dictionary,
+				owner_key):
+			await leave_lobby(context)
+			return _kind_refusal(
+				"That arranged match changed while the invitation was being accepted.",
+				kind)
 
 	var descriptor_result := await _await_context_transport_properties(
 		context, 0, context_operation)
 	if not descriptor_result.ok():
 		await leave_lobby(context)
-		return _fail(descriptor_result.reason)
+		return _kind_refusal(descriptor_result.reason, kind)
 	if not _is_join_operation_current(operation):
 		await leave_lobby(context)
-		return _fail("Join cancelled.")
+		return _kind_refusal("Join cancelled.", kind)
 	var cfg: Variant = _make_party_config(0, MATCHMAKING_INVITATION_ID)
 	var party: Variant = _party_sdk()
 	if cfg == null or party == null:
 		await leave_lobby(context)
-		return _fail("The PlayFab Party service is unavailable.")
+		return _kind_refusal("The PlayFab Party service is unavailable.", kind)
 	await _chat.ensure_control(user, cfg, func() -> bool:
 		return _is_join_operation_current(operation) \
 			and _context_operation_current(context, context_operation))
 	if not _is_join_operation_current(operation) \
 		or not _context_operation_current(context, context_operation):
 		await leave_lobby(context)
-		return _fail("Join cancelled.")
+		return _kind_refusal("Join cancelled.", kind)
 	_begin_owned_call(context)
 	var network: Variant = await party.join_network_async(
 		user, descriptor_result.descriptor, cfg)
@@ -751,25 +853,115 @@ func _join_scoped_lobby(
 			await _leave_stale_network_instance(context, _result_data(network))
 		_end_owned_call(context)
 		await leave_lobby(context)
-		return _fail("Join cancelled.")
+		return _kind_refusal("Join cancelled.", kind)
 	if not _result_ok(network):
 		_end_owned_call(context)
 		await leave_lobby(context)
-		return _fail(_join_failure(network, "Party network"))
+		return _kind_refusal(_join_failure(network, "Party network"), kind)
 	if not _attach_context_transport(context, _result_data(network), false):
 		await _leave_network_instance(_result_data(network))
 		_end_owned_call(context)
 		await leave_lobby(context)
-		return _fail("Another Party transport is already attached.")
+		return _kind_refusal(
+			"The Party service did not return a usable transport.",
+			kind)
 	_end_owned_call(context)
 	join_code = ""
-	return {
+	var joined := {
 		"ok": true,
 		"peer": _peer,
 		"code": "",
 		"error": "",
 		"kind": kind,
 		"context": context,
+		"destination": destination,
+	}
+	if kind == LOBBY_KIND_ARRANGED:
+		joined["match_id"] = match_id
+		joined["round"] = round
+		joined["owner_key"] = owner_key
+		joined["expected_count"] = context.expected_count
+	return joined
+
+
+func _validate_arranged_rematch_state(
+	state: Dictionary,
+	allow_local_unwritten: bool = false
+) -> Dictionary:
+	if bool(state.get("disconnected", true)) \
+		or int(state.get("max_members", 0)) != MatchmakingService.EXPECTED_MATCH_COUNT \
+		or int(state.get("access_policy", -1)) != 2 \
+		or int(state.get("owner_migration", -1)) != 0 \
+		or bool(state.get("restrict_invites_to_owner", true)) \
+		or bool(state.get("membership_locked", true)):
+		return {
+			"ok": false,
+			"error": "That arranged match is not accepting rematch players.",
+		}
+	var control_value: Variant = state.get("arranged_control", {})
+	var control: Dictionary = control_value as Dictionary \
+		if typeof(control_value) == TYPE_DICTIONARY else {}
+	if not bool(control.get("valid", false)) \
+		or String(control.get("phase", "")) != ARRANGED_PHASE_REMATCH:
+		return {
+			"ok": false,
+			"error": "That arranged match is not in rematch gathering.",
+		}
+	var owner_value: Variant = state.get("owner_key", {})
+	var owner_key := _copy_entity_key(owner_value as Dictionary) \
+		if typeof(owner_value) == TYPE_DICTIONARY else {}
+	if owner_key.is_empty():
+		return {
+			"ok": false,
+			"error": "That arranged match has no current owner.",
+		}
+	var owner_protocol := ""
+	var owner_present := false
+	var match_id := String(control.get("match_id", ""))
+	var local_value: Variant = state.get("local_key", {})
+	var local_key := _copy_entity_key(local_value as Dictionary) \
+		if typeof(local_value) == TYPE_DICTIONARY else {}
+	var members_value: Variant = state.get("members", [])
+	var members: Array = members_value as Array \
+		if typeof(members_value) == TYPE_ARRAY else []
+	for member_value: Variant in members:
+		if typeof(member_value) != TYPE_DICTIONARY:
+			continue
+		var member := member_value as Dictionary
+		if not bool(member.get("connected", false)):
+			continue
+		var key_value: Variant = member.get("key", {})
+		var key := _copy_entity_key(key_value as Dictionary) \
+			if typeof(key_value) == TYPE_DICTIONARY else {}
+		var properties_value: Variant = member.get("properties", {})
+		var properties: Dictionary = properties_value as Dictionary \
+			if typeof(properties_value) == TYPE_DICTIONARY else {}
+		var member_protocol := String(properties.get(
+			MatchmakingService.PROTOCOL_MEMBER_KEY, ""))
+		if allow_local_unwritten and _entity_keys_match(key, local_key) \
+			and member_protocol.is_empty() \
+			and String(properties.get(MATCH_ID_MEMBER_KEY, "")).is_empty():
+			continue
+		if not NRProtocol.is_compatible(member_protocol) \
+			or String(properties.get(MATCH_ID_MEMBER_KEY, "")) != match_id:
+			return {
+				"ok": false,
+				"error": "That arranged match has incompatible member metadata.",
+			}
+		if _entity_keys_match(key, owner_key):
+			owner_present = true
+			owner_protocol = member_protocol
+	if not owner_present:
+		return {
+			"ok": false,
+			"error": "That arranged match owner is not connected.",
+		}
+	return {
+		"ok": true,
+		"match_id": match_id,
+		"round": int(control.get("round", 0)),
+		"owner_key": owner_key,
+		"protocol": owner_protocol,
 	}
 
 
@@ -786,9 +978,8 @@ func _lobby_join_code() -> String:
 	return code if code.length() == JOIN_CODE_LENGTH else ""
 
 
-## Reads the protocol version the host advertised alongside the join code. Empty when
-## the host published none, which is what a build from before this check looks like;
-## NRProtocol.is_compatible treats that as a mismatch rather than as permission.
+## Reads the protocol version the host advertised alongside the join code. An empty
+## protocol identifies an incompatible host and is rejected by NRProtocol.is_compatible.
 func _lobby_protocol_version() -> String:
 	if _lobby == null:
 		return ""
@@ -837,7 +1028,13 @@ func _join_attached_lobby(user: Variant, code: String, operation: int) -> Dictio
 	if not _network_is_usable():
 		return _fail(JOIN_FAILED_UNKNOWN)
 	join_code = code
-	return {"ok": true, "peer": _peer, "code": code, "error": ""}
+	return {
+		"ok": true,
+		"peer": _peer,
+		"code": code,
+		"error": "",
+		"destination": "",
+	}
 
 
 # --- Teardown ---------------------------------------------------------------
@@ -946,6 +1143,7 @@ func _recover_services() -> void:
 		_multiplayer_initialized = false
 		_cleanup_failed = false
 		_complete_scoped_recovery()
+		multiplayer_invalidated.emit(_scoped_recovery_epoch)
 		if _chat != null:
 			_chat.finish_service_reset()
 	else:
@@ -1106,15 +1304,13 @@ func _make_search_config(code: String) -> Variant:
 
 ## One lobby lookup only. PlayFab's search index is eventually consistent, but a join
 ## code has to be read aloud and typed by another person before this runs, which gives
-## ordinary hosts time to appear. When a code still misses, an immediate editable retry
-## is clearer than a silent backoff loop, and one FindLobbies call cannot create the
-## rate-limit spiral that retrying used to guard against.
+## ordinary hosts time to appear. A miss returns an immediate editable retry, and the
+## single FindLobbies call prevents a rate-limit spiral.
 ##
 ## Returns {"connection_string", "member_count", "max_member_count", "error"}, with the
 ## counts taken from the same summary as the connection string. A search that worked and
-## matched nothing leaves every field empty; a search that failed sets only `error`, to
-## the player-facing reason. The two used to look identical, which reported a rate limit
-## or an expired sign-in as "No match found".
+## matched nothing leaves every field empty; a failed search sets only `error` to the
+## player-facing reason, keeping service failure distinct from an empty result.
 func _find_lobby(user: Variant, code: String, operation: int = 0) -> Dictionary:
 	var lookup := {"connection_string": "", "member_count": 0, "max_member_count": 0, "error": ""}
 	if not _is_join_operation_current(operation):
@@ -1181,8 +1377,8 @@ func _attach_lobby(lobby: Variant) -> void:
 
 
 func _detach_lobby() -> void:
-	# A membership update posted against the lobby being dropped can no longer be
-	# observed, and must not be left to answer for whatever lobby comes next.
+	# A membership update posted against the lobby being dropped is unobservable and
+	# must not answer for the next lobby.
 	_lock_operation += 1
 	_lock_running = false
 	_lock_result = {}
@@ -1413,87 +1609,144 @@ func create_staging(
 			PartyResult.Outcome.INVALID,
 			&"transport_already_attached",
 			"Leave the current game before starting matchmaking.")
+	if _leaving or _recovering or not recovery_error.is_empty():
+		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"cleanup_pending",
+			recovery_error if not recovery_error.is_empty() \
+				else "The previous online session is still being cleaned up.")
 
 	var context := _new_context(&"staging", LOBBY_KIND_STAGING, user, account_generation, flow_epoch)
-	var operation := context.operation_id
-	var ready_error := await _ensure_context_initialized(context, deadline_msec)
-	if not ready_error.is_empty():
+	context.expected_count = capacity
+	var operation := _begin_scoped_operation(
+		context,
+		&"create_staging",
+		deadline_msec,
+		NRConst.MATCH_ESTABLISHMENT_SECONDS)
+	if operation == null:
 		_discard_context(context)
 		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.")
+	_run_create_staging(context, user, capacity, mode_name, operation)
+	return await _await_scoped_operation(
+		operation,
+		context,
+		&"staging_timeout",
+		"Matchmaking staging did not finish in time.")
+
+
+func _run_create_staging(
+	context: LobbyContext,
+	user: Variant,
+	capacity: int,
+	mode_name: String,
+	operation: ScopedOperation
+) -> void:
+	var ready_error := await _ensure_context_initialized(
+		context, operation.deadline_msec, operation)
+	if not _scoped_operation_current(context, operation):
+		_discard_context(context)
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"staging_superseded",
+			"Matchmaking staging was replaced.")
+		return
+	if not ready_error.is_empty():
+		_discard_context(context)
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"playfab_initialization_failed",
 			ready_error)
+		return
 
 	var cfg: Variant = _make_party_config(capacity, MATCHMAKING_INVITATION_ID)
 	var party: Variant = _party_sdk()
 	if cfg == null or party == null:
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.INVALID,
 			&"party_unavailable",
 			"The PlayFab Party service is unavailable.")
+		return
 	await _chat.ensure_control(user, cfg, func() -> bool:
-		return _context_operation_current(context, operation))
-	if not _context_operation_current(context, operation):
+		return _scoped_operation_current(context, operation))
+	if not _scoped_operation_current(context, operation):
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"staging_superseded",
 			"Matchmaking staging was replaced.")
-	_begin_owned_call(context)
+		return
 	var created: Variant = await party.create_and_join_network_async(user, cfg)
-	if not _context_operation_current(context, operation):
+	if not _scoped_operation_current(context, operation):
 		if _result_ok(created):
 			await _leave_stale_network_instance(context, _result_data(created))
-		_end_owned_call(context)
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"staging_superseded",
 			"Matchmaking staging was replaced.")
+		return
 	if not _result_ok(created):
-		_end_owned_call(context)
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"party_create_failed",
 			"Could not create the matchmaking Party network.",
-			null,
 			_reason(created))
+		return
 
 	if not _attach_context_transport(context, _result_data(created), true):
 		await _leave_network_instance(_result_data(created))
-		_end_owned_call(context)
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.INVALID,
 			&"transport_already_attached",
 			"Another Party transport is already attached.")
-	_end_owned_call(context)
-	var descriptor := await _await_context_descriptor(context, deadline_msec, operation)
+		return
+	var descriptor := await _await_context_descriptor(
+		context, operation.deadline_msec, operation.operation_id, operation)
 	if descriptor.is_empty():
-		var superseded := not _context_operation_current(context, operation)
+		var superseded := not _scoped_operation_current(context, operation)
+		_settle_scoped_operation(
+			operation,
+			PartyResult.Outcome.SUPERSEDED if superseded else PartyResult.Outcome.TIMEOUT,
+			&"staging_superseded" if superseded else &"party_descriptor_timeout",
+			"Matchmaking staging was replaced." if superseded \
+				else "The Party network never published a connection descriptor.")
 		await leave_transport(context)
 		await leave_lobby(context)
-		if superseded:
-			return _context_failure(
-				PartyResult.Outcome.SUPERSEDED,
-				&"staging_superseded",
-				"Matchmaking staging was replaced.")
-		return _context_failure(
-			PartyResult.Outcome.TIMEOUT,
-			&"party_descriptor_timeout",
-			"The Party network never published a connection descriptor.")
+		_finish_scoped_operation(operation, context, operation.outcome)
+		return
 
 	var lobby_cfg: Variant = _new_lobby_config()
 	var multiplayer: Variant = _multiplayer_sdk()
 	if lobby_cfg == null or multiplayer == null:
-		await leave_transport(context)
-		await leave_lobby(context)
-		return _context_failure(
+		_settle_scoped_operation(
+			operation,
 			PartyResult.Outcome.INVALID,
 			&"lobby_unavailable",
 			"The PlayFab Lobby service is unavailable.")
+		await leave_transport(context)
+		await leave_lobby(context)
+		_finish_scoped_operation(operation, context, operation.outcome)
+		return
 	lobby_cfg.max_players = capacity
 	lobby_cfg.access_policy = 0
 	lobby_cfg.owner_migration_policy = 2
@@ -1511,33 +1764,41 @@ func create_staging(
 		MatchmakingService.PROTOCOL_MEMBER_KEY: NRProtocol.version_string(),
 		MATCH_ORIGIN_MEMBER_KEY: MATCH_ORIGIN_VALUE,
 	}
-	_begin_owned_call(context)
 	var lobby_result: Variant = await multiplayer.create_lobby_async(user, lobby_cfg)
-	if not _context_operation_current(context, operation):
+	if not _scoped_operation_current(context, operation):
 		if _result_ok(lobby_result):
 			await _leave_stale_lobby_instance(context, _result_data(lobby_result))
 		await leave_transport(context)
-		_end_owned_call(context)
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"staging_superseded",
 			"Matchmaking staging was replaced.")
+		return
 	if not _result_ok(lobby_result):
-		await leave_transport(context)
-		_end_owned_call(context)
-		_discard_context(context)
-		return _context_failure(
+		_settle_scoped_operation(
+			operation,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"staging_lobby_create_failed",
 			"Could not create the matchmaking lobby.",
-			null,
 			_reason(lobby_result))
+		await leave_transport(context)
+		_discard_context(context)
+		_finish_scoped_operation(operation, context, operation.outcome)
+		return
 
 	_attach_context_lobby(context, _result_data(lobby_result))
-	_end_owned_call(context)
 	var permit := _issue_publication_permit(context)
-	return _context_success(context, permit)
+	_finish_scoped_operation(
+		operation,
+		context,
+		PartyResult.Outcome.OK,
+		&"",
+		"",
+		"",
+		permit)
 
 
 func publish_transport(
@@ -1573,6 +1834,15 @@ func publish_transport(
 			&"descriptor_unavailable",
 			"The Party network has no connection descriptor.",
 			context)
+	if context.kind == LOBBY_KIND_ARRANGED:
+		var control := decode_arranged_control(extra_lobby_properties)
+		if not bool(control.get("valid", false)) \
+			or String(control.get("phase", "")) != phase:
+			return _context_failure(
+				PartyResult.Outcome.INVALID,
+				&"arranged_control_invalid",
+				"Arranged transport publication needs matching match, round, and phase control.",
+				context)
 
 	var lobby_properties := extra_lobby_properties.duplicate(true)
 	lobby_properties[DESCRIPTOR_KEY] = descriptor
@@ -1580,30 +1850,54 @@ func publish_transport(
 	var search_properties := extra_search_properties.duplicate(true)
 	if context.kind == LOBBY_KIND_ARRANGED:
 		search_properties[LOBBY_KIND_KEY] = LOBBY_KIND_ARRANGED
-	var posted := await post_context_update(
-		context, lobby_properties, search_properties, {}, deadline_msec)
+	var posted := await _post_context_update_checked(
+		context,
+		lobby_properties,
+		search_properties,
+		{},
+		deadline_msec,
+		permit)
 	if not posted.ok():
 		return posted
 	context.published_phase = phase
 	context.published_lobby_properties = lobby_properties.duplicate(true)
 	context.published_search_properties = search_properties.duplicate(true)
-	return _context_success(context, permit)
+	posted.publication_permit = permit
+	posted.descriptor = descriptor
+	posted.descriptor_ready = true
+	return posted
 
 
 func join_arranged(
 	user: Variant,
 	arrangement: String,
 	member_properties: Dictionary,
+	expected_count: int,
 	account_generation: int,
 	flow_epoch: int,
 	deadline_msec: int = 0
 ) -> PartyResult:
-	if user == null or arrangement.strip_edges().is_empty() \
-		or not _account_is_current(account_generation):
+	if expected_count != MatchmakingService.EXPECTED_MATCH_COUNT:
+		return _context_failure(
+			PartyResult.Outcome.INVALID,
+			&"arranged_profile_mismatch",
+			"The arranged lobby does not match the four-player Deathmatch profile.")
+	if user == null or arrangement.strip_edges().is_empty():
 		return _context_failure(
 			PartyResult.Outcome.INVALID,
 			&"invalid_arranged_join",
 			"The arranged lobby join request is invalid.")
+	if not _account_is_current(account_generation):
+		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"account_changed",
+			"The signed-in account changed before the arranged lobby join.")
+	if _leaving or _recovering or not recovery_error.is_empty():
+		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"cleanup_pending",
+			recovery_error if not recovery_error.is_empty() \
+				else "The previous online session is still being cleaned up.")
 	var multiplayer: Variant = _multiplayer_sdk()
 	var config: Variant = _new_lobby_join_config()
 	if multiplayer == null or config == null:
@@ -1612,46 +1906,92 @@ func join_arranged(
 			&"arranged_join_unavailable",
 			"This build cannot configure an arranged lobby.")
 
-	config.max_member_count = 4
+	config.max_member_count = expected_count
 	config.access_policy = 2
 	config.owner_migration_policy = 0
 	config.restrict_invites_to_lobby_owner = false
 	config.member_properties = member_properties.duplicate(true)
 	var context := _new_context(
 		&"arranged", LOBBY_KIND_ARRANGED, user, account_generation, flow_epoch)
-	var operation := context.operation_id
-	_begin_owned_call(context)
-	var result: Variant = await multiplayer.join_arranged_lobby_async(user, arrangement, config)
-	if not _context_operation_current(context, operation):
-		if _result_ok(result):
-			await _leave_stale_lobby_instance(context, _result_data(result))
-		_end_owned_call(context)
+	context.expected_count = expected_count
+	var operation := _begin_scoped_operation(
+		context,
+		&"join_arranged",
+		deadline_msec,
+		ARRANGED_OPERATION_TIMEOUT)
+	if operation == null:
 		_discard_context(context)
 		return _context_failure(
 			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.")
+	_run_join_arranged(context, user, arrangement, config, operation)
+	return await _await_scoped_operation(
+		operation,
+		context,
+		&"arranged_join_timeout",
+		"Joining the arranged lobby took too long.")
+
+
+func _run_join_arranged(
+	context: LobbyContext,
+	user: Variant,
+	arrangement: String,
+	config: Variant,
+	operation: ScopedOperation
+) -> void:
+	var multiplayer: Variant = _multiplayer_sdk()
+	if multiplayer == null:
+		_discard_context(context)
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.INVALID,
+			&"arranged_join_unavailable",
+			"This build cannot configure an arranged lobby.")
+		return
+	var result: Variant = await multiplayer.join_arranged_lobby_async(user, arrangement, config)
+	if not _scoped_operation_current(context, operation):
+		if _result_ok(result):
+			await _leave_stale_lobby_instance(context, _result_data(result))
+		_discard_context(context)
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
 			&"arranged_join_superseded",
 			"The arranged lobby join was replaced.")
+		return
 	if not _result_ok(result):
-		_end_owned_call(context)
 		_discard_context(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"arranged_join_failed",
 			"Could not join the arranged PlayFab lobby.",
-			null,
 			_reason(result))
+		return
 
 	_attach_context_lobby(context, _result_data(result))
-	_end_owned_call(context)
 	var state := snapshot(context)
-	if int(state.max_members) != 4 or int(state.access_policy) != 2 \
-		or int(state.owner_migration) != 0:
-		await leave_lobby(context)
-		return _context_failure(
+	var owner_key: Dictionary = state.owner_key
+	if bool(state.disconnected) \
+		or int(state.max_members) != context.expected_count \
+		or int(state.access_policy) != 2 \
+		or int(state.owner_migration) != 0 \
+		or bool(state.restrict_invites_to_owner) \
+		or owner_key.is_empty():
+		_settle_scoped_operation(
+			operation,
 			PartyResult.Outcome.INVALID,
 			&"arranged_configuration_mismatch",
 			"The arranged lobby configuration did not match the four-player private profile.")
-	return _context_success(context)
+		await leave_lobby(context)
+		_finish_scoped_operation(operation, context, operation.outcome)
+		return
+	context.owner_key = owner_key.duplicate()
+	_finish_scoped_operation(operation, context, PartyResult.Outcome.OK)
 
 
 func prepare_transport(
@@ -1660,7 +2000,8 @@ func prepare_transport(
 	deadline_msec: int = 0
 ) -> PartyResult:
 	if not _context_is_current(context) or context.kind != LOBBY_KIND_ARRANGED \
-		or context.lobby == null or not _context_local_is_owner(context):
+		or context.lobby == null or not _context_local_is_owner(context) \
+		or context.expected_count != MatchmakingService.EXPECTED_MATCH_COUNT:
 		return _context_failure(
 			PartyResult.Outcome.INVALID,
 			&"arranged_transport_not_owner",
@@ -1672,76 +2013,120 @@ func prepare_transport(
 			&"transport_already_attached",
 			"The previous Party transport must be left before creating the arranged network.",
 			context)
-	var operation := context.operation_id
-	var ready_error := await _ensure_context_initialized(context, deadline_msec)
-	if not ready_error.is_empty():
+	var operation := _begin_scoped_operation(
+		context,
+		&"prepare_transport",
+		deadline_msec,
+		ARRANGED_OPERATION_TIMEOUT)
+	if operation == null:
 		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.",
+			context)
+	_run_prepare_transport(context, user, operation)
+	return await _await_scoped_operation(
+		operation,
+		context,
+		&"arranged_transport_timeout",
+		"Creating the arranged Party transport took too long.")
+
+
+func _run_prepare_transport(
+	context: LobbyContext,
+	user: Variant,
+	operation: ScopedOperation
+) -> void:
+	var ready_error := await _ensure_context_initialized(
+		context, operation.deadline_msec, operation)
+	if not _scoped_operation_current(context, operation):
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"arranged_transport_superseded",
+			"The arranged transport was replaced.")
+		return
+	if not ready_error.is_empty():
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"playfab_initialization_failed",
-			ready_error,
-			context)
-	var cfg: Variant = _make_party_config(4, MATCHMAKING_INVITATION_ID)
+			ready_error)
+		return
+	var cfg: Variant = _make_party_config(
+		context.expected_count, MATCHMAKING_INVITATION_ID)
 	var party: Variant = _party_sdk()
 	if cfg == null or party == null:
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.INVALID,
 			&"party_unavailable",
-			"The PlayFab Party service is unavailable.",
-			context)
+			"The PlayFab Party service is unavailable.")
+		return
 	await _chat.ensure_control(user, cfg, func() -> bool:
-		return _context_operation_current(context, operation))
-	if not _context_operation_current(context, operation):
-		return _context_failure(
+		return _scoped_operation_current(context, operation))
+	if not _scoped_operation_current(context, operation):
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"arranged_transport_superseded",
-			"The arranged transport was replaced.",
-			context)
-	_begin_owned_call(context)
+			"The arranged transport was replaced.")
+		return
 	var created: Variant = await party.create_and_join_network_async(user, cfg)
-	if not _context_operation_current(context, operation):
+	if not _scoped_operation_current(context, operation):
 		if _result_ok(created):
 			await _leave_stale_network_instance(context, _result_data(created))
-		_end_owned_call(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"arranged_transport_superseded",
-			"The arranged transport was replaced.",
-			context)
+			"The arranged transport was replaced.")
+		return
 	if not _result_ok(created):
-		_end_owned_call(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"arranged_transport_create_failed",
 			"Could not create the arranged Party network.",
-			context,
 			_reason(created))
+		return
 	if not _attach_context_transport(context, _result_data(created), true):
 		await _leave_network_instance(_result_data(created))
-		_end_owned_call(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.INVALID,
 			&"transport_already_attached",
-			"Another Party transport is already attached.",
-			context)
-	var descriptor := await _await_context_descriptor(context, deadline_msec, operation)
+			"Another Party transport is already attached.")
+		return
+	var descriptor := await _await_context_descriptor(
+		context, operation.deadline_msec, operation.operation_id, operation)
 	if descriptor.is_empty():
-		var superseded := not _context_operation_current(context, operation)
+		var superseded := not _scoped_operation_current(context, operation)
+		_settle_scoped_operation(
+			operation,
+			PartyResult.Outcome.SUPERSEDED if superseded else PartyResult.Outcome.TIMEOUT,
+			&"arranged_transport_superseded" if superseded else &"party_descriptor_timeout",
+			"The arranged transport was replaced." if superseded \
+				else "The arranged Party network never published a connection descriptor.")
 		await leave_transport(context)
-		_end_owned_call(context)
-		if superseded:
-			return _context_failure(
-				PartyResult.Outcome.SUPERSEDED,
-				&"arranged_transport_superseded",
-				"The arranged transport was replaced.",
-				context)
-		return _context_failure(
-			PartyResult.Outcome.TIMEOUT,
-			&"party_descriptor_timeout",
-			"The arranged Party network never published a connection descriptor.",
-			context)
-	_end_owned_call(context)
+		_finish_scoped_operation(operation, context, operation.outcome)
+		return
 	var permit := _issue_publication_permit(context)
-	return _context_success(context, permit)
+	_finish_scoped_operation(
+		operation,
+		context,
+		PartyResult.Outcome.OK,
+		&"",
+		"",
+		"",
+		permit)
 
 
 func join_transport(
@@ -1750,7 +2135,8 @@ func join_transport(
 	deadline_msec: int = 0
 ) -> PartyResult:
 	if not _context_is_current(context) or context.kind != LOBBY_KIND_ARRANGED \
-		or context.lobby == null:
+		or context.lobby == null \
+		or context.expected_count != MatchmakingService.EXPECTED_MATCH_COUNT:
 		return _context_failure(
 			PartyResult.Outcome.INVALID,
 			&"invalid_arranged_context",
@@ -1762,62 +2148,109 @@ func join_transport(
 			&"transport_already_attached",
 			"The previous Party transport must be left before joining the arranged network.",
 			context)
-	var operation := context.operation_id
-	var ready_error := await _ensure_context_initialized(context, deadline_msec)
-	if not ready_error.is_empty():
+	var operation := _begin_scoped_operation(
+		context,
+		&"join_transport",
+		deadline_msec,
+		ARRANGED_HANDOFF_TIMEOUT)
+	if operation == null:
 		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.",
+			context)
+	_run_join_transport(context, user, operation)
+	return await _await_scoped_operation(
+		operation,
+		context,
+		&"arranged_transport_timeout",
+		"Joining the arranged Party transport took too long.")
+
+
+func _run_join_transport(
+	context: LobbyContext,
+	user: Variant,
+	operation: ScopedOperation
+) -> void:
+	var ready_error := await _ensure_context_initialized(
+		context, operation.deadline_msec, operation)
+	if not _scoped_operation_current(context, operation):
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"arranged_transport_superseded",
+			"The arranged transport was replaced.")
+		return
+	if not ready_error.is_empty():
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"playfab_initialization_failed",
-			ready_error,
-			context)
-	var transport := await _await_context_transport_properties(context, deadline_msec, operation)
+			ready_error)
+		return
+	var transport := await _await_context_transport_properties(
+		context, operation.deadline_msec, operation.operation_id, operation)
 	if not transport.ok():
-		return transport
+		_finish_scoped_operation(
+			operation,
+			context,
+			transport.outcome,
+			transport.reason_code,
+			transport.reason,
+			transport.diagnostic)
+		return
 	var cfg: Variant = _make_party_config(0, MATCHMAKING_INVITATION_ID)
 	var party: Variant = _party_sdk()
 	if cfg == null or party == null:
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.INVALID,
 			&"party_unavailable",
-			"The PlayFab Party service is unavailable.",
-			context)
+			"The PlayFab Party service is unavailable.")
+		return
 	await _chat.ensure_control(user, cfg, func() -> bool:
-		return _context_operation_current(context, operation))
-	if not _context_operation_current(context, operation):
-		return _context_failure(
+		return _scoped_operation_current(context, operation))
+	if not _scoped_operation_current(context, operation):
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"arranged_transport_superseded",
-			"The arranged transport was replaced.",
-			context)
-	_begin_owned_call(context)
+			"The arranged transport was replaced.")
+		return
 	var joined: Variant = await party.join_network_async(user, transport.descriptor, cfg)
-	if not _context_operation_current(context, operation):
+	if not _scoped_operation_current(context, operation):
 		if _result_ok(joined):
 			await _leave_stale_network_instance(context, _result_data(joined))
-		_end_owned_call(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SUPERSEDED,
 			&"arranged_transport_superseded",
-			"The arranged transport was replaced.",
-			context)
+			"The arranged transport was replaced.")
+		return
 	if not _result_ok(joined):
-		_end_owned_call(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"arranged_transport_join_failed",
 			"Could not join the arranged Party network.",
-			context,
 			_reason(joined))
+		return
 	if not _attach_context_transport(context, _result_data(joined), false):
 		await _leave_network_instance(_result_data(joined))
-		_end_owned_call(context)
-		return _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.INVALID,
 			&"transport_already_attached",
-			"Another Party transport is already attached.",
-			context)
-	_end_owned_call(context)
-	return _context_success(context)
+			"Another Party transport is already attached.")
+		return
+	_finish_scoped_operation(operation, context, PartyResult.Outcome.OK)
 
 
 func set_context_locked(
@@ -1838,44 +2271,20 @@ func set_context_locked(
 			&"context_not_owner",
 			"Only the PlayFab lobby owner may change its membership lock.",
 			context)
-	if context.lock_running:
-		var settled := await _await_context_lock(context, deadline_msec)
-		if not settled:
-			return _context_failure(
-				PartyResult.Outcome.TIMEOUT,
-				&"context_lock_busy",
-				"An earlier lobby lock operation did not finish.",
-				context)
-	var lock_error := _context_operation_error(context, true)
-	if lock_error != null:
-		return lock_error
-	context.lock_running = true
-	context.lock_result = null
-	context.lock_operation += 1
-	var operation := context.lock_operation
-	_begin_owned_call(context)
-	_run_context_lock(context, locked, operation)
-	var own_deadline := _bounded_deadline(context.clock, deadline_msec, LOBBY_LOCK_TIMEOUT)
-	while context.lock_running and operation == context.lock_operation \
-		and not _deadline_expired(context.clock, own_deadline):
-		await _sleep_until_poll(context.clock, own_deadline)
-	if not _context_is_current(context) or operation != context.lock_operation:
+	var operation := _begin_scoped_operation(
+		context, &"set_context_locked", deadline_msec, LOBBY_LOCK_TIMEOUT)
+	if operation == null:
 		return _context_failure(
 			PartyResult.Outcome.SUPERSEDED,
-			&"context_lock_superseded",
-			"The lobby changed while its membership lock was updating.",
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.",
 			context)
-	if context.lock_running:
-		return _context_failure(
-			PartyResult.Outcome.TIMEOUT,
-			&"context_lock_timeout",
-			"The match service did not confirm the membership lock in time.",
-			context)
-	return context.lock_result if context.lock_result != null else _context_failure(
-		PartyResult.Outcome.SERVICE_ERROR,
-		&"context_lock_failed",
-		"The match service returned no membership-lock result.",
-		context)
+	_run_context_lock(context, locked, operation)
+	return await _await_scoped_operation(
+		operation,
+		context,
+		&"context_lock_timeout",
+		"The match service did not confirm the membership lock in time.")
 
 
 func post_context_update(
@@ -1885,11 +2294,38 @@ func post_context_update(
 	member_properties: Dictionary,
 	deadline_msec: int = 0
 ) -> PartyResult:
+	return await _post_context_update_checked(
+		context,
+		lobby_properties,
+		search_properties,
+		member_properties,
+		deadline_msec,
+		0)
+
+
+func _post_context_update_checked(
+	context: LobbyContext,
+	lobby_properties: Dictionary,
+	search_properties: Dictionary,
+	member_properties: Dictionary,
+	deadline_msec: int,
+	required_permit: int
+) -> PartyResult:
 	if not _context_is_current(context) or context.lobby == null:
 		return _context_failure(
 			PartyResult.Outcome.INVALID,
 			&"context_unavailable",
 			"The PlayFab lobby is no longer available.",
+			context)
+	if context.kind == LOBBY_KIND_ARRANGED \
+		and (lobby_properties.has(MATCH_ID_MEMBER_KEY)
+			or lobby_properties.has(ROUND_GENERATION_KEY)
+			or lobby_properties.has(SESSION_PHASE_KEY)) \
+		and not bool(decode_arranged_control(lobby_properties).get("valid", false)):
+		return _context_failure(
+			PartyResult.Outcome.INVALID,
+			&"arranged_control_invalid",
+			"Arranged state updates need a valid match id, round, and phase.",
 			context)
 	if (not lobby_properties.is_empty() or not search_properties.is_empty()) \
 		and not _context_local_is_owner(context):
@@ -1898,50 +2334,30 @@ func post_context_update(
 			&"context_not_owner",
 			"Only the PlayFab lobby owner may update shared lobby state.",
 			context)
-	if context.post_running:
-		var settled := await _await_context_post(context, deadline_msec)
-		if not settled:
-			return _context_failure(
-				PartyResult.Outcome.TIMEOUT,
-				&"context_update_busy",
-				"An earlier lobby update did not finish.",
-				context)
 	var requires_owner := not lobby_properties.is_empty() or not search_properties.is_empty()
 	var update_error := _context_operation_error(context, requires_owner)
 	if update_error != null:
 		return update_error
-	context.post_running = true
-	context.post_result = null
-	context.post_operation += 1
-	var operation := context.post_operation
-	_begin_owned_call(context)
+	var operation := _begin_scoped_operation(
+		context, &"post_context_update", deadline_msec, LOBBY_LOCK_TIMEOUT)
+	if operation == null:
+		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.",
+			context)
+	operation.required_permit = required_permit
 	_run_context_update(
 		context,
 		lobby_properties.duplicate(true),
 		search_properties.duplicate(true),
 		member_properties.duplicate(true),
 		operation)
-	var own_deadline := _bounded_deadline(context.clock, deadline_msec, LOBBY_LOCK_TIMEOUT)
-	while context.post_running and operation == context.post_operation \
-		and not _deadline_expired(context.clock, own_deadline):
-		await _sleep_until_poll(context.clock, own_deadline)
-	if not _context_is_current(context) or operation != context.post_operation:
-		return _context_failure(
-			PartyResult.Outcome.SUPERSEDED,
-			&"context_update_superseded",
-			"The lobby changed while it was being updated.",
-			context)
-	if context.post_running:
-		return _context_failure(
-			PartyResult.Outcome.TIMEOUT,
-			&"context_update_timeout",
-			"The match service did not confirm the lobby update in time.",
-			context)
-	return context.post_result if context.post_result != null else _context_failure(
-		PartyResult.Outcome.SERVICE_ERROR,
-		&"context_update_failed",
-		"The match service returned no lobby-update result.",
-		context)
+	return await _await_scoped_operation(
+		operation,
+		context,
+		&"context_update_timeout",
+		"The match service did not confirm the lobby update in time.")
 
 
 func leave_lobby(context: LobbyContext) -> PartyResult:
@@ -1959,6 +2375,7 @@ func leave_lobby(context: LobbyContext) -> PartyResult:
 			&"scoped_lobby_leave_missing_result",
 			"The scoped lobby leave returned no result.",
 			context)
+	_retire_context_operations(context)
 	context.operation_id += 1
 	context.active_permit = 0
 	if context.left_lobby or context.lobby == null:
@@ -2024,6 +2441,7 @@ func leave_transport(context: LobbyContext) -> PartyResult:
 			&"scoped_transport_leave_missing_result",
 			"The scoped Party transport leave returned no result.",
 			context)
+	_retire_context_operations(context)
 	context.operation_id += 1
 	context.active_permit = 0
 	if context.left_transport or context.network == null:
@@ -2094,11 +2512,12 @@ func snapshot(context: LobbyContext) -> Dictionary:
 	var owner_value: Variant = _object_value(lobby, &"owner_entity_key", {})
 	var owner_key := _copy_entity_key(owner_value as Dictionary) \
 		if typeof(owner_value) == TYPE_DICTIONARY else {}
-	context.owner_key = owner_key.duplicate()
 	return {
 		"context_id": context.context_id,
 		"role": String(context.role),
 		"kind": context.kind,
+		"recovery_epoch": context.recovery_epoch,
+		"expected_count": context.expected_count,
 		"lobby_id": String(_object_value(lobby, &"lobby_id", "")),
 		"local_key": context.local_key.duplicate(),
 		"owner_key": owner_key,
@@ -2107,6 +2526,8 @@ func snapshot(context: LobbyContext) -> Dictionary:
 		"max_members": int(_object_value(lobby, &"max_member_count", 0)),
 		"access_policy": int(_object_value(lobby, &"access_policy", -1)),
 		"owner_migration": int(_object_value(lobby, &"owner_migration_policy", -1)),
+		"restrict_invites_to_owner": bool(_object_value(
+			lobby, &"restrict_invites_to_lobby_owner", true)),
 		"membership_locked": int(_object_value(lobby, &"membership_lock", 0))
 			== MEMBERSHIP_LOCK_LOCKED,
 		"disconnected": _lobby_is_disconnected(lobby),
@@ -2114,11 +2535,104 @@ func snapshot(context: LobbyContext) -> Dictionary:
 		"properties": properties,
 		"phase": String(properties.get(SESSION_PHASE_KEY, "")),
 		"search_control": decode_search_control(String(properties.get(SEARCH_CONTROL_KEY, ""))),
+		"arranged_control": decode_arranged_control(properties),
 	}
 
 
+func admission_proof(context: LobbyContext, peer_id: int) -> Dictionary:
+	var proof := {
+		"valid": false,
+		"pending": false,
+		"reason_code": "context_unavailable",
+		"context_id": context.context_id if context != null else 0,
+		"recovery_epoch": context.recovery_epoch if context != null else -1,
+		"peer_id": peer_id,
+		"entity_key": {},
+		"native_present": false,
+		"native_connected": false,
+		"member_properties": {},
+		"owner_key": {},
+		"expected_count": context.expected_count if context != null else 0,
+		"local_creator": context.local_creator if context != null else false,
+		"transport_attached": false,
+	}
+	if not _context_is_current(context) or context.peer == null \
+		or context != _attached_context or context.network == null:
+		return proof
+	proof["transport_attached"] = true
+	if not (context.peer is MultiplayerPeer) \
+		or context.peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		proof["reason_code"] = "transport_unavailable"
+		return proof
+	var raw_key: Variant = context.peer.get_peer_entity_key(peer_id)
+	var entity_key := _copy_entity_key(raw_key as Dictionary) \
+		if typeof(raw_key) == TYPE_DICTIONARY else {}
+	proof["entity_key"] = entity_key
+	if entity_key.is_empty():
+		proof["reason_code"] = "party_identity_missing"
+		return proof
+	var state := snapshot(context)
+	var state_owner: Dictionary = state.owner_key
+	proof["owner_key"] = state_owner.duplicate()
+	if not context.owner_key.is_empty() \
+		and not _entity_keys_match(context.owner_key, state_owner):
+		proof["reason_code"] = "owner_changed"
+		return proof
+	var members: Array = state.members
+	for member_value: Variant in members:
+		if typeof(member_value) != TYPE_DICTIONARY:
+			continue
+		var member := member_value as Dictionary
+		var member_key_value: Variant = member.get("key", {})
+		var member_key := _copy_entity_key(member_key_value as Dictionary) \
+			if typeof(member_key_value) == TYPE_DICTIONARY else {}
+		if not _entity_keys_match(member_key, entity_key):
+			continue
+		proof["native_present"] = true
+		proof["native_connected"] = bool(member.get("connected", false))
+		var properties_value: Variant = member.get("properties", {})
+		proof["member_properties"] = (properties_value as Dictionary).duplicate(true) \
+			if typeof(properties_value) == TYPE_DICTIONARY else {}
+		if not bool(proof["native_connected"]):
+			proof["reason_code"] = "native_member_disconnected"
+			return proof
+		proof["valid"] = true
+		proof["reason_code"] = ""
+		return proof
+	proof["pending"] = members.size() < context.expected_count
+	proof["reason_code"] = "native_member_pending" if bool(proof["pending"]) \
+		else "native_member_missing"
+	return proof
+
+
+func context_is_quiescent(context: LobbyContext) -> bool:
+	if context == null or context.service_owner == null:
+		return false
+	var owner: Variant = context.service_owner.get_ref()
+	if owner != self:
+		return false
+	if context.recovery_epoch < _scoped_recovery_epoch:
+		return true
+	if context.recovery_epoch != _scoped_recovery_epoch \
+		or _contexts.get(context.context_id) == context \
+		or not context.retired \
+		or context.pending_operations > 0 \
+		or context.cleanup_pending \
+		or context.lobby_leave_running \
+		or context.transport_leave_running \
+		or context.lobby != null \
+		or context.network != null:
+		return false
+	for operation_value: Variant in _scoped_operations.values():
+		var operation := operation_value as ScopedOperation
+		if operation != null and operation.context_id == context.context_id:
+			return false
+	return true
+
+
 func has_owned_work() -> bool:
-	return not _contexts.is_empty() or _owned_operation_count > 0
+	return not _contexts.is_empty() or _owned_operation_count > 0 \
+		or not _scoped_operations.is_empty()
 
 
 func drain_owned_work(deadline_msec: int) -> void:
@@ -2203,6 +2717,45 @@ static func decode_search_control(text: String) -> Dictionary:
 	}
 
 
+static func encode_arranged_control(match_id: String, round: int, phase: String) -> Dictionary:
+	var normalized_match_id := match_id.strip_edges()
+	var normalized_phase := phase.strip_edges()
+	if normalized_match_id.is_empty() or round < 0 \
+		or normalized_phase not in [
+			ARRANGED_PHASE_BOOTSTRAP,
+			ARRANGED_PHASE_GAMEPLAY,
+			ARRANGED_PHASE_REMATCH,
+		]:
+		return {}
+	return {
+		MATCH_ID_MEMBER_KEY: normalized_match_id,
+		ROUND_GENERATION_KEY: str(round),
+		SESSION_PHASE_KEY: normalized_phase,
+	}
+
+
+static func decode_arranged_control(properties: Dictionary) -> Dictionary:
+	var match_id := String(properties.get(MATCH_ID_MEMBER_KEY, "")).strip_edges()
+	var round_text := String(properties.get(ROUND_GENERATION_KEY, "")).strip_edges()
+	var phase := String(properties.get(SESSION_PHASE_KEY, "")).strip_edges()
+	if match_id.is_empty() or not round_text.is_valid_int() \
+		or phase not in [
+			ARRANGED_PHASE_BOOTSTRAP,
+			ARRANGED_PHASE_GAMEPLAY,
+			ARRANGED_PHASE_REMATCH,
+		]:
+		return {"valid": false}
+	var round := int(round_text)
+	if round < 0 or round_text != str(round):
+		return {"valid": false}
+	return {
+		"valid": true,
+		"match_id": match_id,
+		"round": round,
+		"phase": phase,
+	}
+
+
 func _new_context(
 	role: StringName,
 	kind: String,
@@ -2213,6 +2766,7 @@ func _new_context(
 	var context := LobbyContext.new()
 	context.context_id = _next_context_id
 	_next_context_id += 1
+	context.service_owner = weakref(self)
 	context.role = role
 	context.kind = kind
 	context.local_user = user
@@ -2225,6 +2779,172 @@ func _new_context(
 	context.clock = _clock
 	_contexts[context.context_id] = context
 	return context
+
+
+func _begin_scoped_operation(
+	context: LobbyContext,
+	kind: StringName,
+	deadline_msec: int,
+	default_seconds: float
+) -> ScopedOperation:
+	if context == null or not _context_is_current(context) or _leaving or _recovering \
+		or not recovery_error.is_empty():
+		return null
+	var operation := ScopedOperation.new()
+	operation.id = _next_scoped_operation_id
+	_next_scoped_operation_id += 1
+	operation.context_id = context.context_id
+	operation.account_generation = context.account_generation
+	operation.flow_epoch = context.flow_epoch
+	operation.recovery_epoch = context.recovery_epoch
+	operation.operation_id = context.operation_id
+	operation.deadline_msec = _bounded_deadline(
+		context.clock, deadline_msec, default_seconds)
+	operation.clock = context.clock if context.clock != null else OnlineFlowClock.new()
+	operation.kind = kind
+	operation.cleanup_pending = true
+	_scoped_operations[operation.id] = operation
+	_begin_owned_call(context)
+	return operation
+
+
+func retire_scoped_operation(operation: ScopedOperation) -> void:
+	if operation == null or operation.retired:
+		return
+	operation.retired = true
+	if not operation.settled:
+		_settle_scoped_operation(
+			operation,
+			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_retired",
+			"The online operation was replaced.")
+
+
+func _retire_context_operations(context: LobbyContext) -> void:
+	if context == null:
+		return
+	for operation_value: Variant in _scoped_operations.values().duplicate():
+		var operation := operation_value as ScopedOperation
+		if operation != null and operation.context_id == context.context_id:
+			retire_scoped_operation(operation)
+
+
+func _await_scoped_operation(
+	operation: ScopedOperation,
+	context: LobbyContext,
+	timeout_code: StringName,
+	timeout_reason: String
+) -> PartyResult:
+	if operation == null:
+		return _context_failure(
+			PartyResult.Outcome.SUPERSEDED,
+			&"scoped_operation_unavailable",
+			"The previous online session is still being cleaned up.",
+			context)
+	operation.timeout_reason_code = timeout_code
+	operation.timeout_reason = timeout_reason
+	if not operation.settled:
+		operation.deadline_alarm = operation.clock.alarm_at(
+			operation.deadline_msec,
+			_on_scoped_operation_deadline.bind(operation.id))
+		await operation.settled_changed
+	return _scoped_operation_result(operation, context)
+
+
+func _on_scoped_operation_deadline(operation_id: int) -> void:
+	var operation: ScopedOperation = _scoped_operations.get(operation_id) as ScopedOperation
+	if operation == null or operation.settled:
+		return
+	operation.deadline_alarm = null
+	operation.retired = true
+	_settle_scoped_operation(
+		operation,
+		PartyResult.Outcome.TIMEOUT,
+		operation.timeout_reason_code,
+		operation.timeout_reason)
+
+
+func _settle_scoped_operation(
+	operation: ScopedOperation,
+	outcome: int,
+	code: StringName = &"",
+	message: String = "",
+	diagnostic: String = "",
+	permit: int = 0
+) -> void:
+	if operation == null or operation.settled:
+		return
+	operation.outcome = outcome
+	operation.reason_code = code
+	operation.reason = message
+	operation.diagnostic = diagnostic
+	operation.publication_permit = permit
+	operation.settled = true
+	if operation.deadline_alarm != null:
+		if operation.deadline_alarm.has_method("cancel"):
+			operation.deadline_alarm.cancel()
+		operation.deadline_alarm = null
+	operation.settled_changed.emit(operation)
+
+
+func _finish_scoped_operation(
+	operation: ScopedOperation,
+	context: LobbyContext,
+	outcome: int,
+	code: StringName = &"",
+	message: String = "",
+	diagnostic: String = "",
+	permit: int = 0
+) -> void:
+	if operation == null:
+		return
+	var should_settle := not operation.settled
+	operation.native_done = true
+	if operation.cleanup_pending:
+		operation.cleanup_pending = false
+		operation.cleanup_changed.emit(operation)
+	if _scoped_operations.get(operation.id) == operation:
+		_scoped_operations.erase(operation.id)
+	_end_owned_call(context)
+	if should_settle:
+		_settle_scoped_operation(operation, outcome, code, message, diagnostic, permit)
+
+
+func _scoped_operation_result(
+	operation: ScopedOperation,
+	context: LobbyContext
+) -> PartyResult:
+	var result := PartyResult.new()
+	result.outcome = operation.outcome
+	result.reason_code = operation.reason_code
+	result.reason = operation.reason
+	result.diagnostic = operation.diagnostic
+	result.context = context
+	result.peer = context.peer if context != null else null
+	result.owner_key = snapshot(context).owner_key \
+		if context != null and context.lobby != null else {}
+	result.local_creator = context.local_creator if context != null else false
+	result.descriptor_ready = context != null and context.network != null \
+		and not String(_object_value(context.network, &"descriptor", "")).is_empty()
+	result.descriptor = String(_object_value(context.network, &"descriptor", "")) \
+		if context != null and context.network != null else ""
+	result.publication_permit = operation.publication_permit
+	result.cleanup_pending = operation.cleanup_pending
+	result.operation = operation
+	return result
+
+
+func _scoped_operation_current(
+	context: LobbyContext,
+	operation: ScopedOperation
+) -> bool:
+	return context != null and operation != null and not operation.retired \
+		and operation.recovery_epoch == _scoped_recovery_epoch \
+		and operation.account_generation == context.account_generation \
+		and operation.flow_epoch == context.flow_epoch \
+		and operation.operation_id == context.operation_id \
+		and _scoped_operations.get(operation.id) == operation \
+		and _context_is_current(context)
 
 
 func _discard_context(context: LobbyContext) -> void:
@@ -2270,6 +2990,23 @@ func _refresh_context_cleanup(context: LobbyContext) -> void:
 func _complete_scoped_recovery() -> void:
 	var retired_epoch := _scoped_recovery_epoch
 	_scoped_recovery_epoch += 1
+	for operation_value: Variant in _scoped_operations.values().duplicate():
+		var operation := operation_value as ScopedOperation
+		if operation == null or operation.recovery_epoch > retired_epoch:
+			continue
+		operation.retired = true
+		var should_settle := not operation.settled
+		operation.native_done = true
+		if operation.cleanup_pending:
+			operation.cleanup_pending = false
+			operation.cleanup_changed.emit(operation)
+		_scoped_operations.erase(operation.id)
+		if should_settle:
+			_settle_scoped_operation(
+				operation,
+				PartyResult.Outcome.SUPERSEDED,
+				&"multiplayer_invalidated",
+				"The multiplayer runtime was reset.")
 	_owned_operation_count = 0
 	for context_value: Variant in _contexts.values().duplicate():
 		var context := context_value as LobbyContext
@@ -2322,9 +3059,7 @@ func _end_owned_call(context: LobbyContext) -> void:
 		context.pending_operations = maxi(context.pending_operations - 1, 0)
 		if context.recovery_epoch == _scoped_recovery_epoch:
 			_owned_operation_count = maxi(_owned_operation_count - 1, 0)
-	if context != null and context.recovery_epoch == _scoped_recovery_epoch \
-			and (context.retired \
-		or (context.left_lobby and context.left_transport)):
+	if context != null and context.recovery_epoch == _scoped_recovery_epoch:
 		_retire_context_if_empty(context)
 	_owned_work_changed.emit()
 
@@ -2357,6 +3092,9 @@ func _attach_context_lobby(context: LobbyContext, lobby: Variant) -> void:
 		return
 	context.lobby = lobby
 	context.left_lobby = false
+	context.loss_emitted = false
+	if context.expected_count <= 0:
+		context.expected_count = int(_object_value(lobby, &"max_member_count", 0))
 	var callback := Callable(self, "_on_context_lobby_changed").bind(context)
 	context.lobby_callback = callback
 	if lobby.has_signal("state_changed") and not lobby.is_connected("state_changed", callback):
@@ -2384,8 +3122,12 @@ func _attach_context_transport(
 		return false
 	if _network != null:
 		return false
+	var candidate_peer: Variant = _object_value(network, &"local_peer", null)
+	if not (candidate_peer is MultiplayerPeer) \
+		or candidate_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
 	context.network = network
-	context.peer = _object_value(network, &"local_peer", null)
+	context.peer = candidate_peer
 	context.local_creator = local_creator
 	context.left_transport = false
 	var callback := Callable(self, "_on_context_network_state_changed").bind(context)
@@ -2417,13 +3159,41 @@ func _disconnect_context_transport(context: LobbyContext) -> void:
 func _on_context_lobby_changed(change: Variant, context: LobbyContext) -> void:
 	if not _context_is_live(context):
 		return
-	context_updated.emit(context)
-	if int(_object_value(change, &"kind", -1)) == 6:
+	var kind := int(_object_value(change, &"kind", -1))
+	var owner_value: Variant = _object_value(context.lobby, &"owner_entity_key", {})
+	var current_owner := _copy_entity_key(owner_value as Dictionary) \
+		if typeof(owner_value) == TYPE_DICTIONARY else {}
+	if context.owner_key.is_empty() and not current_owner.is_empty():
+		context.owner_key = current_owner.duplicate()
+	elif not context.owner_key.is_empty() \
+		and not _entity_keys_match(context.owner_key, current_owner):
+		_emit_context_lost(
+			context,
+			"The PlayFab lobby owner changed, so this online session can no longer continue.")
+		return
+	if kind == LOBBY_CHANGE_DISCONNECTED:
 		var result: Variant = _object_value(change, &"result", null)
 		if not _result_ok(result):
-			party_failed.emit(
-				"PlayFab disconnected the lobby: %s" % _reason(result),
-				context)
+			push_warning("[Party] Scoped lobby disconnected: %s" % _reason(result))
+		_disconnect_context_lobby(context)
+		context.lobby = null
+		context.left_lobby = true
+		_emit_context_lost(
+			context,
+			"The matchmaking lobby connection was lost.")
+		return
+	context_updated.emit(context)
+
+
+func _emit_context_lost(context: LobbyContext, reason: String) -> void:
+	if context == null or context.loss_emitted or _leaving or _recovering \
+		or context.recovery_epoch != _scoped_recovery_epoch:
+		return
+	context.loss_emitted = true
+	_retire_context_operations(context)
+	context.operation_id += 1
+	context.active_permit = 0
+	context_lost.emit(reason, context)
 
 
 func _on_context_network_state_changed(change: Variant, context: LobbyContext) -> void:
@@ -2479,8 +3249,16 @@ func _issue_publication_permit(context: LobbyContext) -> int:
 	return permit
 
 
-func _ensure_context_initialized(context: LobbyContext, deadline_msec: int) -> String:
+func _ensure_context_initialized(
+	context: LobbyContext,
+	deadline_msec: int,
+	scoped_operation: ScopedOperation = null
+) -> String:
 	var operation := context.operation_id
+	if not _context_operation_current(context, operation) \
+		or (scoped_operation != null \
+			and not _scoped_operation_current(context, scoped_operation)):
+		return "Session cancelled."
 	var pf: Variant = _playfab()
 	if pf == null:
 		return "The PlayFab extension is not installed in this build."
@@ -2495,11 +3273,16 @@ func _ensure_context_initialized(context: LobbyContext, deadline_msec: int) -> S
 			_begin_owned_call(context)
 			var party_init: Variant = await pf.party.initialize_async(null, _local_udp_port())
 			_end_owned_call(context)
-			if not _context_operation_current(context, operation):
+			if not _context_operation_current(context, operation) \
+				or (scoped_operation != null \
+					and not _scoped_operation_current(context, scoped_operation)):
 				return "Session cancelled."
 			if not _result_ok(party_init):
 				return "PlayFab Party could not start: %s" % _reason(party_init)
 			_party_initialized = true
+	if scoped_operation != null \
+		and not _scoped_operation_current(context, scoped_operation):
+		return "Session cancelled."
 	if not _multiplayer_initialized:
 		if bool(pf.multiplayer.is_initialized()):
 			_multiplayer_initialized = true
@@ -2509,7 +3292,9 @@ func _ensure_context_initialized(context: LobbyContext, deadline_msec: int) -> S
 			_begin_owned_call(context)
 			var mp_init: Variant = await pf.multiplayer.initialize_async()
 			_end_owned_call(context)
-			if not _context_operation_current(context, operation):
+			if not _context_operation_current(context, operation) \
+				or (scoped_operation != null \
+					and not _scoped_operation_current(context, scoped_operation)):
 				return "Session cancelled."
 			if not _result_ok(mp_init):
 				return "PlayFab Lobby could not start: %s" % _reason(mp_init)
@@ -2520,10 +3305,13 @@ func _ensure_context_initialized(context: LobbyContext, deadline_msec: int) -> S
 func _await_context_descriptor(
 	context: LobbyContext,
 	deadline_msec: int,
-	operation: int
+	operation: int,
+	scoped_operation: ScopedOperation = null
 ) -> String:
 	var own_deadline := _bounded_deadline(context.clock, deadline_msec, DESCRIPTOR_TIMEOUT)
 	while _context_operation_current(context, operation) \
+		and (scoped_operation == null \
+			or _scoped_operation_current(context, scoped_operation)) \
 		and not _deadline_expired(context.clock, own_deadline):
 		if context.network == null:
 			return ""
@@ -2537,10 +3325,13 @@ func _await_context_descriptor(
 func _await_context_transport_properties(
 	context: LobbyContext,
 	deadline_msec: int,
-	operation: int
+	operation: int,
+	scoped_operation: ScopedOperation = null
 ) -> PartyResult:
 	var own_deadline := _bounded_deadline(context.clock, deadline_msec, LOBBY_PROPERTY_TIMEOUT)
 	while _context_operation_current(context, operation) \
+		and (scoped_operation == null \
+			or _scoped_operation_current(context, scoped_operation)) \
 		and not _deadline_expired(context.clock, own_deadline):
 		var state := snapshot(context)
 		var descriptor := String((state.properties as Dictionary).get(DESCRIPTOR_KEY, ""))
@@ -2563,7 +3354,9 @@ func _await_context_transport_properties(
 			result.descriptor_ready = true
 			return result
 		await _sleep_until_poll(context.clock, own_deadline)
-	if not _context_operation_current(context, operation):
+	if not _context_operation_current(context, operation) \
+		or (scoped_operation != null \
+			and not _scoped_operation_current(context, scoped_operation)):
 		return _context_failure(
 			PartyResult.Outcome.SUPERSEDED,
 			&"arranged_transport_superseded",
@@ -2576,32 +3369,68 @@ func _await_context_transport_properties(
 		context)
 
 
-func _run_context_lock(context: LobbyContext, locked: bool, operation: int) -> void:
+func _run_context_lock(
+	context: LobbyContext,
+	locked: bool,
+	operation: ScopedOperation
+) -> void:
+	while context.lock_running and _scoped_operation_current(context, operation) \
+		and not _deadline_expired(context.clock, operation.deadline_msec):
+		await _sleep_until_poll(context.clock, operation.deadline_msec)
+	if not _scoped_operation_current(context, operation):
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"context_lock_superseded",
+			"The lobby changed while its membership lock was updating.")
+		return
+	if context.lock_running:
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.TIMEOUT,
+			&"context_lock_busy",
+			"An earlier lobby lock operation did not finish.")
+		return
 	var entry_error := _context_operation_error(context, true)
 	if entry_error != null:
-		if operation == context.lock_operation:
-			context.lock_running = false
-			context.lock_result = entry_error
-		_end_owned_call(context)
+		_finish_scoped_operation(
+			operation,
+			context,
+			entry_error.outcome,
+			entry_error.reason_code,
+			entry_error.reason,
+			entry_error.diagnostic)
 		return
+	context.lock_running = true
+	context.lock_result = null
+	context.lock_operation += 1
+	var lock_operation := context.lock_operation
 	var result: Variant = await context.lobby.set_membership_lock_async(
 		MEMBERSHIP_LOCK_LOCKED if locked else MEMBERSHIP_LOCK_UNLOCKED)
-	if not _context_is_live(context) or operation != context.lock_operation:
-		_end_owned_call(context)
+	if lock_operation == context.lock_operation:
+		context.lock_running = false
+	if not _scoped_operation_current(context, operation) \
+		or lock_operation != context.lock_operation:
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"context_lock_superseded",
+			"The lobby changed while its membership lock was updating.")
 		return
-	context.lock_running = false
 	if not _result_ok(result):
-		context.lock_result = _context_failure(
+		_finish_scoped_operation(
+			operation,
+			context,
 			PartyResult.Outcome.SERVICE_ERROR,
 			&"context_lock_failed",
 			"The match service refused to update the lobby membership lock.",
-			context,
 			_reason(result))
-		_end_owned_call(context)
 		return
-	context.lock_result = _context_success(context)
 	context_updated.emit(context)
-	_end_owned_call(context)
+	_finish_scoped_operation(operation, context, PartyResult.Outcome.OK)
 
 
 func _run_context_update(
@@ -2609,75 +3438,147 @@ func _run_context_update(
 	lobby_properties: Dictionary,
 	search_properties: Dictionary,
 	member_properties: Dictionary,
-	operation: int
+	operation: ScopedOperation
 ) -> void:
+	while context.post_running and _scoped_operation_current(context, operation) \
+		and not _deadline_expired(context.clock, operation.deadline_msec):
+		await _sleep_until_poll(context.clock, operation.deadline_msec)
+	if not _scoped_operation_current(context, operation):
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"context_update_superseded",
+			"The lobby changed while it was being updated.")
+		return
+	if context.post_running:
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.TIMEOUT,
+			&"context_update_busy",
+			"An earlier lobby update did not finish.")
+		return
+	if operation.required_permit > 0 \
+		and operation.required_permit != context.active_permit:
+		_finish_scoped_operation(
+			operation,
+			context,
+			PartyResult.Outcome.SUPERSEDED,
+			&"publication_revoked",
+			"Transport publication permission is no longer current.")
+		return
 	var requires_owner := not lobby_properties.is_empty() or not search_properties.is_empty()
 	var entry_error := _context_operation_error(context, requires_owner)
 	if entry_error != null:
-		if operation == context.post_operation:
-			context.post_running = false
-			context.post_result = entry_error
-		_end_owned_call(context)
+		_finish_scoped_operation(
+			operation,
+			context,
+			entry_error.outcome,
+			entry_error.reason_code,
+			entry_error.reason,
+			entry_error.diagnostic)
 		return
+	context.post_running = true
+	context.post_result = null
+	context.post_operation += 1
+	var post_operation := context.post_operation
 	if not lobby_properties.is_empty() or not search_properties.is_empty():
 		var update: Variant = _new_lobby_update_config()
 		if update == null:
-			if operation == context.post_operation:
+			if post_operation == context.post_operation:
 				context.post_running = false
-				context.post_result = _context_failure(
-					PartyResult.Outcome.INVALID,
-					&"lobby_update_unavailable",
-					"PlayFab lobby updates are unavailable in this build.",
-					context)
-			_end_owned_call(context)
+			_finish_scoped_operation(
+				operation,
+				context,
+				PartyResult.Outcome.INVALID,
+				&"lobby_update_unavailable",
+				"PlayFab lobby updates are unavailable in this build.")
 			return
 		if not lobby_properties.is_empty():
 			update.lobby_properties = lobby_properties
 		if not search_properties.is_empty():
 			update.search_properties = search_properties
 		var shared_result: Variant = await context.lobby.post_update_async(update)
-		if not _context_is_live(context) or operation != context.post_operation:
-			_end_owned_call(context)
+		if post_operation == context.post_operation \
+			and not _scoped_operation_current(context, operation):
+			context.post_running = false
+		if not _scoped_operation_current(context, operation) \
+			or post_operation != context.post_operation:
+			_finish_scoped_operation(
+				operation,
+				context,
+				PartyResult.Outcome.SUPERSEDED,
+				&"context_update_superseded",
+				"The lobby changed while it was being updated.")
 			return
 		if not _result_ok(shared_result):
 			context.post_running = false
-			context.post_result = _context_failure(
+			_finish_scoped_operation(
+				operation,
+				context,
 				PartyResult.Outcome.SERVICE_ERROR,
 				&"context_update_failed",
 				"The match service refused to update the lobby.",
-				context,
 				_reason(shared_result))
-			_end_owned_call(context)
+			return
+		if operation.required_permit > 0 \
+			and operation.required_permit != context.active_permit:
+			context.post_running = false
+			_finish_scoped_operation(
+				operation,
+				context,
+				PartyResult.Outcome.SUPERSEDED,
+				&"publication_revoked",
+				"Transport publication permission is no longer current.")
 			return
 
 	if not member_properties.is_empty():
 		var member_error := _context_operation_error(context, false)
 		if member_error != null:
-			if operation == context.post_operation:
+			if post_operation == context.post_operation:
 				context.post_running = false
-				context.post_result = member_error
-			_end_owned_call(context)
+			_finish_scoped_operation(
+				operation,
+				context,
+				member_error.outcome,
+				member_error.reason_code,
+				member_error.reason,
+				member_error.diagnostic)
 			return
 		var member_result: Variant = await context.lobby.set_member_properties_async(
 			member_properties)
-		if not _context_is_live(context) or operation != context.post_operation:
-			_end_owned_call(context)
+		if post_operation == context.post_operation \
+			and not _scoped_operation_current(context, operation):
+			context.post_running = false
+		if not _scoped_operation_current(context, operation) \
+			or post_operation != context.post_operation:
+			_finish_scoped_operation(
+				operation,
+				context,
+				PartyResult.Outcome.SUPERSEDED,
+				&"context_update_superseded",
+				"The lobby changed while it was being updated.")
 			return
 		if not _result_ok(member_result):
 			context.post_running = false
-			context.post_result = _context_failure(
+			_finish_scoped_operation(
+				operation,
+				context,
 				PartyResult.Outcome.SERVICE_ERROR,
 				&"member_update_failed",
 				"The match service refused to update this lobby member.",
-				context,
 				_reason(member_result))
-			_end_owned_call(context)
 			return
 
 	context.post_running = false
-	context.post_result = _context_success(context)
+	if context.kind == LOBBY_KIND_ARRANGED and not lobby_properties.is_empty():
+		var control := decode_arranged_control(lobby_properties)
+		if bool(control.get("valid", false)):
+			context.published_phase = String(control.get("phase", ""))
+			context.published_lobby_properties.merge(lobby_properties, true)
 	context_updated.emit(context)
-	_end_owned_call(context)
+	_finish_scoped_operation(operation, context, PartyResult.Outcome.OK)
 
 
 func _await_context_lock(context: LobbyContext, deadline_msec: int) -> bool:
@@ -2867,6 +3768,8 @@ func _empty_context_snapshot() -> Dictionary:
 		"context_id": 0,
 		"role": "",
 		"kind": "",
+		"recovery_epoch": -1,
+		"expected_count": 0,
 		"lobby_id": "",
 		"local_key": {},
 		"owner_key": {},
@@ -2875,12 +3778,14 @@ func _empty_context_snapshot() -> Dictionary:
 		"max_members": 0,
 		"access_policy": -1,
 		"owner_migration": -1,
+		"restrict_invites_to_owner": true,
 		"membership_locked": false,
 		"disconnected": true,
 		"search_properties": {},
 		"properties": {},
 		"phase": "",
 		"search_control": {"valid": false},
+		"arranged_control": {"valid": false},
 	}
 
 

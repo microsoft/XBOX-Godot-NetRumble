@@ -126,6 +126,35 @@ than bypassing readiness. Resume revokes an orphaned outcome-dialog join claim b
 newer buffered invitations for the next ready acquisition handoff. Record whether a real cold activation arrived, not merely
 whether a warm code join worked.
 
+## Matchmaking group, match and rematch
+
+**Prerequisites:** Four authorized XBOX identities on four devices running the identical build,
+signed in with ready saves, in the registered title and sandbox with the `godotnr_q` queue.
+
+**Action:** Choose **Matchmaking** above Host Match. Invite a friend into the group's lobby,
+ready up together, and let the search find the rest. Play the match, return to the lobby and
+start a rematch with whoever stayed. Invite someone back through the shell into the rematch.
+
+**Source / addon API:** `NetManager.start_matchmaking()` opens the group through
+`MatchmakingFlow` and the scoped `PartyService` lobby calls; the owner's ticket and the guests'
+joins go through `MatchmakingService` (`create_match_ticket_async()` /
+`join_match_ticket_async()`), the match through `join_arranged_lobby_async()` and a fresh
+`create_and_join_network_async()` by whoever the service made the arranged owner. A member that
+missed the owner's messages asks through the `_request_flow_state` RPC.
+
+**Observable outcome:** The group advertises a followed, four-slot activity while it gathers and
+withdraws it while it searches and plays. The match starts only with exactly the four matched
+players. Back in the lobby, the same session hosts the next round with two or more players and
+no ticket; the rematch lobby is advertised invite-only, and an invite into it joins the
+replacement to the round.
+
+**Unavailable / failure:** When the queue, the PlayFab addon's matchmaking support or the
+four-player Deathmatch profile is missing, the **Matchmaking** row still takes focus and shows
+that reason instead of starting anything. A full group of four is refused by the queue and
+restored with its reason; see [Known issues](known-issues.md). A player lost before the first
+game runs cancels it with the reason. An invite into a match that is playing, or into an
+unrecognized lobby, is refused.
+
 ## Two-way voice and typed text
 
 **Prerequisites:** Two permitted online peers, distinct microphone/headset endpoints and an

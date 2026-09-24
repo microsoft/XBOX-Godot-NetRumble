@@ -30,7 +30,10 @@ extends RefCounted
 
 ## Bump when any replicated payload's schema changes: a key added, removed, renamed
 ## or repurposed in a Dictionary that crosses the wire. See docs/protocol.md.
-const WIRE_VERSION := 1
+##
+## 2: the matchmaking phase detail gained `request_id`, the correlation a staging
+## owner echoes when it answers a guest's state-replay request.
+const WIRE_VERSION := 2
 
 ## Bump when the @rpc method set on NetManager changes in any way -- one added, one
 ## removed, one renamed, or the signature of an existing one altered.
@@ -45,7 +48,8 @@ const WIRE_VERSION := 1
 ## of the comparison logic.
 ##
 ## 3: the matchmaking flow's phase broadcast, member report and Leave Group RPCs.
-const RPC_SET_VERSION := 3
+## 4: a staging guest's correlated request for the owner's current state.
+const RPC_SET_VERSION := 4
 
 ## Lobby search property the host advertises `version_string()` under.
 ##

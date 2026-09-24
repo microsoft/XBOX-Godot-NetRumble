@@ -29,8 +29,12 @@ class Clock extends OnlineFlowClock:
 		while now < wake_at:
 			await advanced
 
+	func _drives_alarms_by_engine() -> bool:
+		return false
+
 	func advance(seconds: float) -> void:
 		now += int(round(maxf(seconds, 0.0) * 1000.0))
+		fire_due_alarms()
 		advanced.emit()
 
 	func pending_sleepers() -> int:
@@ -181,6 +185,10 @@ class Matchmaking extends MatchmakingService:
 	var fake_flow_implemented := true
 	var fake_account_current := true
 	var fake_mode_config: GameModeConfig = null
+	var fake_queue_name := MatchmakingService.QUEUE_NAME
+	var fake_playfab_present := true
+	var fake_group_support := true
+	var fake_arranged_support := true
 
 	func _init() -> void:
 		var config := GameModeConfig.new()
@@ -194,17 +202,17 @@ class Matchmaking extends MatchmakingService:
 	func _game_mode_config(_mode: NRTypes.GameModeType) -> Variant:
 		return fake_mode_config
 
-	func _capability_reason() -> String:
-		return ""
+	func _queue_name() -> String:
+		return fake_queue_name
 
 	func _playfab() -> Variant:
-		return {"multiplayer": sdk}
+		return {"multiplayer": sdk} if fake_playfab_present else null
 
 	func addon_supports_group_matchmaking() -> bool:
-		return true
+		return fake_group_support
 
 	func addon_supports_arranged_config() -> bool:
-		return true
+		return fake_arranged_support
 
 	func _multiplayer() -> Variant:
 		return sdk
@@ -307,6 +315,7 @@ class Lobby extends RefCounted:
 	signal leave_released()
 	signal post_released()
 	signal lock_released()
+	signal member_released()
 	var lobby_id := ""
 	var connection_string := ""
 	var owner_entity_key: Dictionary = {}
@@ -316,7 +325,9 @@ class Lobby extends RefCounted:
 	var search_properties: Dictionary = {}
 	var access_policy := 0
 	var owner_migration_policy := 2
+	var restrict_invites_to_lobby_owner := false
 	var membership_lock := 0
+	var local_entity_key: Dictionary = {}
 	var disconnected := false
 	var leaves := 0
 	var update_calls := 0
@@ -325,6 +336,10 @@ class Lobby extends RefCounted:
 	var block_leave := false
 	var block_post := false
 	var block_lock := false
+	var block_member := false
+	var next_post_result: Variant = null
+	var next_lock_result: Variant = null
+	var next_member_result: Variant = null
 
 	func is_owner(user: Variant) -> bool:
 		return user != null and user.entity_key == owner_entity_key
@@ -336,6 +351,10 @@ class Lobby extends RefCounted:
 		lock_calls += 1
 		if block_lock:
 			await lock_released
+		if next_lock_result != null:
+			var result: Variant = next_lock_result
+			next_lock_result = null
+			return result
 		membership_lock = value
 		return Results.make(true)
 
@@ -343,6 +362,10 @@ class Lobby extends RefCounted:
 		update_calls += 1
 		if block_post:
 			await post_released
+		if next_post_result != null:
+			var result: Variant = next_post_result
+			next_post_result = null
+			return result
 		if not update.lobby_properties.is_empty():
 			properties.merge(update.lobby_properties, true)
 		if not update.search_properties.is_empty():
@@ -355,8 +378,16 @@ class Lobby extends RefCounted:
 		return Results.make(true)
 
 	func set_member_properties_async(values: Dictionary) -> Dictionary:
-		if not members.is_empty():
-			members[0].properties.merge(values, true)
+		if block_member:
+			await member_released
+		if next_member_result != null:
+			var result: Variant = next_member_result
+			next_member_result = null
+			return result
+		for member: Member in members:
+			if member.entity_key == local_entity_key:
+				member.properties.merge(values, true)
+				break
 		return Results.make(true)
 
 	func leave_async() -> Dictionary:
@@ -368,6 +399,7 @@ class Lobby extends RefCounted:
 
 
 class PartySDK extends RefCounted:
+	signal initialize_released()
 	signal create_released()
 	signal join_released()
 	var initialized := true
@@ -377,17 +409,30 @@ class PartySDK extends RefCounted:
 	var queued_networks: Array[Network] = []
 	var block_create := false
 	var block_join := false
+	var block_initialize := false
+	var next_initialize_result: Variant = null
+	var next_shutdown_result: Variant = null
 	var shutdown_calls := 0
 
 	func is_initialized() -> bool:
 		return initialized
 
 	func initialize_async(_config: Variant, _port: int) -> Dictionary:
+		if block_initialize:
+			await initialize_released
+		if next_initialize_result != null:
+			var result: Variant = next_initialize_result
+			next_initialize_result = null
+			return result
 		initialized = true
 		return Results.make(true)
 
 	func shutdown_async() -> Dictionary:
 		shutdown_calls += 1
+		if next_shutdown_result != null:
+			var result: Variant = next_shutdown_result
+			next_shutdown_result = null
+			return result
 		initialized = false
 		for network: Network in networks:
 			if network.local_peer != null:
@@ -432,6 +477,7 @@ class LobbySearchResult extends RefCounted:
 
 
 class MultiplayerSDK extends RefCounted:
+	signal initialize_released()
 	signal create_released()
 	signal arranged_released()
 	var initialized := true
@@ -441,20 +487,34 @@ class MultiplayerSDK extends RefCounted:
 	var next_join_result: Variant = null
 	var find_calls: Array[Dictionary] = []
 	var join_calls: Array[String] = []
+	var arranged_calls: Array[Dictionary] = []
 	var lobby_by_connection: Dictionary = {}
 	var block_create := false
 	var block_arranged := false
+	var block_initialize := false
+	var next_initialize_result: Variant = null
+	var next_shutdown_result: Variant = null
 	var shutdown_calls := 0
 
 	func is_initialized() -> bool:
 		return initialized
 
 	func initialize_async() -> Dictionary:
+		if block_initialize:
+			await initialize_released
+		if next_initialize_result != null:
+			var result: Variant = next_initialize_result
+			next_initialize_result = null
+			return result
 		initialized = true
 		return Results.make(true)
 
 	func shutdown_async() -> Dictionary:
 		shutdown_calls += 1
+		if next_shutdown_result != null:
+			var result: Variant = next_shutdown_result
+			next_shutdown_result = null
+			return result
 		initialized = false
 		for lobby: Lobby in lobbies:
 			lobby.disconnected = true
@@ -499,6 +559,7 @@ class MultiplayerSDK extends RefCounted:
 				has_local = true
 		if not has_local:
 			lobby.members.append(Member.new(user.entity_key))
+		lobby.local_entity_key = user.entity_key.duplicate()
 		return Results.make(true, lobby)
 
 	func join_arranged_lobby_async(
@@ -506,6 +567,14 @@ class MultiplayerSDK extends RefCounted:
 		_arrangement: String,
 		config: Variant
 	) -> Dictionary:
+		arranged_calls.append({
+			"max_member_count": int(config.max_member_count),
+			"access_policy": int(config.access_policy),
+			"owner_migration_policy": int(config.owner_migration_policy),
+			"restrict_invites_to_lobby_owner":
+				bool(config.restrict_invites_to_lobby_owner),
+			"member_properties": config.member_properties.duplicate(true),
+		})
 		if block_arranged:
 			await arranged_released
 		if next_arranged_result != null:
@@ -519,6 +588,8 @@ class MultiplayerSDK extends RefCounted:
 		lobby.max_member_count = config.max_member_count
 		lobby.access_policy = config.access_policy
 		lobby.owner_migration_policy = config.owner_migration_policy
+		lobby.restrict_invites_to_lobby_owner = config.restrict_invites_to_lobby_owner
+		lobby.local_entity_key = user.entity_key.duplicate()
 		lobby.members = [Member.new(user.entity_key, config.member_properties)]
 		lobbies.append(lobby)
 		lobby_by_connection[lobby.connection_string] = lobby
@@ -532,6 +603,8 @@ class MultiplayerSDK extends RefCounted:
 		lobby.max_member_count = config.max_players
 		lobby.access_policy = config.access_policy
 		lobby.owner_migration_policy = config.owner_migration_policy
+		lobby.restrict_invites_to_lobby_owner = config.restrict_invites_to_lobby_owner
+		lobby.local_entity_key = user.entity_key.duplicate()
 		lobby.search_properties = config.search_properties.duplicate(true)
 		lobby.properties = config.lobby_properties.duplicate(true)
 		lobby.members = [Member.new(user.entity_key, config.member_properties)]

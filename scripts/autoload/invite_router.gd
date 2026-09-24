@@ -193,6 +193,37 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 		_finish_join(generation)
 		return
 
+	# The destination is resolved before anything current is touched. A connection string
+	# the activation carried is authoritative and passed on exactly as it arrived; only an
+	# activation that names just the host is looked up from their published activity -- a
+	# read-only lookup, done now so that a failed one never cost the player their group.
+	var connection_string := String(request.get("connection_string", ""))
+	if connection_string.is_empty():
+		var finding := ScreenManager.push(ScreenManager.LOADING, {"message": "Finding your friend's match"})
+		connection_string = await Services.connection_string_for_xuid(String(request.get("xuid", "")))
+		ScreenManager.remove(finding)
+		if not Services.is_current_account(generation):
+			_finish_join(generation)
+			return
+	if connection_string.is_empty():
+		await ScreenManager.show_dialog(
+			"Join Failed",
+			"That match is no longer available to join.",
+			"error",
+			false,
+		)
+		_finish_join(generation)
+		return
+
+	# The lobby this account is already in -- a duplicate activation, or an invite into the
+	# group or match the player is playing -- is acknowledged, not torn down and rejoined.
+	# An exact comparison of the credential, nothing parsed.
+	if NetManager.holds_connection_string(connection_string):
+		if _same_request(_pending_request, request):
+			_clear_pending()
+		_finish_join(generation)
+		return
+
 	# Accepting an invite while already playing means abandoning the current match, so
 	# it is the player's call rather than ours. A matchmaking flow counts as playing even
 	# with no transport bound -- between its staging and arranged sessions -- and it is
@@ -208,6 +239,8 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 			_finish_join(generation)
 			return
 		if NetManager.has_online_flow():
+			# Accepting is the old group's binding Leave: its ticket is cancelled, its lobbies
+			# are left, and a match that overtakes the cancel does not revive it.
 			var safe: bool = await NetManager.retire_flow_for_replacement()
 			if not Services.is_current_account(generation):
 				_finish_join(generation)
@@ -215,7 +248,8 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 			if not safe:
 				# The group's cleanup is still finishing. The invite is kept, under the TTL it
 				# arrived with, and redeemed once the flow is gone -- not spent on an entry
-				# refusal the player would have to repeat by hand.
+				# refusal the player would have to repeat by hand, and not raced by a second
+				# join alongside the cleanup.
 				if _pending_request.is_empty():
 					_pending_request = request
 					_pending_since_msec = arrived_msec if arrived_msec > 0 else Time.get_ticks_msec()
@@ -224,30 +258,6 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 				return
 
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Joining match"})
-
-	# A Multiplayer Activity invite or shell join carries the connection string itself.
-	# An activation that names only the host has it looked up from their published
-	# activity before there is anything to join.
-	var connection_string := String(request.get("connection_string", ""))
-	if connection_string.is_empty():
-		connection_string = await Services.connection_string_for_xuid(String(request.get("xuid", "")))
-	if not Services.is_current_account(generation):
-		ScreenManager.remove(loading)
-		_finish_join(generation)
-		return
-	if connection_string.is_empty():
-		# Removed by name rather than popped: the lookup above is an await, and anything
-		# pushed over this screen in the meantime is not this flow's to take down.
-		ScreenManager.remove(loading)
-		await ScreenManager.show_dialog(
-			"Join Failed",
-			"That match is no longer available to join.",
-			"error",
-			false,
-		)
-		_finish_join(generation)
-		return
-
 	var join_request := NetManager.join_by_invite(connection_string)
 	if loading != null:
 		loading.follow_join(join_request)
