@@ -317,3 +317,69 @@ class Profiles extends ProfileService:
 
 	func _profile() -> Variant:
 		return sdk
+
+
+## One pending wait on a FakeClock.
+class ClockSleeper extends RefCounted:
+	signal released()
+	var at := 0
+	var order := 0
+
+
+## A discrete-event stand-in for OnlineFlowClock. Time moves only when advance() says so;
+## each sleeper wakes, in wake-time order, with the clock set to its own wake time, so a
+## poll loop that re-sleeps inside one advance still observes every step it would have.
+## Alarms armed on it are events in the same order: each fires with the clock set to its
+## own due time, before any sleeper due at that same instant. A deadline is expired at
+## equality, exactly like the production clock.
+class FakeClock extends OnlineFlowClock:
+	## Upper bound on wake-ups inside one advance, so a loop that sleeps for zero seconds
+	## without ever re-checking its deadline fails loudly instead of hanging the suite.
+	const MAX_WAKES_PER_ADVANCE := 100000
+	var now := 0
+	var _sleepers: Array[ClockSleeper] = []
+	var _sequence := 0
+
+	func now_msec() -> int:
+		return now
+
+	## This clock's alarms follow its own time: advance() fires them, never an engine timer.
+	func _drives_alarms_by_engine() -> bool:
+		return false
+
+	func sleep_seconds(seconds: float) -> void:
+		_sequence += 1
+		var sleeper := ClockSleeper.new()
+		sleeper.at = now + int(round(maxf(seconds, 0.0) * 1000.0))
+		sleeper.order = _sequence
+		_sleepers.append(sleeper)
+		await sleeper.released
+
+	func advance(seconds: float) -> void:
+		var target := now + int(round(maxf(seconds, 0.0) * 1000.0))
+		var wakes := 0
+		while wakes < MAX_WAKES_PER_ADVANCE:
+			var next: ClockSleeper = null
+			for sleeper: ClockSleeper in _sleepers:
+				if sleeper.at > target:
+					continue
+				if next == null or sleeper.at < next.at or (sleeper.at == next.at and sleeper.order < next.order):
+					next = sleeper
+			var alarm_due := next_alarm_due_msec()
+			if alarm_due >= 0 and alarm_due <= target and (next == null or alarm_due <= next.at):
+				now = maxi(now, alarm_due)
+				wakes += 1
+				fire_due_alarms()
+				continue
+			if next == null:
+				break
+			_sleepers.erase(next)
+			now = maxi(now, next.at)
+			wakes += 1
+			next.released.emit()
+		if wakes >= MAX_WAKES_PER_ADVANCE:
+			push_warning("[FakeClock] advance() stopped after %d wake-ups." % wakes)
+		now = maxi(now, target)
+
+	func pending() -> int:
+		return _sleepers.size()

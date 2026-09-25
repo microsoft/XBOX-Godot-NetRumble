@@ -159,6 +159,17 @@ last player finishes loading, the `STARTING` countdown runs on that final layout
 only thaws the simulation. `WARMING_UP` is kept for the `WAITING` mask but is no longer entered,
 so players are never repositioned mid-countdown.
 
+A [matchmaking](matchmaking.md) match adds one rule to its first game only. The arranged host
+admits exactly the four players the match was sealed for, waits until all four have left their
+old group lobbies, readies them once itself and starts through the same `STARTING` path. From
+then until the first `RUNNING`, `MatchDirector` checks the sealed four afresh -- before laying out
+the world and again before going live -- against what Party's authenticated transport and the
+lobby report now, not against the roster alone, because its loading loop only walks whoever is on
+the roster and would otherwise start three players as readily as four. A player lost in that
+window cancels the match and ends the matchmaking session; there is no short-handed start and no
+host migration. The rule ends at the first `RUNNING`. Later games in the same arranged session
+are ordinary hosted rematches: two to four current players, all ready, no ticket.
+
 ---
 
 ## Object and player identifiers

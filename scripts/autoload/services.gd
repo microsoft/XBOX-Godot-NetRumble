@@ -28,6 +28,7 @@ const XboxBootstrap := preload("res://addons/godot_gdk/runtime/gdk_bootstrap.gd"
 var _identity: IdentityService = null
 var _achievements: AchievementService = null
 var _leaderboards: LeaderboardService = null
+var _matchmaking: MatchmakingService = null
 ## Notice ownership is separate from the service's per-entity write gate. An older
 ## completion cannot replace a newer attempt's notice or expose it to another session.
 var _leaderboard_submission: Dictionary = {}
@@ -45,6 +46,10 @@ var _social: SocialService = null
 var _profiles: ProfileService = null
 var _devices: DeviceService = null
 var _connectivity: ConnectivityService = null
+## One monotonic time source for every online deadline, shared by NetManager, the
+## matchmaking flow, PlatformSession and the services it configures below. Initialized
+## here rather than in _ready() so a Services subclass that replaces _ready() still has it.
+var _clock: OnlineFlowClock = OnlineFlowClock.new()
 
 ## The current account's working copy, newest first.
 var _history: Array[Dictionary] = []
@@ -73,6 +78,8 @@ func _ready() -> void:
 	_identity.platform_ready.connect(_connect_user_changed)
 	_achievements = AchievementService.new()
 	_leaderboards = LeaderboardService.new()
+	_matchmaking = MatchmakingService.new()
+	_matchmaking.configure_clock(_clock)
 	_achievement_tracker = AchievementTracker.new()
 	_achievement_tracker.progress_changed.connect(_on_achievement_progress)
 	_game_saves = GameSaveService.new()
@@ -80,6 +87,8 @@ func _ready() -> void:
 	# exists alongside a Party network.
 	_chat = ChatService.new()
 	_party = PartyService.new(_chat)
+	_party.configure_clock(_clock)
+	bind_party_signals()
 	_activity = ActivityService.new()
 	_privileges = PrivilegeService.new()
 	_privacy = PrivacyService.new()
@@ -807,6 +816,70 @@ func _clear_leaderboard_submission() -> void:
 	if _leaderboards != null:
 		_leaderboards.invalidate_pending_submissions()
 	leaderboard_submission_changed.emit()
+
+
+# --- Matchmaking ------------------------------------------------------------
+
+## PlayFab Matchmaking (Quick Match). The Matchmaking row is always offered; it opens a
+## group only while MatchmakingService reports Quick Match available -- a configured queue,
+## the PlayFab extension, a capable addon and the four-player profile -- and otherwise shows
+## the service's reason. NetManager.start_matchmaking() and matchmaking-lobby joins refuse
+## on the same answer. See scripts/services/matchmaking_service.gd.
+func matchmaking() -> MatchmakingService:
+	return _matchmaking
+
+
+## Whether the Matchmaking row may run.
+func quick_match_available() -> bool:
+	return _matchmaking != null and _matchmaking.is_available()
+
+
+## Why Quick Match cannot run, in words fit to show a player. Empty when it can.
+func quick_match_unavailable_reason() -> String:
+	if _matchmaking == null:
+		return "Matchmaking is unavailable in this build."
+	return _matchmaking.availability_reason()
+
+
+## Connects the installed PartyService's service-wide notices here, once. Called when the
+## services are built; the harness calls it again after installing a party of its own.
+func bind_party_signals() -> void:
+	if _party == null:
+		return
+	if not _party.multiplayer_invalidated.is_connected(_on_multiplayer_invalidated):
+		_party.multiplayer_invalidated.connect(_on_multiplayer_invalidated)
+
+
+## A confirmed Multiplayer shutdown: the lobbies and tickets of the old runtime are gone.
+## The flow is retired first, synchronously, keeping its own reason, so the attempts the
+## matchmaking service then discharges are already its to discard -- none of their
+## failures can start a staging restoration over a lobby that no longer exists.
+func _on_multiplayer_invalidated(recovery_epoch: int) -> void:
+	if NetManager != null:
+		NetManager.on_multiplayer_invalidated(recovery_epoch)
+	if _matchmaking != null:
+		_matchmaking.multiplayer_invalidated(recovery_epoch)
+
+
+# --- Time ---------------------------------------------------------------------
+
+## The shared online clock. See OnlineFlowClock.
+func clock() -> OnlineFlowClock:
+	return _clock
+
+
+## Replaces the shared clock and hands it to whichever Party and matchmaking services are
+## installed now. Only the harness does this, before any online work starts; a service
+## refuses a replacement while its own work is live, so an operation never changes clocks
+## half-way through.
+func use_clock(clock: OnlineFlowClock) -> void:
+	if clock == null:
+		return
+	_clock = clock
+	if _party != null:
+		_party.configure_clock(clock)
+	if _matchmaking != null:
+		_matchmaking.configure_clock(clock)
 
 
 # --- Achievements -----------------------------------------------------------

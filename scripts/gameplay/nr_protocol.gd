@@ -30,7 +30,10 @@ extends RefCounted
 
 ## Bump when any replicated payload's schema changes: a key added, removed, renamed
 ## or repurposed in a Dictionary that crosses the wire. See docs/protocol.md.
-const WIRE_VERSION := 1
+##
+## 2: the matchmaking phase detail gained `request_id`, the correlation a staging
+## owner echoes when it answers a guest's state-replay request.
+const WIRE_VERSION := 2
 
 ## Bump when the @rpc method set on NetManager changes in any way -- one added, one
 ## removed, one renamed, or the signature of an existing one altered.
@@ -43,13 +46,16 @@ const WIRE_VERSION := 1
 ## That is deferred, not abandoned -- `version_string()` already renders this part as
 ## an opaque token so the hash can replace it without changing the wire format or any
 ## of the comparison logic.
-const RPC_SET_VERSION := 2
+##
+## 3: the matchmaking flow's phase broadcast, member report and Leave Group RPCs.
+## 4: a staging guest's correlated request for the owner's current state.
+const RPC_SET_VERSION := 4
 
 ## Lobby search property the host advertises `version_string()` under.
 ##
 ## PlayFab only indexes its reserved search keys, so this has to be one of them.
-## string_key1 and string_key2 are already taken by the join code and the game mode
-## (see PartyService).
+## string_key1 and string_key2 are already taken by the join code and the game mode,
+## and string_key4 by the matchmaking lobby kind (see PartyService).
 const LOBBY_KEY := "string_key3"
 
 

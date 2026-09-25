@@ -42,8 +42,8 @@ GDK/PlayFab addons, pinned as a submodule at `external/xbox-godot-sample` and bu
 > release. We are excited to hear your feedback, and see any community PRs, as we evolve this
 > together.
 >
-> **All gameplay needs an account and ready Game Saves.** Sign-in, Lobby discovery, Party,
-> privileges, achievements and Game Save all run against the **XDKS.1** sandbox and title,
+> **All gameplay needs an account and ready Game Saves.** Sign-in, Lobby discovery, Matchmaking,
+> Party, privileges, achievements and Game Save all run against the **XDKS.1** sandbox and title,
 > which needs an XBOX publishing relationship and a test account from that sandbox. Without
 > it you can still clone, build and inspect the project, but cannot play, including Practice.
 > Sign-in or save-loading failures offer **Retry / Back**, not unsaved play. Please join
@@ -63,6 +63,7 @@ account policy still apply.
 |---|---|---|---|---|
 | XBOX identity → PlayFab authentication | XBOX-linked | XBOX-linked | PlayFab custom-ID only | Platform-dependent; not guaranteed at cold launch |
 | PlayFab Lobby discovery + Party transport | Yes, after saves are ready | Yes, after saves are ready | No gameplay; diagnostics only | Unavailable |
+| PlayFab Matchmaking (Quick Match) | Yes, after saves are ready | Yes, after saves are ready | No gameplay | Unavailable |
 | PlayFab Party voice + in-match typed text | Subject to XBOX policy | Subject to XBOX policy | No gameplay | Unavailable |
 | XBOX privileges, privacy, string verification, reporting | Yes | Yes | Bypassed / unavailable | Unavailable |
 | XBOX friends, activity, invites, recent players | Yes | Yes | Unavailable | Unavailable |
@@ -78,7 +79,14 @@ offline access to that folder. A cold offline launch is not guaranteed to resolv
 identity and store. PC and console use the same `GameSaveService` / `GDK.game_save`
 backend; historical shared or `--pf-user` token files are never read, imported, moved or deleted.
 
-The sample uses **PlayFab Lobby discovery**, not PlayFab Matchmaking queues or tickets.
+Hosted matches use **PlayFab Lobby discovery**. **Quick Match** uses **PlayFab Matchmaking**: the
+**Matchmaking** row above Host Match gathers a group of one to four in its own lobby, which readies
+up and searches the `godotnr_q` queue together, then plays the matched four-player game in a fresh
+private arranged session and stays together there for hosted rematches. When the queue, the
+PlayFab addon's matchmaking support or the four-player Deathmatch profile is missing, the row shows
+that reason and starts nothing. A full group of four is refused by the queue; see
+[Known issues](docs/known-issues.md#a-full-group-of-four-cannot-use-quick-match) and
+[Matchmaking](docs/matchmaking.md).
 Voice mute and typed-text privacy are separate. Text is in-match only: four recent messages,
 100 characters each, no persistence or scrollback, and no speech-to-text, text-to-speech or
 translation. The lobby remains voice-only. See [communication behavior](docs/multiplayer.md#chat).
@@ -210,6 +218,7 @@ Full detail: [Architecture](docs/architecture.md).
 |---|---|
 | [Architecture](docs/architecture.md) | Platform ownership, identities, saves, lifecycle and connectivity |
 | [Multiplayer](docs/multiplayer.md) | Lobby discovery, Party connection/leave, voice and typed text |
+| [Matchmaking](docs/matchmaking.md) | Quick Match: the group lobby, its `godotnr_q` ticket, the arranged match and its rematches |
 | [Platform services](docs/platform-services.md) | Sign-in, privileges, privacy, moderation, achievements, saves |
 | [Leaderboards](docs/leaderboards.md) | The standalone `GlobalScore` board, match submission and client-access policy |
 | [Configuration](docs/configuration.md) | Registered-PC setup, sandbox/accounts, fixed title configuration, alternate run paths |

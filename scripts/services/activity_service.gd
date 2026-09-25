@@ -26,10 +26,16 @@ extends RefCounted
 ## XUID to a connection string once there is a signed-in user to ask with.
 signal join_requested(request: Dictionary)
 
-## Only followers can join from the platform UI. The title has no matchmaking and no
-## server browser, so "public" would advertise a session to people with no way to reach
-## it beyond an invite they were never sent.
+## Only followers can join from the platform UI unless a session says otherwise. Hosted
+## matches and matchmaking groups alike advertise to followers: a player's friends can see
+## and join their group, while strangers reach it only through the matchmaking service.
 const JOIN_RESTRICTION := "followed"
+## The audience an arranged match's rematch lobby advertises: the players already in it
+## may invite a replacement, and nobody else is offered a way in.
+const AUDIENCE_INVITE_ONLY := "invite_only"
+## Audiences set_activity() accepts. The platform's own names, validated here so a typo in
+## a phase mapping fails as INVALID instead of reaching the service.
+const AUDIENCES := ["followed", "invite_only", "public"]
 
 ## Whether the platform may offer this session across network boundaries.
 ##
@@ -120,17 +126,22 @@ enum WriteResult {
 ## player counts, join restriction and group id up to date for as long as the activity
 ## is joinable, so all four move together on every call. `group_id` is shared by every
 ## member of a session, which is what lets the platform group them in one activity.
-func set_activity(user: Variant, connection_string: String, max_players: int, current_players: int, group_id: String = "") -> WriteResult:
+## `audience` is the join restriction; callers that do not pass one keep the followed
+## default every hosted match has always used.
+func set_activity(user: Variant, connection_string: String, max_players: int, current_players: int, group_id: String = "", audience: String = JOIN_RESTRICTION) -> WriteResult:
 	var activity: Variant = _multiplayer_activity()
 	if activity == null or user == null:
 		return WriteResult.UNAVAILABLE
 	if connection_string.is_empty():
 		push_warning("[Activity] No lobby connection string; the session will not be joinable from the platform UI.")
 		return WriteResult.INVALID
+	if not AUDIENCES.has(audience):
+		push_warning("[Activity] Unknown activity audience '%s'; nothing was published." % audience)
+		return WriteResult.INVALID
 	var result: Variant = await activity.set_activity_async(
 		user,
 		connection_string,
-		JOIN_RESTRICTION,
+		audience,
 		maxi(max_players, 0),
 		maxi(current_players, 0),
 		group_id,

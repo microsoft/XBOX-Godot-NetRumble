@@ -261,9 +261,11 @@ and `COMMUNICATIONS := 252` are the `XPRIVILEGE_MULTIPLAYER_SESSIONS` and
 the cache bypassed. The requirement is explicit that privilege state must not be
 assumed to persist.
 
-`NetManager._require_multiplayer_privilege()` gates host, join-by-code and
-join-by-invite through one funnel.  `PlatformSession.apply_chat_privilege()` resolves
-communications before the Party network is built.
+`NetManager._resolve_signed_in_user()` gates host, join-by-code, join-by-invite and a
+[matchmaking](matchmaking.md) group's opening through one funnel, asking
+`_multiplayer_privilege_denial()` before any Party work; the **Matchmaking** row, like Host
+Match, also checks with a real platform round trip at the press.
+`PlatformSession.apply_chat_privilege()` resolves communications before the Party network is built.
 Revocation detected mid-session destroys the chat control. After the privilege is restored,
 leave/rejoin is required to recreate it; live network reconfiguration is not demonstrated.
 
@@ -272,7 +274,7 @@ fails (with a warning for failed queries). Real registered XBOX on PC is support
 bypasses these checks. Known denial is enforced, but this fallback is a sample limitation.
 
 **Code:** `scripts/services/privilege_service.gd`,
-`scripts/autoload/net_manager.gd` (`_require_multiplayer_privilege`),
+`scripts/autoload/net_manager.gd` (`_resolve_signed_in_user`, `_multiplayer_privilege_denial`),
 `scripts/autoload/platform_session.gd` (`apply_chat_privilege`).
 
 ---
@@ -463,6 +465,10 @@ for PC builds using XBOX sign-in, through Game Bar.
 - `ActivityService` publishes an activity on host and join, keeps player count, the
   `followed` join restriction and a `group_id` (the join code) in step with the roster,
   and deletes the activity on leave. Updates are coalesced, so a join storm is one call.
+- A [matchmaking](matchmaking.md) group publishes the same way from its lobby with a capacity of
+  four and the lobby id as its `group_id`. It takes the activity down while the group searches,
+  so the shell never offers a group that has stopped admitting players, and an arranged rematch
+  lobby publishes with the `invite_only` restriction.
 - It subscribes to the GDK singleton's `activation` for `invite_accepted`,
   `pending_invite_received` and `protocol_activated`, normalizing all three into one
   `join_requested` signal.
@@ -474,7 +480,13 @@ for PC builds using XBOX sign-in, through Game Bar.
   never reached the lobby was a certification failure for exactly this reason.
 - `InviteRouter` buffers an activation that arrives before sign-in resolves (the normal
   path for a cold launch from an invite), resolves the host's XUID when an activation
-  names only the host, and lands the player in the lobby.
+  names only the host -- before touching the current session, so a failed lookup costs the
+  player nothing -- and lands the player in the lobby. An activation for the very lobby the
+  player already holds is acknowledged rather than left and rejoined.
+- An invitation into a [matchmaking](matchmaking.md) lobby lands the player only where its
+  destination allows: a group that is still gathering, or an arranged match's lobby between
+  rounds, which seats the player as a rematch replacement. A group that is searching, a match
+  in play and an unrecognized lobby are refused before any Party network call, with the reason.
 - The GDK runtime starts at process launch through `XboxBootstrap`, ahead of `Services`,
   so an activation delivered before sign-in is not dropped. Autoload order in
   `project.godot` is what guarantees this.

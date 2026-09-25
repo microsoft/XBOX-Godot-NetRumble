@@ -101,7 +101,10 @@ var _account_generation := -1
 func _ready() -> void:
 	super._ready()
 	_account_generation = Services.account_generation()
-	if not Services.is_account_ready() or not NetManager.has_session():
+	# A matchmaking flow can be live with no session bound -- between its staging and
+	# arranged sessions -- and a lobby rebuilt then keeps showing the flow's phase instead
+	# of evicting the player to the menu in the middle of their match handoff.
+	if not Services.is_account_ready() or not (NetManager.has_session() or NetManager.has_online_flow()):
 		ScreenManager.replace_all.call_deferred(ScreenManager.ACQUIRE_USER if not Services.is_account_ready() else ScreenManager.MAIN_MENU)
 		return
 
@@ -145,6 +148,7 @@ func _ready() -> void:
 	# Guests see the join code and the invite slots too, and both are only honest while
 	# the match is actually taking players.
 	NetManager.join_admission_changed.connect(_on_join_admission_changed)
+	NetManager.flow_changed.connect(_on_flow_changed)
 
 	_refresh_all()
 	_on_countdown_changed(0)
@@ -154,9 +158,21 @@ func _ready() -> void:
 
 	# Arriving in the waiting lobby is what reopens a session that a match closed. A
 	# freshly hosted one is already open, so this only fires on the way back from a
-	# match -- or as the retry path after a reopen that failed.
-	if NetManager.has_session() and NetManager.is_host() and not NetManager.is_accepting_joins():
+	# match -- or as the retry path after a reopen that failed. A matchmaking group is
+	# reopened only by its own phases: rebuilding this screen mid-search must never unlock
+	# a staging lobby whose ticket is still live.
+	if NetManager.has_session() and NetManager.is_host() and not NetManager.is_accepting_joins() \
+			and _reopen_allowed():
 		_reopen_joins()
+	_present_flow_outcome.call_deferred()
+
+
+## Whether this screen may reopen a closed session on arrival: always for a hosted match,
+## and for a matchmaking group only in its arranged rematch phase.
+func _reopen_allowed() -> bool:
+	if not NetManager.has_online_flow():
+		return true
+	return int(NetManager.flow_snapshot().get("phase", -1)) == MatchmakingFlow.Phase.REMATCH_GATHERING
 
 
 ## Roster rows are real focus targets so a controller can navigate to Invite and
@@ -255,7 +271,7 @@ func _build_ship_tabs() -> void:
 
 
 func _on_ship_tab_pressed(index: int) -> void:
-	if not _account_current():
+	if not _account_current() or not NetManager.can_customize():
 		return
 	_selected_style_id = index
 	NetManager.set_local_appearance(_selected_color_id, _selected_style_id)
@@ -343,7 +359,7 @@ func _build_color_tabs() -> void:
 
 
 func _on_color_selected(color_id: int) -> void:
-	if not _account_current() or _colors_taken_by_others().has(color_id):
+	if not _account_current() or not NetManager.can_customize() or _colors_taken_by_others().has(color_id):
 		return
 	_selected_color_id = color_id
 	NetManager.set_local_appearance(_selected_color_id, _selected_style_id)
@@ -407,10 +423,28 @@ func _refresh_game_type() -> void:
 func _refresh_rules() -> void:
 	var rules := Assets.game_mode(NetManager.game_mode_type)
 	var minutes := int(rules.time_limit / 60.0)
-	_rules_label.text = "Score to win: %d\nTime limit: %d min\nPlayers: %d" % [
+	_rules_label.text = "Score to win: %d\nTime limit: %d min\n%s" % [
 		rules.target_score,
 		minutes,
-		_roster_capacity(),
+		_players_line(),
+	]
+
+
+## A matchmaking group is not the match: it fills up to four here and the service finds
+## whoever else the four-player match needs, so the two numbers are shown apart. Once the
+## match exists the lobby is the match's own, and shows its players.
+func _players_line() -> String:
+	if not NetManager.has_online_flow():
+		return "Players: %d" % _roster_capacity()
+	var flow := NetManager.flow_snapshot()
+	var phase := int(flow.get("phase", -1))
+	if phase in [MatchmakingFlow.Phase.ADMITTING_COHORT, MatchmakingFlow.Phase.COMMITTING_START,
+			MatchmakingFlow.Phase.GAMEPLAY, MatchmakingFlow.Phase.REMATCH_GATHERING]:
+		return "Players %d/%d" % [NetManager.players.size(), int(flow.get("match_size", NetManager.session_capacity()))]
+	return "Group %d/%d  ·  Match %d" % [
+		NetManager.players.size(),
+		int(flow.get("capacity", NetManager.session_capacity())),
+		int(flow.get("match_size", NetManager.session_capacity())),
 	]
 
 
@@ -492,6 +526,10 @@ func _can_invite() -> bool:
 		return false
 	if not NetManager.is_accepting_joins():
 		return false
+	# A matchmaking group's local gate can be open while it must not be advertised --
+	# admitting its own arranged cohort -- so the social veto decides, not the gate.
+	if NetManager.has_online_flow() and not bool(NetManager.flow_social_snapshot().get("joinable", false)):
+		return false
 	return Services.xbox_user() != null
 
 
@@ -527,11 +565,13 @@ func _on_player_actions_closed() -> void:
 
 
 ## Practice is a single-machine session nobody can join, so the roster collapses to the
-## local player plus whatever AI opponents have been configured.
+## local player plus whatever AI opponents have been configured. Online, the session's own
+## capacity decides -- four for a matchmaking group -- read from the same number the
+## published activity uses.
 func _roster_capacity() -> int:
 	if NetManager.is_offline():
 		return clampi(1 + NetManager.bot_count(), 1, _ROSTER_SLOT_MAX)
-	return clampi(Assets.game_mode(NetManager.game_mode_type).player_count, 1, _ROSTER_SLOT_MAX)
+	return clampi(NetManager.session_capacity(), 1, _ROSTER_SLOT_MAX)
 
 
 func _refresh_roster() -> void:
@@ -575,6 +615,13 @@ func _toggle_ready() -> void:
 ## STARTING first would leave the lobby advertised and its join code live for the whole
 ## match, which is how a latecomer reached a session that had already begun.
 func _try_auto_start() -> void:
+	# A matchmaking group takes the hosted start only in its arranged rematch round. A
+	# gathering group's owner flow starts a search -- not a match -- once the whole group is
+	# ready, and the matched game's start is the flow's strict commit, owned outside this
+	# screen so a rebuilt lobby can neither skip nor repeat it.
+	if NetManager.has_online_flow() \
+			and int(NetManager.flow_snapshot().get("phase", -1)) != MatchmakingFlow.Phase.REMATCH_GATHERING:
+		return
 	if _transitioning or _start_blocked or _recovering or not _admission_action.is_empty() or not NetManager.is_host():
 		return
 	if not _can_start():
@@ -724,6 +771,11 @@ func _refresh_status() -> void:
 		_state_label.text = _countdown_text
 		_state_label.visible = true
 		return
+	var flow_text := _flow_status_text()
+	if not flow_text.is_empty():
+		_state_label.text = flow_text
+		_state_label.visible = true
+		return
 	var local := NetManager.local_player()
 	if _admission_action == "closing":
 		_state_label.text = "Closing the match to new players\u2026"
@@ -784,6 +836,74 @@ func _on_roster_changed() -> void:
 
 func _on_join_admission_changed(_open: bool) -> void:
 	_refresh_all()
+
+
+func _on_flow_changed() -> void:
+	if not _account_current():
+		return
+	_refresh_all()
+	_present_flow_outcome()
+
+
+## The status line for a matchmaking group, or empty when this is not one.
+func _flow_status_text() -> String:
+	if not NetManager.has_online_flow():
+		return ""
+	var flow := NetManager.flow_snapshot()
+	var phase := int(flow.get("phase", -1))
+	var reason := String(flow.get("reason", ""))
+	if bool(flow.get("restoration_failed", false)):
+		return "The group could not be reopened. Press Ready to try again, or Back to leave."
+	if phase == MatchmakingFlow.Phase.CREATING_STAGING:
+		return "Opening the group\u2026"
+	if phase == MatchmakingFlow.Phase.FREEZING:
+		return "Getting the group ready to search\u2026"
+	if phase in [MatchmakingFlow.Phase.CREATING_TICKET, MatchmakingFlow.Phase.JOINING_TICKET]:
+		return "Starting the search\u2026"
+	if phase == MatchmakingFlow.Phase.SEARCHING:
+		return "Searching for a %d-player match\u2026" % int(flow.get("match_size", MatchmakingFlow.CAPACITY))
+	if phase == MatchmakingFlow.Phase.CANCELLING:
+		if bool(flow.get("cancel_unresolved", false)):
+			return "Still cancelling the search\u2026 You can leave; it will finish in the background."
+		return "Cancelling the search\u2026"
+	if phase == MatchmakingFlow.Phase.RESTORING_STAGING:
+		return "Returning to the group\u2026"
+	if phase in [MatchmakingFlow.Phase.MATCHED, MatchmakingFlow.Phase.JOINING_ARRANGED,
+			MatchmakingFlow.Phase.ARMING_HANDOFF, MatchmakingFlow.Phase.SWITCHING_TRANSPORT,
+			MatchmakingFlow.Phase.ADMITTING_COHORT, MatchmakingFlow.Phase.COMMITTING_START]:
+		return "Match found. Joining\u2026"
+	if phase in [MatchmakingFlow.Phase.LEAVING, MatchmakingFlow.Phase.QUARANTINED]:
+		return "Leaving the group\u2026"
+	if phase == MatchmakingFlow.Phase.GATHERING:
+		if not bool(flow.get("synced", true)):
+			return "Joining the group\u2026"
+		var local := NetManager.local_player()
+		if local != null and not local.is_ready:
+			return ("%s " % reason if not reason.is_empty() else "") + "Press Ready to search for a match"
+		return "Waiting for the group to ready up\u2026"
+	if phase in [MatchmakingFlow.Phase.GAMEPLAY, MatchmakingFlow.Phase.REMATCH_GATHERING] \
+			and not bool(flow.get("host_returned", true)):
+		return "Waiting for the host to return\u2026 You can leave at any time."
+	return ""
+
+
+## Shows the reason a search stopped, once per member and attempt. The flow keeps the
+## reason through restoration and records that it was shown, so a coalesced snapshot or a
+## rebuilt screen neither loses the explanation nor repeats it.
+func _present_flow_outcome() -> void:
+	if not _account_current() or _transitioning or not is_active or not NetManager.has_online_flow():
+		return
+	var flow := NetManager.flow_snapshot()
+	var outcome_epoch := int(flow.get("reason_epoch", 0))
+	var reason := String(flow.get("reason", ""))
+	if reason.is_empty() or outcome_epoch <= int(flow.get("presented_epoch", 0)):
+		return
+	if int(flow.get("phase", -1)) != MatchmakingFlow.Phase.GATHERING:
+		return
+	NetManager.mark_flow_outcome_presented(outcome_epoch)
+	await ScreenManager.show_dialog("Search Ended", reason, "warning", false)
+	if _account_current() and is_active:
+		_restore_lobby_focus()
 
 
 ## Every lobby panel is derived from NetManager state, so one refresh entry point
@@ -854,6 +974,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		# an in-flight decision is what that re-read exists to catch.
 		if not _admission_action.is_empty():
 			return
+		# A matchmaking group whose reopening failed retries it on Ready; a frozen group
+		# holds readiness until its search has stopped.
+		if bool(NetManager.flow_snapshot().get("restoration_failed", false)):
+			NetManager.retry_matchmaking_restore()
+			return
+		if not NetManager.can_customize():
+			return
 		# Pressing Ready again is the way out of a failed start: the host asked for the
 		# match to begin, so the attempt is live again.
 		_start_blocked = false
@@ -871,7 +998,18 @@ func _unhandled_input(event: InputEvent) -> void:
 func on_back_pressed() -> void:
 	if _transitioning:
 		return
-	var confirmed: bool = await ScreenManager.show_dialog("Leave Match", "Leave the current match?", "warning", true)
+	# The owner's Back during a search is Cancel Search: the group stays together and is
+	# restored once the service confirms. Everyone else's Back leaves -- a guest's leave
+	# withdraws its consent and stops the owner's search too.
+	var flow := NetManager.flow_snapshot()
+	if bool(flow.get("cancellable", false)):
+		var cancel: bool = await ScreenManager.show_dialog("Cancel Search", "Stop searching for a match?", "warning", true)
+		if cancel and _account_current():
+			NetManager.cancel_matchmaking_search()
+		return
+	var title := "Leave Group" if not flow.is_empty() else "Leave Match"
+	var prompt := "Leave the matchmaking group?" if not flow.is_empty() else "Leave the current match?"
+	var confirmed: bool = await ScreenManager.show_dialog(title, prompt, "warning", true)
 	if not confirmed or not _account_current():
 		return
 	_leave_to_menu()

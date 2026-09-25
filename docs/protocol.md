@@ -41,7 +41,7 @@ not over Godot RPCs.
 ## RPC routing note
 
 Godot routes every `@rpc` call by the *node path* of the node the method is declared
-on. All 30 entry points live on `NetManager` (the autoload at `/root/NetManager`).
+on. All RPC entry points live on `NetManager` (the autoload at `/root/NetManager`).
 Moving any one of them to a different node changes its route; peers running the old
 path and peers running the new path silently miss each other, and neither a headless
 import pass nor a single-instance run catches the mismatch. Anything that needs a
@@ -121,6 +121,8 @@ peers that reach the transport without passing the lobby check.
 |---|---|
 | `1.1` | First versioned release. |
 | `1.2` | `RPC_SET_VERSION` → 2: `_accept_join` and `_receive_join_admission` added for [host admission and lobby locking](multiplayer.md#closing-a-match-to-newcomers).  No payload schema changed, so `WIRE_VERSION` stayed at 1. |
+| `1.3` | `RPC_SET_VERSION` → 3: `_receive_flow_phase`, `_submit_flow_ack` and `_submit_flow_leave` added for a [matchmaking](matchmaking.md) group's search. No payload schema changed, so `WIRE_VERSION` stayed at 1. |
+| `2.4` | `RPC_SET_VERSION` → 4: `_request_flow_state` added, so a matchmaking guest can ask the group owner for its current state. `WIRE_VERSION` → 2: the `_receive_flow_phase` detail gained `request_id`, the correlation the owner echoes in its answer. No 1.3 compatibility is kept: every player in a group or match runs the same build. |
 
 ---
 
@@ -138,7 +140,7 @@ missed roster entry leaves a peer with a permanently stale view.
 | RPC method | Direction | Reliability | Purpose |
 |---|---|---|---|
 | `_request_player_identity` | host → client | reliable | Host asks a newly connected client to submit its `PlayerState` |
-| `_submit_player_identity` | client → host | reliable | Client delivers its `PlayerState` dict plus its `NRProtocol.version_string()`; host overwrites `entity_id` from Party's authenticated key |
+| `_submit_player_identity` | client → host | reliable | Client delivers its `PlayerState` dict plus its `NRProtocol.version_string()`; host overwrites `entity_id` from Party's authenticated key. In an arranged [matchmaking](matchmaking.md) session a guest sends it only once its host is proven to be the lobby's current owner -- the pinned owner's authenticated key, still the lobby's owner, with a compatible protocol and this match's id -- and a known disagreement ends the attempt instead |
 | `_reject_join` | host → client | reliable | Host refuses a peer and gives the reason; the client treats it as an end of session (match already started, or a [protocol mismatch](#protocol-version)) |
 | `_accept_join` | host → client | reliable | Host has admitted the peer and already replayed the roster and mode to it. This — not the transport attaching — is what resolves the client's pending join |
 | `_receive_join_admission` | host → all | reliable | Host's admission gate opened or closed, so every member can retire or republish its own XBOX activity |
@@ -150,6 +152,31 @@ missed roster entry leaves a peer with a permanently stale view.
 | `_receive_appearance` | host → all | reliable | Host fans out a confirmed color/style pair |
 | `_submit_player_loaded` | client → host | reliable | Client reports its gameplay scene is ready |
 | `_receive_player_loaded` | host → all | reliable | Host fans out the loaded flag; MatchDirector waits for all before unblocking |
+
+### Matchmaking group
+
+Used only inside a [matchmaking](matchmaking.md) group's staging lobby, while the group readies,
+searches and comes back from a search -- never on the arranged match's network, where the
+original groups' attempt numbers mean nothing. All are **reliable**, and the phase messages carry
+the attempt's epoch, so a late message from an earlier attempt is recognized and ignored rather
+than applied to the current one. The ticket id is not sent here: it travels in the lobby's
+`nr_search` property, and these messages only say when to look for it.
+
+| RPC method | Direction | Reliability | Purpose |
+|---|---|---|---|
+| `_receive_flow_phase` | host → all, or host → one | reliable | The group owner's phase for the current attempt (freezing, searching, cancelling, restoring or gathering), the outcome to show, and while searching the milliseconds of search time left. Each console's clock is its own, so time crosses the wire as time remaining. Sent to one member as the answer to its `_request_flow_state` |
+| `_submit_flow_ack` | client → host | reliable | A member acknowledges the freeze, or asks the owner to stop the search because it could not join the group's ticket |
+| `_submit_flow_leave` | client → host | reliable | A member leaving mid-search says so first, so the owner cancels the group's ticket instead of mistaking the departure for a network fault |
+| `_request_flow_state` | client → host | reliable | `(request_id, known_epoch)`: a member that has not seen the owner's current state -- because it has just joined, or because a ticket appeared without a search budget -- asks for it. One request at a time, abandoned after 15 seconds. Only a proven member of the staging lobby is answered, once per request id |
+
+The `_receive_flow_phase` detail dictionary:
+
+| Key | Type | Sent | Meaning |
+|---|---|---|---|
+| `request_id` | int > 0 | Only in an answer to `_request_flow_state` | Echo of the member's request. An answer with no matching request in flight is ignored |
+| `remaining_ms` | int ≥ 0 | While the owner is searching | The owner's search time left when it sent this. The member anchors it to when its request was sent, so a copy can only shorten its budget, never extend it |
+| `reason_code` | String | Restoring or gathering with a kept outcome | Why the last search stopped, as a code |
+| `reason` | String | Same as `reason_code` | Why the last search stopped, in words for the player |
 
 ### Match lifecycle
 

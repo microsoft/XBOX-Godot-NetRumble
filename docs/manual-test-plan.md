@@ -359,6 +359,51 @@ method; otherwise mark those cases **not exercised**, not implicitly passed by a
 Focused fake-SDK checks cover title-side cases, not real Party teardown or XBOX/hardware
 behavior. Receiving typed text never requires transcription flags.
 
+### Matchmaking
+
+Run these on four real accounts: the automated suite proves the title's state machine against
+fake SDK objects, not live queue, Lobby, Party, activity or invite behavior. Use four authorized,
+distinct XBOX accounts, named here by the aliases **A**, **B**, **C** and **D**, on four
+independent devices (any PC and devkit mix), one local player each, all on the identical build,
+addon and protocol, against the registered title and sandbox and the existing four-player
+`godotnr_q` queue. Record each account's permissions and connectivity, and the queue and title
+actually used, before the first case. Custom-ID transport checks can add evidence but never
+replace the XBOX privilege and invite cases.
+
+For every case record the build hash, the case ID, timestamps, roles and group sizes, whether the
+arranged lobby's owner is peer 1 of the fresh network, and each outcome with its phase timings,
+and mark it as [Recording a run](#recording-a-run) describes. Name players only by alias. Never
+put raw URIs, connection or arrangement strings, lobby keys, descriptors, tokens or XUIDs into
+logs, notes or pull requests, and keep the redacted `[Activity]` summaries. When two handles must
+be compared, compare them locally and report only whether they were equal or changed.
+
+The queue has no equality rule, so unrelated players may enter a test match: count a planned
+composition only when the roster really is that composition, and never add a hidden rule or
+change the queue to force one. A natural timeout or a particular owner that cannot be obtained is
+recorded as missing evidence, never as a pass.
+
+| # | Case | Expected |
+|---|---|---|
+| L1 | 1+1+1+1: each account opens its own group and readies | One private arranged match on a fresh network; exactly four admitted and loaded before play; movement, combat, scoring and results work; no two- or three-player start; no staging lobby or ticket left behind after the match commits |
+| L2 | 2+2: A invites B, C invites D, both groups ready | The owner's ticket carries the group and each guest joins it; every member's activity is withdrawn while searching; one four-player match results. Each group's owner leaves its old lobby after its guests, so no guest's handoff ends with the group's owner lost, and the first match starts only after all four have left their old lobbies |
+| L3 | 3+1: A, B and C form one group, D searches alone | A three-player group's local and remote members take the same flow, and a real four-player match completes |
+| L4 | The arranged owner was a staging guest | Repeat a grouped case until the service-elected owner was a staging guest. That player creates the fresh network and is peer 1; the former staging owner joins it without tearing it down. Short debugger pauses on the staging owners before the arranged join may be used, within the deadlines, and removed before acceptance; owner election is never overridden in code |
+| L5 | Full group of four: A invites B, C and D, all ready | The ticket is submitted and the service refuses it; all four keep the same lobby, unready and reopened, with *"A full group of four cannot match in this four-player queue."* shown once and their activity restored; no private match, retry loop or restart. Record whether the service refused immediately or asynchronously |
+| L6 | Cancel and search timeout | Owner Cancel, and a guest leaving while the ticket is joined or searching, stop the search with service confirmation and restore the group. A natural 600-second run without opponents, when the queue is quiet enough, is recorded as the service and title reported it, never relabelled |
+| L7 | Loss matrix | Leave or sign out the staging owner while gathering or searching; lose a required member during arrangement, admission, loading and countdown; lose the arranged owner during gameplay and rematch. The first match never starts short and never migrates authority; the reason is shown and cleanup is bounded |
+| L8 | Offline and recovery | Go offline before the staging network binds and again during the handoff: the 45-second entry versus the 30-second arranged join and 90-second handoff, immediate failure where it is definitive, 15-second cleanup and recovery, entry refused while it runs, manual retry after confirmation and a bounded quit. A failed recovery stays restart-required |
+| L9 | Return and rematch | Everyone returns at different times to the same arranged session, unready, with no new ticket, and a round of two or more starts. D leaves and is invited back through the rematch invite -- from the menu, and after leaving another group -- and admitted, with the string delivered exactly, an invite-only activity and no ticket or room code. A second copy of the same invite changes nothing; an invite into a match that is playing or closed is refused; a guest back before its host waits at most 45 seconds and may leave |
+| L10 | Mismatched build | Where a mismatched candidate can be arranged, it is refused before any RPC rather than seated in an empty match; identical builds are restored afterwards |
+| L11 | Suspend, quit, account change | During a search, the transportless handoff and results: no wrong-account activity, no late resurrection, no stale local player after a reset and a bounded quit |
+| L12 | Shipping regressions | Host Match, code join, Join Friend and full-lobby refusal unchanged. Console invite accept, Friends-card Join Game and PC activation through cases 3.37-3.38 across at least three fresh lobbies: connection strings holding `+` or mixed-case escapes arrive exactly, and both `[Activity]` lines stay redacted |
+
+L2 and L3 also carry the evidence the automated suite cannot give for the state request: a
+member entering a group, or finding a search ticket without a current search budget, asks its
+owner through the `_request_flow_state` RPC; only that authenticated sender receives the answer,
+once, and no repeated or unrelated reply follows. The suite proves the owner's decision, not this
+delivery. Live native SDK memory safety, and console save and certification acceptance, need
+evidence of their own: a clean automated suite is not that evidence.
+
 ## Tier 4: Console
 
 | # | Check | Expected |

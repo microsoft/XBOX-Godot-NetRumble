@@ -384,9 +384,12 @@ func _quit_now() -> void:
 			await get_tree().process_frame
 			if not _quit_pending:
 				return
-	if NetManager.has_session():
+	# Waited on whenever anything online is still live or unwinding -- a session, or a
+	# matchmaking flow and its tickets, lobbies and transport, which can all be pending with
+	# no peer bound. Only a title with nothing online takes the fire-and-forget leave.
+	if NetManager.has_pending_online_work():
 		_arm_drain_deadline()
-		await NetManager.leave_match_and_wait()
+		await NetManager.drain_online_work(_quit_deadline_msec)
 		# The deadline may have run out while the teardown was still going, in which case
 		# the frame loop is already stopping and there is nothing left to do here.
 		if not _quit_pending:
