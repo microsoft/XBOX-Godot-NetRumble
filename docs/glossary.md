@@ -35,13 +35,26 @@ You do not need to read this page front to back. Skim it once, then come back to
 | **mute list / avoid list** | Per-account privacy lists. A muted player's voice is suppressed for you; an avoided player is one the platform keeps you apart from. Both are the platform's decision, not the title's. |
 | **Guide** | The XBOX system overlay, opened with the XBOX button. Invites and profile cards are raised from it. |
 | **PlayFab entity** | PlayFab's addressable identity object, identified by an entity id and an entity type. Roster and chat code resolves entity ids back to display names. |
-| **Custom ID** | A PlayFab login using a developer-supplied string instead of an XBOX account. Debug authentication diagnostics only in this title: without a signed-in XboxUser it cannot initialize XGameSaveFiles or enter gameplay. |
+| **Custom ID** | A PlayFab login identified by a developer-supplied string. It is limited to debug authentication diagnostics in this title; without a signed-in XboxUser it cannot initialize XGameSaveFiles or enter gameplay. |
 
 ## Multiplayer and communication
 
 | Term | Meaning |
 |---|---|
-| **PlayFab Lobby** | The PlayFab service used here to discover a session and carry the information needed to join it. This sample uses Lobby discovery, not PlayFab Matchmaking. |
+| **PlayFab Lobby** | The PlayFab service used here to discover a session and carry the information needed to join it. Hosted play uses Lobby discovery; Matchmaking independently retains staging and arranged Lobby handles through handoff and rematch. |
+| **PlayFab Matchmaking** | PlayFab's queue-and-ticket service. A title submits ticket members, observes status, and receives an arranged-lobby connection string when a match succeeds. NetRumble exposes it through the Matchmaking row when the queue, addon and capacity-four profile are available. |
+| **match ticket** | One PlayFab Matchmaking request. It has a queue, member set, timeout and terminal result; a local timeout is not automatically the same as the service reporting no match. |
+| **ticket terminal status** | The service's current Matched, Cancelled or Failed state. It is separate from whether an earlier asynchronous cancel call has completed and from the detailed native failure cause. |
+| **queue match-size range** | The minimum and maximum player count the Matchmaking service may put in a result. `godotnr_q` allows 2-4; this is not a full-first expansion rule. |
+| **session capacity** | The maximum players the Lobby and Party network can hold. NetRumble keeps capacity four even when the active match size is smaller. |
+| **active match size** | The current humans starting or playing one round. It may be two, three or four while session capacity remains four. |
+| **Private Start** | The automatic route for a ready group of exactly four. It turns the existing staging Lobby and Party network into a private play session without a ticket, search, arrangement or replacement transport. |
+| **play session** | The retained Lobby, Party network and roster used for gameplay and later hosted rounds. Its origin is either matchmade or private, and it is never automatically re-matchmade after a game. |
+| **private session id** | A title-generated identifier for one Private Start play session. It is separate from a PlayFab matchmaking match id. |
+| **selected start set** | The 2-4 currently present arranged-session members the owner seals for the first start after all present members are connected, admitted and ready. It is a title start fact, not a complete service assignment. |
+| **arranged lobby** | A PlayFab Lobby created from a successful match arrangement rather than ordinary code/activity discovery. Every participant joins it independently using the arrangement string. |
+| **staging lobby** | The public four-slot Lobby a solo player or premade group occupies while readying. Groups of one to three may submit a ticket and retire it after arranged handoff; a full group promotes it in place through Private Start. |
+| **recovery epoch** | A monotonically increasing local generation advanced only after a confirmed PlayFab Multiplayer reset. Results from an older epoch may clean their own returned objects but cannot attach resources or alter current ownership counters. |
 | **PlayFab Party** | The PlayFab service that provides the actual networking and voice transport. It is wrapped as a Godot `MultiplayerPeer`. |
 | **Party descriptor** | The serialized handle to a Party network. A joining client reads it from the Lobby and passes it to Party to connect. |
 | **chat control** | A Party object representing one player's voice and text endpoint. Each participant needs one before audio or text can flow. |

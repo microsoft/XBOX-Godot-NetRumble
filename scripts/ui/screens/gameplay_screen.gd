@@ -474,6 +474,9 @@ func _on_match_completed(payload: Dictionary) -> void:
 		return
 	if NetManager.is_host():
 		NetManager.reset_for_next_match()
+	# A matchmaking match keeps its arranged session: the next round is a hosted rematch
+	# among whoever is still here, and the lobby reopens it through the flow.
+	NetManager.flow_returned_to_lobby()
 	ScreenManager.replace_all(ScreenManager.LOBBY)
 
 

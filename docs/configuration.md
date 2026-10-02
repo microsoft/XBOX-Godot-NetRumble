@@ -6,7 +6,7 @@ paths and console export traps. For environment capabilities, use the
 [README matrix](../README.md#what-works-where), not the presence of a loaded addon.
 
 See also: [Architecture](architecture.md) · [Multiplayer](multiplayer.md) ·
-[Platform Services](platform-services.md)
+[Matchmaking foundations](matchmaking.md) · [Platform Services](platform-services.md)
 
 ---
 
@@ -85,6 +85,55 @@ to create a studio and a title. Background reading:
 You do **not** need your own title for the primary XBOX path; the committed sample title serves
 it. You need one for the custom-ID path below, and for any game of your own.
 
+Matchmaking uses queue `godotnr_q` and reads the exported `GameModeConfig.player_count` as the
+room/network capacity. The supported capacity remains four and each ticket has one 600-second
+native deadline. Quick Match is available only while the configured Deathmatch capacity is four.
+A ready group of one to three submits a ticket. A full group of four never submits one; it uses
+Private Start in the same lobby and network.
+
+### Supported MatchmakingQueue
+
+The provisioned queue is:
+
+```json
+{
+  "Name": "godotnr_q",
+  "MinMatchSize": 2,
+  "MaxMatchSize": 4,
+  "ServerAllocationEnabled": false,
+  "Rules": []
+}
+```
+
+See [Configuring matchmaking queues](https://learn.microsoft.com/en-us/xbox/playfab/multiplayer/matchmaking/config-queues)
+and [Matchmaking scenario and configuration examples](https://learn.microsoft.com/en-us/xbox/playfab/multiplayer/matchmaking/config-examples).
+
+This configuration permits two-, three- or four-player results as soon as compatible tickets
+exist; it does not prefer four and later expand downward. A ticket still needs at least one other
+ticket, even when its own premade already meets `MinMatchSize`. A ticket already at
+`MaxMatchSize` is rejected. The normal full-group path does not submit that ticket. If a
+maximum-sized ticket still reaches the service, its rejection remains a matchmaking result and
+never selects Private Start after the request.
+
+Preferring a full match first would require a `MatchTotalRule` with `MinOverrides` and a
+per-player count attribute. That rule, attribute, teams and server allocation are **not**
+part of this sample's supported queue.
+
+Quick Match validates the addon surface it requires before entry. Optional diagnostic fields are
+read only when present, and ordinary lobby-code search is not required for Quick Match. In particular,
+`PlayFabLobbyJoinConfig` must expose `max_member_count`, `access_policy`,
+`owner_migration_policy`, `restrict_invites_to_lobby_owner` and `member_properties`;
+`PlayFabLobbyUpdateConfig` must expose `access_policy`, `lobby_properties` and
+`search_properties`;
+`PlayFabMatchmakingMember` must expose both `user` and `attributes`; and the Lobby, Party
+network/peer and service methods used by staging, handoff, admission, updates, locks and cleanup
+must be present. `max_players` belongs to `PlayFabLobbyConfig` and is not an alias for the
+arranged join field.
+
+Build from Sample addon revision
+`442d7908ab27e18b60d047f51eb2f342efa7df1d` pinned by this repository and record the rebuilt
+addon package with validation results. A gitlink by itself does not identify the loaded binaries.
+
 ### 3. Get XBOX title and sandbox access
 
 The XBOX half (sign-in, friends, invites and achievements against the live service) needs a
@@ -133,8 +182,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Get-ChildItem .\tools\*.ps1 | Unblock-File
 ```
 
-`-Scope Process` lasts only for that terminal, which is the smaller change of the two. Clone
-with `git` instead of downloading a zip, and the `Unblock-File` step is unnecessary.
+`-Scope Process` lasts only for that terminal, which is the smaller change of the two. A `git`
+clone does not carry the zip download's mark-of-the-web, so `Unblock-File` is unnecessary.
 
 ### What works without the full set
 
@@ -218,7 +267,7 @@ canceled sync, inaccessible paths and invalid saves remain blocking Retry/Back e
 
 `profile.json`, `history.json` and `stats.json` belong in its `NetRumble` subdirectory,
 not directly in the SDK root. PC preparation preserves valid current-format saves from the
-previous root-level layout without deleting originals.
+legacy root-level layout without deleting source files.
 No shared `settings.cfg`/history/stats or `--pf-user` cache is read or imported, and historical
 files are not moved or deleted. There is no migration setup step or alternate save backend.
 See [Game Saves behavior](platform-services.md#game-saves) and
@@ -369,7 +418,8 @@ PlayFab's lobby search index is **eventually consistent** and `FindLobbies` is r
 `PartyService._find_lobby()` performs a **single lookup**; a miss or a failed search leaves
 the code editable for an explicit retry, and a result already at its `max_member_count` is
 refused as full without joining. The code-join operation times out after 45 seconds.
-See [connection flows](multiplayer.md#connection-flows). No Matchmaking queue/ticket setup is used.
+See [connection flows](multiplayer.md#connection-flows). Hosted matches do not use a Matchmaking
+queue; Quick Match uses `godotnr_q`.
 
 ---
 
@@ -413,7 +463,7 @@ XblPCSandbox /set XDKS.1
 Run `/set` only with the machine owner's authorization; it needs **administrator privileges**
 and is **machine-wide**. It restarts the XBOX Live
 Auth Manager and affects every signed-in user on the PC, not just this project. `/get` does not.
-Record the previous sandbox before changing it and restore that value when finished;
+Record the current sandbox before changing it and restore that recorded value when finished;
 `XblPCSandbox /retail` is appropriate only if the prior state was retail.
 After setup, sign in to the XBOX app with the sandbox test account before registered launch.
 

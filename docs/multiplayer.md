@@ -7,10 +7,14 @@
 **PlayFab Lobby** discovers sessions and carries the Party descriptor. **PlayFab Party**
 authenticates peers and carries Godot gameplay traffic plus its separate voice/text channel.
 **XBOX multiplayer activity** makes that Lobby session discoverable through friends and invites.
-This sample does not use the PlayFab Matchmaking queue/ticket product.
+The menu shows a focusable **Matchmaking** row for PlayFab tickets, automatic full-group Private
+Start and retained rematches; [Matchmaking](matchmaking.md) documents that lifecycle. The row
+opens a group when its service/profile dependencies are available and otherwise explains the
+exact denial.
 
 See also: [Architecture](architecture.md) · [Platform Services](platform-services.md) ·
-[Configuration](configuration.md) · [Walkthroughs](walkthroughs.md).
+[Configuration](configuration.md) · [Matchmaking foundations](matchmaking.md) ·
+[Walkthroughs](walkthroughs.md).
 The [README matrix](../README.md#what-works-where) defines environment coverage.
 
 ---
@@ -28,10 +32,11 @@ alone or a lower-level unchecked privilege verdict cannot enable gameplay.
 
 ### Host
 
-1. `NetManager` calls `_require_multiplayer_privilege()`. See
+1. `NetManager` resolves the current multiplayer privilege through
+   `_multiplayer_privilege_denial()`. See
    [Privileges](platform-services.md#privileges-and-player-communication).
 2. The **sample wrapper** `PartyService.host()` initializes Party and PlayFab Multiplayer,
-   leaves any previous network, and generates a five-character code.
+   completes active-session cleanup, and generates a five-character code.
 3. `ChatService.ensure_control()` calls `PlayFab.party.chat.create_local_chat_control_async()`
    **before** the network call, when communications are allowed.
 4. `PlayFab.party.create_and_join_network_async(user, config)` creates the network; the code
@@ -45,7 +50,8 @@ alone or a lower-level unchecked privilege verdict cannot enable gameplay.
 
 ### Join by lobby code
 
-1. `NetManager` calls `_require_multiplayer_privilege()`.
+1. `NetManager` resolves the current multiplayer privilege through
+   `_multiplayer_privilege_denial()`.
 2. The **sample wrapper** `PartyService.join()` normalizes the code.
    `_find_lobby()` makes **one** `PlayFab.multiplayer.find_lobbies_async()`
    lookup for `string_key1`. Search is eventually consistent and rate-limited; a miss
@@ -94,6 +100,13 @@ code and message go to the `[Party] <stage> failed (…)` warning instead. See
    Save-loading failure offers Retry/Back, not a route around readiness. An invite
    received while already playing asks before leaving the current session.
 
+The same opaque connection-string path has three explicit Matchmaking destinations. Ordinary
+hosted lobbies keep the behavior above; an unlocked matchmaking staging Lobby is admitted only
+while Gathering; and an arranged Lobby is admitted only during a valid
+`rematch_gathering` round. Searching/bootstrap/gameplay/locked/incompatible candidates are left
+before Party authentication. A rematch replacement joins the retained arranged Lobby/network
+with the shared `NetRumble` invitation id and creates neither a ticket nor a new arrangement.
+
 Join Friend and shell invites require a registered XBOX session. Custom-ID has no XBOX friends
 or activity; the UI explains that unavailability. An ended/full/in-progress/incompatible session
 can still refuse a valid-looking activation. See the [invite walkthrough](walkthroughs.md#friends-and-cold-launch-invites).
@@ -123,11 +136,36 @@ Host loss ends clients' sessions and returns them to the **main menu**; a comple
 returns to the lobby. Suspend abandons local state synchronously rather than awaiting these calls.
 See [lifecycle](architecture.md#process-lifecycle) and [terminal loss](architecture.md#how-a-match-ends-badly).
 
+An already-admitted ordinary hosted/code/invite session may continue when only that client's
+local Lobby notification connection is lost while its Party transport, session identity and
+pinned host remain unchanged. This is continuity of an established session, not fresh Lobby
+proof: a join still awaiting admission is refused, known host loss/change still ends the match,
+and scoped Matchmaking staging/arranged Lobby loss remains terminal.
+
+Scoped matchmaking calls have a separate lifetime from their screens. Each native
+create/join/prepare/transport/lock/post call has an absolute shared-clock deadline and an
+operation handle. A timed-out caller can stop waiting while the late native result remains owned;
+that result may only release its captured Lobby/network. A failed scoped Lobby or Party leave
+returns its service error but remains cleanup-pending until confirmed multiplayer recovery; a
+failed recovery keeps online entry closed until restart. An unexpected scoped Lobby disconnect or
+owner change reports `context_lost`, independently from Party `network_lost`. If #14's terminal
+cleanup confirms a PlayFab Multiplayer shutdown/reset, the service advances its recovery epoch
+and invalidates old ticket work before new online entry is allowed.
+
+Cleanup-pending and cleanup-running are separate facts. A retained failed leave still blocks new
+online work while idle, but an available lifecycle owner starts the existing recovery immediately;
+Quit waits for cleanup that is actually executing rather than spending its budget on an inert
+obligation.
+
+Arming matchmaking handoff changes only how loss of the captured old **Party transport** is
+routed. An unexpected staging `context_lost` remains terminal before or after arming, as does any
+arranged Lobby loss. Expected staging Lobby teardown is an owned `leave_lobby()` retirement,
+which disconnects the state callback before native leave and emits no `context_lost`.
+
 **Known blocker:** [microsoft/XBOX-Godot-Sample#169](https://github.com/microsoft/XBOX-Godot-Sample/issues/169)
 The pinned addon's `PlayFab.party.chat.destroy_local_chat_control_async()` await did not resolve
-in the observed live run. That call is no longer on the leave path — the chat control is retained
-across matches — so leaving and rejoining no longer waits on it, and a live leave/rejoin has since
-completed. The addon defect itself is unfixed: the call still runs at title exit, where
+in the observed live run. Session leave retains the chat control across matches, so leave/rejoin
+does not wait on that call. The addon defect itself is unfixed: the call still runs at title exit, where
 `main.gd::_quit_now()` holds it inside the shutdown drain so it can delay an exit but not hang
 one. Quitting immediately after a voice match has not been retested since that change, and no
 native edit, fire-and-forget destruction or forced-exit workaround is included.
@@ -140,6 +178,10 @@ native edit, fire-and-forget destruction or forced-exit workaround is included.
 `MultiplayerPeer`. Every `@rpc` in `net_manager.gd` is ordinary Godot RPC. Only the peer
 *construction* is PlayFab-specific, and it lives entirely in
 `scripts/services/party_service.gd`.
+
+Build from Sample addon revision
+`442d7908ab27e18b60d047f51eb2f342efa7df1d` pinned by this repository and record that revision
+with the rebuilt package validation results.
 
 ---
 
@@ -160,6 +202,46 @@ the network is created and passed on both sides. Getting this wrong produces:
 ```
 AuthenticateLocalUser: invalid argument specified
 ```
+
+### Matchmaking cancellation and detailed failures
+
+Ticket status, cancellation completion and detailed service cause are separate. The title keeps
+an abandoned ticket owned until native terminal truth and the cancel operation have both settled,
+or a confirmed Multiplayer reset invalidates that runtime. A Matched ticket is never relabelled
+Cancelled and never starts a match after the player has bound a leave/cancel intent.
+
+The supported addon publishes one terminal ticket event and preserves the cached snapshot after
+native retirement. If Matched wins a cancel race, the completion returns that matched snapshot;
+the title preserves the player's stop intent, releases the observer and needs no routine service
+reset. Confirmed runtime recovery remains a bounded safety net for native work that is explicitly
+unanswered or fails.
+
+Terminal failure forwards its native HRESULT, so the title can identify the queue's ticket-size
+rejection. Generic early `E_FAIL` wrappers remain generic Matchmaking failures and are not
+relabelled from message text. A full group normally starts privately before ticket creation; an
+unexpected maximum-sized ticket failure remains a failure, not a late route-selection signal.
+
+For the first matchmade start, the arranged Lobby stays private and unlocked while matched callers
+arrive and join the fresh Party network. The owner starts with the current 2-4 present members
+only after every present member is connected, admitted, compatible and finished with staging
+cleanup. A present member still connecting blocks selection; a known incompatible present member
+ends the initial attempt. No timer waits for an unknown assigned total.
+
+A full ready group of four takes a different path before ticket creation. The title locks its
+current staging Lobby and changes only its access, kind and private owner control. The same Lobby,
+Party network, descriptor, peer and owner become the private play session; there is no
+arrangement, new transport or room code. All four remain required through the first countdown and
+loading.
+
+Once the owner selects a matchmade start set, admission closes, the native Lobby is locked and
+that exact set is rechecked through loading. Later arrivals cannot join that round and may need to
+search again. Private Start similarly keeps its captured four fixed through first `RUNNING`.
+
+Results return either origin to the same capacity-four play session for hosted ready-up rounds
+rather than automatically starting another search. Those rounds use two to four current humans,
+are invite-only while open, and accept compatible replacements through the retained Lobby and
+Party network. A private replacement carries the private session id before Party entry; a
+matchmade replacement carries the match id.
 
 ### `find_lobbies_async` resolves to `PlayFabLobbySearchResult`
 
@@ -182,7 +264,7 @@ Maintainer note: two things are worth knowing before editing the voice path:
   is decoupled from `create_and_join_network_async` / `join_network_async`, and a network join
   never creates one. `ChatService.ensure_control()` is therefore called from both the host and
   join paths *before* the network call. Creation is serialized with ordinary destruction and
-  canceled-control cleanup: a replacement cannot be created until the previous control's
+  canceled-control cleanup: a replacement cannot be created until the active control's
   destruction completes.
 - **Talking indicators are not wired up.** `Available` and `Muted` reflect real state, but the
   defined `TALKING` indicator is not emitted by the sample. Demonstrate voice by hearing a
@@ -287,9 +369,9 @@ Every one of those transactions is bound to a session identity. `NetManager.sess
 returns a number that no later session reuses; the lobby captures it before each service call
 and each recovery dialog and re-checks it afterwards, because `has_session()` answers "is there
 a session" and by then the useful question is "is this still *that* session". Retry after the
-lock failed re-validates that the match is still startable — if the last other player left or
-un-readied while the dialog was up, it reopens the lobby instead of retrying a start that would
-do nothing and leave the host sealed into a solo lobby with no join code.
+lock failed re-validates that the match is still startable. If the last other player left or
+un-readied while the dialog was up, it reopens the lobby; retry is offered only while the start
+conditions still hold.
 
 XBOX activity follows admission on every member, host and guest alike: `_receive_join_admission`
 mirrors the host's gate onto each client, and `PlatformSession` retires or republishes its own
@@ -384,7 +466,7 @@ Detailed interpolation, prediction and latency mechanics moved to the
 
 ## Testing two players on one PC
 
-**Two custom-ID windows are no longer a playable multiplayer test path.** The sample's
+**Two custom-ID windows are not a playable multiplayer test path.** The sample's
 simplified XBOX user model uses the launching account. A `--pf-user` custom-ID login may
 authenticate to PlayFab, but lacks the signed-in XboxUser needed to initialize XGameSaveFiles.
 It cannot enter Practice, host/join or redeem an invite, and there is no per-token save cache.

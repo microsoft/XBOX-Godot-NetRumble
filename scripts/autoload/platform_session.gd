@@ -94,6 +94,9 @@ func _init() -> void:
 	# Joinability is the other half of the activity's truth: a session that has closed to
 	# newcomers must stop being offered as one, and every member advertises their own.
 	NetManager.join_admission_changed.connect(_on_join_admission_changed_for_activity)
+	# A matchmaking flow's phase is a third: freezing, searching and bootstrapping groups
+	# are never advertised, and a restored group is advertised again.
+	NetManager.flow_changed.connect(_on_flow_changed_for_activity)
 	# Same reasoning for the communication policy: every roster change re-evaluates who
 	# this account is allowed to hear and read.
 	NetManager.roster_changed.connect(_on_roster_changed_for_chat_policy)
@@ -187,6 +190,15 @@ func publish_activity() -> void:
 ## activity is just as visible to their friends as the host's, and NetManager mirrors the
 ## host's admission state onto every client so they all agree on the answer.
 func _session_is_joinable() -> bool:
+	# A matchmaking flow's social veto comes before everything, the handover hold below
+	# included: a freezing, searching or bootstrapping group is never advertised, whatever
+	# the local admission gate says, and nothing queued before the freeze can republish it.
+	if NetManager.has_online_flow():
+		if _activity() == null or _xbox_user() == null or _party() == null:
+			return false
+		return bool(NetManager.flow_social_snapshot().get("joinable", false))
+	if NetManager.is_entering_matchmaking():
+		return false
 	# Mid-handover the old session is being torn down and the new one does not exist yet,
 	# so the honest answer is "no" and the useful one is "wait".
 	if _activity_handover:
@@ -223,7 +235,7 @@ func _queue_activity_update() -> void:
 		return
 	_activity_update_queued = true
 	var generation := Services.account_generation()
-	await NetManager.get_tree().create_timer(0.5).timeout
+	await Services.clock().sleep_seconds(0.5)
 	if not Services.is_current_account(generation):
 		return
 	_activity_update_queued = false
@@ -239,6 +251,12 @@ func retire_activity() -> void:
 	# to come down should not be denied them because publishing it had used them up.
 	_activity_retries_used = 0
 	_write_activity()
+
+
+## Whether this member currently wants an activity published -- the desired state, which
+## the matchmaking handoff checks is already retired before it ends the old session.
+func wants_activity() -> bool:
+	return _activity_published
 
 
 func resume_activity() -> void:
@@ -297,15 +315,27 @@ func _write_activity() -> void:
 				continue
 			_activity_owner = user
 			_activity_remote = _Remote.UNKNOWN
-			# The join code is the session's stable shared identifier — every member has
-			# the same one and it lives as long as the session does, which is exactly
-			# what the activity's group id is for.
-			result = await activity.set_activity(
-				user,
-				party.lobby_connection_string(),
-				_max_players(),
-				NetManager.players.size(),
-				NetManager.join_code)
+			# A matchmaking group advertises its own lobby -- connection string, capacity,
+			# audience and group id all come from the flow's social snapshot. A hosted match
+			# keeps the join code as its group id: the session's stable shared identifier,
+			# which every member has and which lives as long as the session does.
+			var social := NetManager.flow_social_snapshot()
+			if social.is_empty():
+				result = await activity.set_activity(
+					user,
+					party.lobby_connection_string(),
+					_max_players(),
+					NetManager.players.size(),
+					NetManager.join_code,
+					ActivityService.JOIN_RESTRICTION)
+			else:
+				result = await activity.set_activity(
+					user,
+					String(social.get("connection_string", "")),
+					int(social.get("capacity", _max_players())),
+					NetManager.players.size(),
+					String(social.get("group_id", "")),
+					String(social.get("audience", ActivityService.JOIN_RESTRICTION)))
 		else:
 			_activity_remote = _Remote.UNKNOWN
 			result = await activity.delete_activity(user)
@@ -363,7 +393,7 @@ func _schedule_activity_retry(target: bool, result: ActivityService.WriteResult)
 	var generation := Services.account_generation()
 	var epoch := _activity_epoch
 	var owner: Variant = _activity_owner
-	await NetManager.get_tree().create_timer(delay).timeout
+	await Services.clock().sleep_seconds(delay)
 	if epoch != _activity_epoch:
 		return
 	_activity_retry_pending = false
@@ -381,13 +411,20 @@ func update_presence(status: String) -> void:
 		Services.update_presence(status)
 
 
+## The session's own capacity -- four for a matchmaking group, the game mode's count for a
+## hosted match -- read from the same place as the lobby's roster slots.
 func _max_players() -> int:
-	var mode := Assets.game_mode(NetManager.game_mode_type)
-	return mode.player_count if mode != null else 0
+	return NetManager.session_capacity()
 
 
 func _on_roster_changed_for_activity() -> void:
 	_queue_activity_update()
+
+
+## A matchmaking flow changed phase. Publishing re-reads the flow's social veto, so this
+## retires the activity when a group freezes and republishes it when the group is restored.
+func _on_flow_changed_for_activity() -> void:
+	publish_activity()
 
 
 ## Someone arriving mid-match has been played with, so they count as an encounter. In

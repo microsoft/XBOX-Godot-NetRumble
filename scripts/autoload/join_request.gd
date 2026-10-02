@@ -61,6 +61,11 @@ var admitted := false
 var deadline_msec := 0
 var status := ""
 var cleaning_up := false
+## Non-zero when a matchmaking flow owns this attempt: an arranged guest waiting for the
+## match host to admit it after the transport swap. Such a request is created on the new
+## session and driven by the flow's own deadline -- never by the ordinary join driver, its
+## 45-second budget, or the global teardown an ordinary abort runs.
+var flow_id := 0
 
 
 func set_status(message: String, cancelling: bool = true) -> void:
@@ -71,6 +76,10 @@ func set_status(message: String, cancelling: bool = true) -> void:
 
 func is_pending() -> bool:
 	return outcome == Outcome.PENDING
+
+
+func is_flow_owned() -> bool:
+	return flow_id != 0
 
 
 func succeeded() -> bool:

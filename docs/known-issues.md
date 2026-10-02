@@ -22,6 +22,9 @@ See also: [Troubleshooting](troubleshooting.md) · [Manual test plan](manual-tes
 | Shots sometimes bounce off another player's ship instead of counting as a hit. | PC | [#3][issue-3] |
 | Backing out of the lobby code screen with **B** can leave the menu unresponsive. Pressing **B** again gets you out and restores it. | Console | [#4][issue-4] |
 | The ready indicator on the lobby roster is slightly too big for the circle it sits in. | PC | [#1][issue-1] |
+| A full group of four does not search for a match: the queue cannot take a ticket that is already at its maximum of four. When all four are ready, the group starts a private match automatically, in the same lobby. | PC and console | [Below](#a-full-group-of-four-starts-a-private-match) |
+| A matched game starts with the players who have arrived. A player who arrives after it has started cannot join that round and is returned to the menu to search again. | PC and console | [Below](#players-who-arrive-after-a-match-starts) |
+| If a match is found at the very moment a search is cancelled or runs out of time, the group closes instead of joining it, and a new group can be opened once the old group's usual cleanup has finished. | PC and console | [Below](#a-match-found-just-as-a-search-stops) |
 
 ## The chat cleanup hang
 
@@ -48,11 +51,77 @@ an exit as a workaround.
 The full technical detail, including what the coordinated run did and did not prove, is in the
 [manual test plan](manual-test-plan.md#known-cleanup-blocker).
 
+## A full group of four starts a private match
+
+Quick Match fills Deathmatch matches of two to four players from the `godotnr_q` queue. A group of
+one to three players readies up together in its lobby, and the group's owner submits one
+matchmaking ticket for all of them, which PlayFab matches with other players.
+
+A full group of four does not search. A ticket that already carries four players meets this
+queue's four-player maximum, and the queue does not take it. The rule is documented in
+[Configuring matchmaking queues][mm-queues]:
+
+> If a ticket already meets the maximum requirement for a match, however, it is rejected.
+
+Instead, when all four are ready, the group starts a private match automatically: the same lobby
+and the same players, with no search, no ticket and nothing extra to press. Any change to who is in
+the group sets everyone back to not ready, so readiness given by four players never starts a
+search for three. After each match the group stays together for further rounds of two to four
+players. See [Private Start](matchmaking.md#private-start).
+
+If the private match cannot be started, what happens depends on how far it got, and it never
+falls back to searching for a match:
+
+- When the lobby is confirmed back as the group's own, the players still in the group are
+  returned to it, unready, with the reason, and can ready up again.
+- If, before the lobby was switched to the private match, the group's lobby cannot be reopened, it
+  stays closed until the owner tries again or leaves.
+- If the switch cannot be confirmed or undone, the group's owner leaves or is lost, or anything
+  fails once the private match has been committed, the group ends with the reason, and its lobby
+  and connection are cleaned up.
+
+## Players who arrive after a match starts
+
+A match can start with the players who have arrived. Players who arrive after it starts cannot join
+that round and may need to search again.
+
+Once PlayFab has matched a group, the matched game starts as soon as two to four of its players
+are present and ready in the match's lobby. It does not wait for every player the service
+matched. A player who arrives after the start is not added to that round. They are shown *"This
+match is already starting or in progress. Return to Matchmaking to search again."* If the game
+cannot tell why the match could not be joined, they are shown *"This match could not be joined. It
+may already have started. Return to Matchmaking to search again."* Nothing else is affected: the
+players already in the match carry on, and the late player can search again from
+**Matchmaking**.
+
+## A match found just as a search stops
+
+A search that is cancelled, left or timed out can still be matched by the service in the same
+moment. The cancel stays binding: the group does not join that match or reopen as if nothing had
+happened, and every member is shown *"A match was found just as the search stopped, so the group
+was closed."* Everyone is returned to the menu, and a new group can be opened.
+
+The cancellation still finishes: the service reports that the match won the race, and nothing is
+restarted. The group's usual cleanup of its lobby and connection then finishes, and Quick Match can
+be used again after that. Only if that answer never arrives does the
+game restart its multiplayer services -- never your account or your saves -- before Quick Match can
+be used again. Until that finishes, which takes up to about 20 seconds, the Matchmaking row
+explains that the previous session is still finishing. Signing out, or the game being suspended,
+during that wait does not skip the restart: it still runs once, and the next player can use Quick
+Match without restarting the game. An invitation accepted during that wait is kept and joined once
+the restart has finished. If that restart of the multiplayer services itself fails, online play
+stays unavailable until the game is restarted: every online option says so instead of asking you
+to try again, an invitation is answered once with the same reason, and quitting still takes no
+longer than usual. Practice is refused only while the group that was searching still holds that
+cleanup. Once it has been let go -- after signing out or a suspend, for example -- a signed-in
+player can start Practice as usual, because Practice needs no online services. See the
+configuration guide for the addon revision this sample is built from.
+
 ## What is not on this list
 
-Deliberate limits are not bugs. The sample has no host migration and no join-in-progress, it uses
-PlayFab Lobby discovery instead of matchmaking queues, and its typed text is in-match only with no
-persistence. Those are design decisions, and they are explained in
+Deliberate limits are not bugs. The sample has no host migration and no join-in-progress, Host
+Match finds its sessions through PlayFab Lobby discovery rather than a matchmaking queue, and its
+typed text is in-match only with no persistence. Those are design decisions, and they are explained in
 [what this sample does not do](multiplayer.md#scope-and-non-goals).
 
 Setup and build failures are not on this list either. If the game will not start, will not export
@@ -80,3 +149,4 @@ problem, say what each player saw, since the host and the client often see diffe
 [issue-3]: https://github.com/microsoft/XBOX-Godot-NetRumble/issues/3
 [issue-4]: https://github.com/microsoft/XBOX-Godot-NetRumble/issues/4
 [issue-169]: https://github.com/microsoft/XBOX-Godot-Sample/issues/169
+[mm-queues]: https://learn.microsoft.com/en-us/xbox/playfab/multiplayer/matchmaking/config-queues

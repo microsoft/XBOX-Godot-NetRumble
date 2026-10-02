@@ -359,6 +359,62 @@ method; otherwise mark those cases **not exercised**, not implicitly passed by a
 Focused fake-SDK checks cover title-side cases, not real Party teardown or XBOX/hardware
 behavior. Receiving typed text never requires transcription flags.
 
+### Matchmaking
+
+Run these on four real accounts: the automated suite proves the title's state machine against
+fake SDK objects, not live queue, Lobby, Party, activity or invite behavior. Use four authorized,
+distinct XBOX accounts, named here by the aliases **A**, **B**, **C** and **D**, on four
+independent devices (any PC and devkit mix), one local player each, all on the identical build,
+addon and protocol, against the registered title and sandbox and the existing `godotnr_q` queue,
+which forms matches of two to four players. A full group of four does not use the queue: it
+starts a [private match](matchmaking.md#private-start) in its own lobby (L5). V2 and C-race need
+only two of the accounts, and V3 and V-delay three; the rest use all four. Record each account's
+permissions and connectivity, and the queue and title actually used, before the first case.
+Custom-ID transport checks can add evidence but never replace the XBOX privilege and invite cases.
+
+For every case record the build hash and the addon's native revision and package identity, the case
+ID, timestamps, roles and group sizes, whether the
+arranged lobby's owner is peer 1 of the fresh network, and each outcome with its phase timings,
+and mark it as [Recording a run](#recording-a-run) describes. Name players only by alias. Never
+put raw URIs, connection or arrangement strings, lobby keys, descriptors, tokens or XUIDs into
+logs, notes or pull requests, and keep the redacted `[Activity]` summaries. When two handles must
+be compared, compare them locally and report only whether they were equal or changed.
+
+The queue has no equality rule, so unrelated players may enter a test match: count a planned
+composition only when the roster really is that composition, and never add a hidden rule or
+change the queue to force one. A natural timeout or a particular owner that cannot be obtained is
+recorded as missing evidence, never as a pass.
+
+| # | Case | Expected |
+|---|---|---|
+| L1 | 1+1+1+1: each account opens its own group and readies | Each resulting match is private, on a fresh network; four solo searches may form one match of four or two matches of two, so record which. Each match starts with the players present and ready in its arranged lobby -- record how many, and whether any matched player arrived after the start -- and every chosen player is admitted and loaded before play; movement, combat, scoring and results work; nothing waits for a fourth player; no staging lobby or ticket is left behind after a match starts |
+| L2 | 2+2: A invites B, C invites D, both groups ready | The owner's ticket carries the group and each guest joins it; every member's activity is withdrawn while searching; one match results. Each group's owner leaves its old lobby after its guests, so no guest's handoff ends with the group's owner lost, and the first match starts only after every player it starts with has left their old lobby. Record whether it started with both groups or with the first group alone |
+| L3 | 3+1: A, B and C form one group, D searches alone | A three-player group's local and remote members take the same flow, and a real match of the players who arrived completes. If D arrives after the start, D is told the match is already starting or in progress and can search again, and the three play on |
+| L4 | The arranged owner was a staging guest | Repeat a grouped case until the service-elected owner was a staging guest. That player creates the fresh network and is peer 1; the former staging owner joins it without tearing it down. Short debugger pauses on the staging owners before the arranged join may be used, within the deadlines, and removed before acceptance; owner election is never overridden in code |
+| L5 | Full group of four: A invites B, C and D, all ready | No search starts and no ticket is created. Before everyone is ready the lobby reads *Group 4/4 · Private match* and says that a private match starts without searching; once all four are ready it reads *"Starting a private match…"*, and nobody is asked to choose anything. The first match starts in the same lobby with exactly A, B, C and D, hosted by A: no new lobby or network, nobody else admitted, the lobby locked and every member's activity withdrawn before play. Movement, combat, scoring and results work. Record the time from the fourth Ready to the countdown |
+| L6 | Cancel and search timeout | Owner Cancel, and a guest leaving while the ticket is joined or searching, stop the search with service confirmation and restore the group. A natural 600-second run without opponents, when the queue is quiet enough, is recorded as the service and title reported it, never relabelled. If a match lands just as a search is cancelled, left or timed out, the group closes with the abandoned-match reason and joins nothing. The cancellation still completes: record what the `[Matchmaking]` warning shows for its answer, that nothing was restarted, and that Quick Match could be used again once the group's ordinary cleanup had finished. Should a cancellation ever go unanswered, record whether multiplayer services were restarted before Quick Match could be used again, and that it then could be, without restarting the game. If that restart of the services fails, record that every online entry -- and Practice, while the old group still holds its cleanup -- then says a restart is needed rather than asking to try again, that an invitation received meanwhile is answered once with that reason, and that quitting stays bounded |
+| L7 | Loss matrix | Leave or sign out the staging owner while gathering or searching; lose a member of a group during arrangement and admission, and a chosen player during loading and countdown; lose the arranged owner during gameplay and rematch. A player lost before the start only leaves fewer to start with, unless it belonged to a waiting member's own group; a chosen player lost before play cancels the first match rather than starting it with fewer, and authority never migrates; the reason is shown and cleanup is bounded |
+| L8 | Offline and recovery | Go offline before the staging network binds and again during the handoff: the 45-second entry versus the 30-second arranged join and 90-second handoff, immediate failure where it is definitive, 15-second cleanup and recovery, entry refused while it runs, manual retry after confirmation and a bounded quit. A failed recovery stays restart-required |
+| L9 | Return and rematch | Everyone returns at different times to the same arranged session, unready, with no new ticket, and a round of two or more starts. D leaves and is invited back through the rematch invite -- from the menu, and after leaving another group -- and admitted, with the string delivered exactly, an invite-only activity and no ticket or room code. A second copy of the same invite changes nothing; an invite into a match that is playing or closed is refused; a guest back before its host waits at most 45 seconds and may leave |
+| L10 | Mismatched build | Where a mismatched candidate can be arranged, it is refused before any RPC rather than seated in an empty match; identical builds are restored afterwards |
+| L11 | Suspend, quit, account change | During a search, the transportless handoff and results: no wrong-account activity, no late resurrection, no stale local player after a reset and a bounded quit. Also sign out, or suspend and resume, just after a cancelled search is matched anyway: record that the cancellation completes with nothing restarted, that the next account can start Quick Match without restarting the game, and that an invitation accepted meanwhile is joined once. Should that cancellation go unanswered, record that multiplayer services are restarted once and the same outcomes after it, with the invitation kept until the restart has finished |
+| L12 | Shipping regressions | Host Match, code join, Join Friend and full-lobby refusal unchanged. In a hosted match, record what a guest sees when only its own lobby-service connection drops while Party stays connected: an admitted guest keeps playing, and one still joining is refused. Console invite accept, Friends-card Join Game and PC activation through cases 3.37-3.38 across at least three fresh lobbies: connection strings holding `+` or mixed-case escapes arrive exactly, and both `[Activity]` lines stay redacted |
+| V2 | 1+1: A and B each open their own group and ready | A two-player match the service assigns. Both arrive and load before play; results, the return and a rematch round work. Record the players who actually started |
+| V3 | 2+1: A invites B, C searches alone | A three-player match the service assigns, with B joining A's ticket and every player leaving their old group lobby before the first match starts. Record the players who actually started, and whether one arrived after the start |
+| V4 | 3+1 or 2+2 | A four-player match the service assigns, run as L2 or L3. Repeat until one run's arranged owner was a staging guest, as in L4. Record the players who actually started |
+| V-delay | Delay one matched player's arrival, and separately one chosen player's loading, within the budgets | A delayed arrival either arrives before the start and plays, or arrives after it and is told the match is already starting or in progress -- record which. A delayed loading holds the first match until that player has loaded: no smaller game is started in its place. Losing the arranged owner or a chosen player before the first running game cancels the match with the reason, and cleanup is bounded |
+| P4 | Private match through its rematches: run L5, then everyone returns | Everyone returns at different times to the same lobby and session, unready, with no ticket and no search; the lobby reopens with an invite-only activity and no room code. A round of two to four current players starts once all of them are ready. D leaves and is invited back through the rematch invite and admitted, with the string delivered exactly. An invite while a round is playing is refused, and a guest back before A waits at most 45 seconds and may leave |
+| P-fault | With four ready, D leaves during *"Starting a private match…"*; separately, a member or A goes offline as the fourth readies | A departure or a failed start either returns the group to the same lobby, unready, with the reason shown once on every member and their activity restored, or ends the group with the reason and bounded cleanup -- when A is lost, or the lobby cannot be returned to the group. A group left with three does not search until its members ready again. No search starts in place of the private match, no activity is left advertised, and no game starts with fewer than the four. Record which outcome occurred and the reason shown |
+| C-race | A and B in separate groups: A's owner cancels as a match is being found, as often as practical | Record the order the `[Matchmaking]` warnings show for the cancellation's answer and the match. No match is joined after the cancel; when the match won, the group closes with *"A match was found just as the search stopped, so the group was closed."*; no entry is left waiting, and nothing is restarted when the cancellation was answered, as in L6 |
+| R-regression | Shipping and lifecycle regressions on the final build | L12 and the Tier 3 fast path, console invite accept and Friends-card Join Game (3.37, 3.38), supported PC activation, and suspend, resume and quit. Then play a matched game of two or three, return, and invite compatible players into the rematch until the lobby holds four: each is admitted, and the next round starts once everyone is ready |
+
+L2 and L3 also carry the evidence the automated suite cannot give for the state request: a
+member entering a group, or finding a search ticket without a current search budget, asks its
+owner through the `_request_flow_state` RPC; only that authenticated sender receives the answer,
+once, and no repeated or unrelated reply follows. The suite proves the owner's decision, not this
+delivery. Live native SDK memory safety, and console save and certification acceptance, need
+evidence of their own: a clean automated suite is not that evidence.
+
 ## Tier 4: Console
 
 | # | Check | Expected |

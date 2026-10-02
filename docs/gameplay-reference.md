@@ -159,6 +159,26 @@ last player finishes loading, the `STARTING` countdown runs on that final layout
 only thaws the simulation. `WARMING_UP` is kept for the `WAITING` mask but is no longer entered,
 so players are never repositioned mid-countdown.
 
+A [matchmaking](matchmaking.md) match adds one rule to its first game only. The arranged host
+admits the matched players as they arrive and starts with those present the moment they are two
+to four, every one of them connected, admitted and done with its old group lobby. It then locks
+the lobby, publishes the players it chose, readies them once itself and starts through the same
+`STARTING` path; a player who arrives after that is refused. From then until the first
+`RUNNING`, `MatchDirector` checks exactly those chosen players afresh -- before laying out the
+world and again before going live -- against what Party's authenticated transport and the lobby
+report now, not against the roster alone, because its loading loop only walks whoever is on the
+roster and would otherwise start with fewer players as readily as with all of them. A chosen
+player lost in that window cancels the match and ends the matchmaking session; the match never
+starts with fewer than it chose and there is no host migration. The rule ends at the first
+`RUNNING`. Later games in the same arranged session are ordinary hosted rematches: two to four
+current players, all ready, no ticket.
+
+A full group of four does not search: it plays a [private match](matchmaking.md#private-start)
+in its own lobby. That match's first game follows the same rule, with the group's owner as its
+host and all four of the group's players chosen. A chosen player lost before the first `RUNNING`
+cancels the match and ends the session in the same way, and later games are the same hosted
+rematches.
+
 ---
 
 ## Object and player identifiers

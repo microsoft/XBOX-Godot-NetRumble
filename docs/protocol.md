@@ -41,7 +41,7 @@ not over Godot RPCs.
 ## RPC routing note
 
 Godot routes every `@rpc` call by the *node path* of the node the method is declared
-on. All 30 entry points live on `NetManager` (the autoload at `/root/NetManager`).
+on. All RPC entry points live on `NetManager` (the autoload at `/root/NetManager`).
 Moving any one of them to a different node changes its route; peers running the old
 path and peers running the new path silently miss each other, and neither a headless
 import pass nor a single-instance run catches the mismatch. Anything that needs a
@@ -121,6 +121,9 @@ peers that reach the transport without passing the lobby check.
 |---|---|
 | `1.1` | First versioned release. |
 | `1.2` | `RPC_SET_VERSION` → 2: `_accept_join` and `_receive_join_admission` added for [host admission and lobby locking](multiplayer.md#closing-a-match-to-newcomers).  No payload schema changed, so `WIRE_VERSION` stayed at 1. |
+| `1.3` | `RPC_SET_VERSION` → 3: `_receive_flow_phase`, `_submit_flow_ack` and `_submit_flow_leave` added for a [matchmaking](matchmaking.md) group's search. No payload schema changed, so `WIRE_VERSION` stayed at 1. |
+| `2.4` | `RPC_SET_VERSION` → 4: `_request_flow_state` added, so a matchmaking guest can ask the group owner for its current state. `WIRE_VERSION` → 2: the `_receive_flow_phase` detail gained `request_id`, the correlation the owner echoes in its answer. No 1.3 compatibility is kept: every player in a group or match runs the same build. |
+| `3.4` | `WIRE_VERSION` → 3: the matched lobby's owner control gained a `starting` phase with `nr_start_generation` and `nr_start_members`, so every player reads which of the players who arrived the first match starts with (see [Matchmaking](matchmaking.md)). A full group's [private match](matchmaking.md#private-start) uses the same control under its own origin and session id: the group's search envelope gained a `private` phase, `_receive_flow_phase` carries the private start's preparation and its commit, whose detail is the session id, and `_submit_flow_ack` also acknowledges a change of who is in the gathering group. An answer to `_request_flow_state` during a private match's first start carries its session, `round`, `start_generation` and `match_state`. No `@rpc` changed, so `RPC_SET_VERSION` stayed at 4. No 2.4 compatibility is kept: every player in a group or match runs the same build. |
 
 ---
 
@@ -128,7 +131,9 @@ peers that reach the transport without passing the lobby check.
 
 Messages are grouped by purpose. Each `@rpc` annotation is of the form
 `@rpc(who_can_call, call_mode, reliability [, channel])`. All of the RPCs below use
-`call_remote` (the call does not execute on the sender).
+`call_remote` (the call does not execute on the sender). A message sent host → all goes to every
+player the host has admitted and to nobody else: a peer still waiting for its admission, or one
+the host turned away, receives none of them.
 
 ### Session and roster
 
@@ -138,18 +143,63 @@ missed roster entry leaves a peer with a permanently stale view.
 | RPC method | Direction | Reliability | Purpose |
 |---|---|---|---|
 | `_request_player_identity` | host → client | reliable | Host asks a newly connected client to submit its `PlayerState` |
-| `_submit_player_identity` | client → host | reliable | Client delivers its `PlayerState` dict plus its `NRProtocol.version_string()`; host overwrites `entity_id` from Party's authenticated key |
+| `_submit_player_identity` | client → host | reliable | Client delivers its `PlayerState` dict plus its `NRProtocol.version_string()`; host overwrites `entity_id` from Party's authenticated key. In an arranged [matchmaking](matchmaking.md) session a guest sends it only once its host is proven to be the lobby's current owner -- the pinned owner's authenticated key, still the lobby's owner, with a compatible protocol and this match's id -- and a known disagreement ends the attempt instead |
 | `_reject_join` | host → client | reliable | Host refuses a peer and gives the reason; the client treats it as an end of session (match already started, or a [protocol mismatch](#protocol-version)) |
-| `_accept_join` | host → client | reliable | Host has admitted the peer and already replayed the roster and mode to it. This — not the transport attaching — is what resolves the client's pending join |
+| `_accept_join` | host → client | reliable | Host has admitted the peer and, after its identity, sent it the whole current roster and the mode again. This — not the transport attaching — is what resolves the client's pending join. It counts only from a host the client has proven to own the lobby it joined, checked again when the join is consumed; for a rematch replacement the round it was invited into must still be gathering |
 | `_receive_join_admission` | host → all | reliable | Host's admission gate opened or closed, so every member can retire or republish its own XBOX activity |
-| `_receive_roster_entry` | host → all | reliable | Host fans out one (possibly color-adjusted) `PlayerState` to every peer |
-| `_receive_player_left` | host → all | reliable | Notifies every peer that a player has disconnected |
+| `_receive_roster_entry` | host → all | reliable | Host fans out one (possibly color-adjusted) `PlayerState` to every player |
+| `_receive_player_left` | host → all | reliable | Notifies every player that a player has disconnected |
 | `_submit_ready_state` | client → host | reliable | Client changes its ready flag |
 | `_receive_ready_state` | host → all | reliable | Host fans out a ready-flag change |
 | `_submit_appearance` | client → host | reliable | Client requests a color/style change |
 | `_receive_appearance` | host → all | reliable | Host fans out a confirmed color/style pair |
 | `_submit_player_loaded` | client → host | reliable | Client reports its gameplay scene is ready |
 | `_receive_player_loaded` | host → all | reliable | Host fans out the loaded flag; MatchDirector waits for all before unblocking |
+
+A guest acts on a host message, and answers `_request_player_identity`, only while its host is
+the current owner of the lobby the guest joined -- before admission and after it, on a hosted
+lobby or a staging lobby as on an arranged one, with or without a matchmaking group. Anything
+else from peer 1 is dropped on arrival. Admission is not a lease: a lobby whose owner changed,
+went away or is no longer connected ends the join, or the admitted session, once, with a reason.
+A lobby that shows no owner after the session has had one has lost its host. While the lobby's
+details have not arrived yet, the guest sends nothing and waits, within the join's own time. One
+exception is deliberate: when only this player's own connection to a hosted, code or invite lobby
+drops while the Party network stays up, an already admitted session carries on under the same
+host, for as long as peer 1 is still that host. A join not yet admitted is refused at once in that
+state, and a matchmaking lobby's loss still ends its group or match. A newcomer is sent the roster
+only once it is admitted: the whole current roster, and the mode again, just before `_accept_join`,
+so a player who left in the meantime is never shown to it and a guest that dropped the greeting's
+mode has it again. This uses the existing RPCs and payloads, so the protocol version is the same.
+
+### Matchmaking group
+
+Used only inside a [matchmaking](matchmaking.md) group's staging lobby, while the group readies,
+searches and comes back from a search, or starts a private match of its own -- never on the
+arranged match's network, where each staging group's attempt numbers mean nothing. All are
+**reliable**, and the phase messages carry the attempt's epoch, so a late message from an earlier
+attempt is recognized and ignored rather than applied to the current one. The ticket id is not
+sent here: it travels in the lobby's `nr_search` property, and these messages only say when to
+look for it.
+
+| RPC method | Direction | Reliability | Purpose |
+|---|---|---|---|
+| `_receive_flow_phase` | host → all, or host → one | reliable | The group owner's phase for the current attempt (freezing, searching, cancelling, restoring or gathering, or a full group's private start being prepared or committed), the outcome to show, and while searching the milliseconds of search time left. Each console's clock is its own, so time crosses the wire as time remaining. Sent to one member as the answer to its `_request_flow_state` |
+| `_submit_flow_ack` | client → host | reliable | A member acknowledges a change of who is in the gathering group, the freeze, or a private start and its control, or asks the owner to stop the search because it could not join the group's ticket |
+| `_submit_flow_leave` | client → host | reliable | A member leaving mid-search says so first, so the owner cancels the group's ticket instead of mistaking the departure for a network fault |
+| `_request_flow_state` | client → host | reliable | `(request_id, known_epoch)`: a member that has not seen the owner's current state -- because it has just joined, because a ticket appeared without a search budget, or because a private start's message could not be taken -- asks for it. One request at a time, abandoned after 15 seconds; a private start's member whose answer arrived while its owner could not be proven asks again once, under a new id and within those same 15 seconds. Only a proven member of the staging lobby is answered, once per request id. Once a full group's private match is committed, only one of the four it started with is answered, on the attempt it was committed in and only while its first match is starting or loading |
+
+The `_receive_flow_phase` detail dictionary:
+
+| Key | Type | Sent | Meaning |
+|---|---|---|---|
+| `request_id` | int > 0 | Only in an answer to `_request_flow_state` | Echo of the member's request. An answer with no matching request in flight is ignored |
+| `remaining_ms` | int ≥ 0 | While the owner is searching | The owner's search time left when it sent this. The member anchors it to when its request was sent, so a copy can only shorten its budget, never extend it |
+| `session_id` | String | When a full group's private start is committed, and in an answer to `_request_flow_state` while that private match's first start is under way | The private match's session id, as the lobby reads it back: 32 lowercase hexadecimal characters |
+| `round` | int, always 0 | Only in an answer to `_request_flow_state` while a private match's first start is under way | The round the answer describes: the private match's first |
+| `start_generation` | int, always 1 | Same as `round` | The first start's generation, as the private match's control publishes it |
+| `match_state` | int | Same as `round` | The owner's `NRTypes.MatchState` when it answered: `STARTING`, or `PLAYERS_JOINING` once the owner is loading the first match -- never any other. The owner does not answer in any other state, as once that first match was cancelled, and the member takes nothing from an answer carrying another value. Otherwise the member applies the first `STARTING` it missed, then this state when it is `PLAYERS_JOINING` |
+| `reason_code` | String | Restoring or gathering with a kept outcome | Why the last search or private start stopped, as a code |
+| `reason` | String | Same as `reason_code` | Why the last search or private start stopped, in words for the player |
 
 ### Match lifecycle
 

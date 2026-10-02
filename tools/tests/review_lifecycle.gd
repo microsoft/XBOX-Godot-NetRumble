@@ -27,6 +27,8 @@ class ActivityCall extends RefCounted:
 	signal completed(ok: bool)
 	var owner: Variant
 	var connection := ""
+	var restriction := ""
+	var maximum := 0
 	var count := 0
 	var group := ""
 
@@ -37,11 +39,13 @@ class ActivitySDK extends RefCounted:
 	var deletes: Array = []
 	var block_delete := false
 
-	func set_activity_async(user: Variant, connection: String, _restriction: String,
-			_maximum: int, count: int, group: String, _cross_platform: bool) -> Dictionary:
+	func set_activity_async(user: Variant, connection: String, restriction: String,
+			maximum: int, count: int, group: String, _cross_platform: bool) -> Dictionary:
 		var call := ActivityCall.new()
 		call.owner = user
 		call.connection = connection
+		call.restriction = restriction
+		call.maximum = maximum
 		call.count = count
 		call.group = group
 		calls.append(call)
@@ -69,7 +73,9 @@ class HostParty extends Doubles.SessionParty:
 		connection = "connection-" + user.xuid
 		return {"ok": true, "peer": OfflineMultiplayerPeer.new(), "code": user.xuid}
 
-	func lobby_connection_string() -> String:
+	# The hosted session's string. The optional context selects a matchmaking lobby in
+	# production; this hosted double only ever has the one.
+	func lobby_connection_string(_context: PartyService.LobbyContext = null) -> String:
 		return connection
 
 
@@ -429,6 +435,12 @@ func _host_activity(test: Node) -> Activity:
 	test._select("retirement-owner", test._folder())
 	test._check(await Services.sign_in() and await NetManager.host_match(), "real ready account hosts advertised lobby")
 	test._check(activity.sdk.calls.size() == 1, "actual activity publication reaches SDK")
+	if activity.sdk.calls.size() > 0:
+		var call: ActivityCall = activity.sdk.calls[0]
+		test._check(call.restriction == ActivityService.JOIN_RESTRICTION and call.restriction == "followed"
+			and call.maximum == Assets.game_mode(NetManager.game_mode_type).player_count
+			and call.group == NetManager.join_code and not call.group.is_empty(),
+			"hosted activity keeps its followed audience, mode capacity and join-code group id")
 	return activity
 
 

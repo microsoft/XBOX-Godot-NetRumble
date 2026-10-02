@@ -4,9 +4,9 @@ extends NRScreen
 ## gamertag, and a vertical menu list. Sign-in belongs to the acquire-user screen,
 ## which runs before this one; this screen only reflects the resulting identity and
 ## offers a way back to it. Hosting and joining are driven through NetManager.
-## Menu entries: Host Match / Join Match / Practice / Match History / Leaderboards /
-## Options / Quit, with Quit desktop-only — consoles leave the title through the
-## platform. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
+## Menu entries: Matchmaking / Host Match / Join Match / Practice / Match History /
+## Leaderboards / Options / Quit, with Quit desktop-only — consoles leave the title through
+## the platform. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
 ## top-level rows.
 
 const _STARFIELD_SCENE := "res://scenes/gameplay/fx/starfield_background.tscn"
@@ -49,6 +49,7 @@ var _in_options := false
 ## connectivity can be applied in place rather than by rebuilding: a rebuild would drop
 ## the player's focus back to the top of the list every time the hint flickered, and on a
 ## controller that is far more disruptive than the two rows going grey.
+var _matchmaking_row: NRButton = null
 var _host_row: NRButton = null
 var _join_row: NRButton = null
 ## Always present while the top-level menu is up, empty when there is nothing to say, so
@@ -154,6 +155,9 @@ func _build_menu() -> void:
 	# The theme's existing status-line type, the same one the lobby uses for its status
 	# text, rather than a new variation that would have to be designed and maintained.
 	_connectivity_note.theme_type_variation = &"LobbyStatus"
+	# One Matchmaking row, directly above Host Match: a group of one to four gathers in its
+	# own lobby and searches together, so a solo player takes the same row as a group.
+	_matchmaking_row = _menu_list.add_button("Matchmaking", _on_matchmaking)
 	_host_row = _menu_list.add_button("Host Match", _on_play)
 	_join_row = _menu_list.add_button("Join Match", _on_join_match)
 	_menu_list.add_button("Practice", _on_practice)
@@ -224,6 +228,7 @@ func _build_top_menu() -> void:
 ## frees the nodes, so holding them would leave `_apply_connectivity()` writing to rows
 ## that are on their way out.
 func _forget_top_rows() -> void:
+	_matchmaking_row = null
 	_host_row = null
 	_join_row = null
 	_connectivity_note = null
@@ -238,6 +243,43 @@ func _apply_list_rect(rect: Rect2) -> void:
 	_menu_scroll.offset_right = rect.position.x + rect.size.x
 	_menu_scroll.offset_bottom = rect.position.y + rect.size.y
 	_menu_scroll.set_deferred("scroll_vertical", 0)
+
+
+## Opens a matchmaking group. An unavailable build, dependency or game-mode profile is
+## answered with its reason before any online work, and so is a denied permission --
+## checked with a real platform round trip at the press, as Host Match does (XR-045).
+func _on_matchmaking() -> void:
+	if _online_action_in_flight or not _account_current():
+		return
+	if not Services.quick_match_available():
+		await ScreenManager.show_dialog(
+			"Matchmaking Unavailable", Services.quick_match_unavailable_reason(), "warning", false)
+		return
+	_online_action_in_flight = true
+	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
+	var denial := await _multiplayer_denial()
+	ScreenManager.remove(checking)
+	if not _account_current():
+		_online_action_in_flight = false
+		return
+	if not denial.is_empty():
+		await ScreenManager.show_dialog("Cannot Start Matchmaking", denial, "error", false)
+		_online_action_in_flight = false
+		return
+	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Opening the group"})
+	var opened: bool = await NetManager.start_matchmaking(NRTypes.GameModeType.DEATHMATCH)
+	ScreenManager.remove(loading)
+	if not _account_current():
+		_online_action_in_flight = false
+		return
+	if not opened:
+		var reason: String = NetManager.last_error if not NetManager.last_error.is_empty() else "Matchmaking could not start."
+		await ScreenManager.show_dialog("Cannot Start Matchmaking", reason, "error", false)
+		_online_action_in_flight = false
+		return
+	_refresh_gamertag()
+	_online_action_in_flight = false
+	ScreenManager.push(ScreenManager.LOBBY, {"option": "matchmaking"})
 
 
 ## Hosts an online match. The privilege check is a real platform round trip at the
@@ -305,6 +347,8 @@ func _apply_connectivity(announce: bool) -> void:
 
 	_host_row.disabled = not online
 	_join_row.disabled = not online
+	if is_instance_valid(_matchmaking_row):
+		_matchmaking_row.disabled = not online
 	# The neighbours are explicit paths, so the wrap has to be recomputed or focus would
 	# still route through the rows that just went dark.
 	_menu_list.refresh_focus_wrap()
@@ -322,7 +366,7 @@ func _apply_connectivity(announce: bool) -> void:
 	# is no pointer to recover with, and nothing would respond.
 	if not online:
 		var focused := get_viewport().gui_get_focus_owner()
-		if focused == _host_row or focused == _join_row:
+		if focused == _host_row or focused == _join_row or focused == _matchmaking_row:
 			_menu_list.call_deferred("focus_first")
 
 

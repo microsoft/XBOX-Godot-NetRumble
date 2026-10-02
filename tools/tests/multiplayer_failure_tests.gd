@@ -265,6 +265,11 @@ class Lobby extends RefCounted:
 		PartyService.JOIN_CODE_KEY: "ABCDE",
 		NRProtocol.LOBBY_KEY: NRProtocol.version_string(),
 	}
+	# A real lobby names its owner and lists it as a connected member: here, the host.
+	var owner_entity_key := {"id": "1", "type": "title_player_account"}
+	var members := [
+		{"entity_key": {"id": "1", "type": "title_player_account"}, "connection_status": 1, "properties": {}},
+	]
 	var disconnected := false
 	var leaves := 0
 

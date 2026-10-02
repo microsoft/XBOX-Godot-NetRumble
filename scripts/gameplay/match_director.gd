@@ -140,6 +140,16 @@ func _handle_players_loading(delta: float) -> void:
 	# Players can keep flying while others finish loading.
 	world.tick(delta)
 
+	# The first match of a matchmaking session starts only with exactly the players chosen for
+	# it, all of them loaded. The loop below walks whoever is on the roster now, so a departure
+	# during loading would otherwise just shrink it and pass; and the roster alone is not the
+	# proof -- NetManager re-reads Party's authenticated identity and the lobby's own members
+	# every time it is asked.
+	var chosen_players := NetManager.initial_cohort_pending()
+	if chosen_players and not NetManager.initial_cohort_intact():
+		_cancel_initial_match()
+		return
+
 	var all_loaded := true
 	for peer_id in NetManager.players:
 		if not (NetManager.players[peer_id] as PlayerState).in_game:
@@ -147,11 +157,22 @@ func _handle_players_loading(delta: float) -> void:
 			break
 
 	if all_loaded:
+		if chosen_players and not NetManager.initial_cohort_intact():
+			_cancel_initial_match()
+			return
 		# Single round setup: the world picks every spawn point once here, hands the
 		# finished layout to the clients, and nothing is repositioned again until the
 		# match is over. The countdown then runs on that final layout.
 		world.start_match()
 		_set_match_state(NRTypes.MatchState.STARTING)
+
+
+## The first matchmade match lost one of its chosen players before it ran. It is cancelled,
+## not started with fewer; NetManager ends the whole flow with the reason.
+func _cancel_initial_match() -> void:
+	set_physics_process(false)
+	_stop_phase_timers()
+	NetManager.fail_initial_cohort(MatchmakingFlow.TEXT_MATCH_MEMBER_LOST)
 
 
 func _handle_starting() -> void:
@@ -399,6 +420,10 @@ func _on_ship_input_received(peer_id: int, movement: Vector2, fire: Vector2, dep
 func _on_player_left(peer_id: int) -> void:
 	if not _is_authority or world == null:
 		return
+	# A chosen player leaving before the first matchmade match runs cancels it.
+	if NetManager.initial_cohort_pending():
+		_cancel_initial_match()
+		return
 
 	var ship = world.get_ship_for(peer_id)
 	if ship != null:
@@ -505,9 +530,18 @@ func _on_loading_timeout() -> void:
 func _on_starting_timeout() -> void:
 	if not _is_authority or not NRTypes.has_match_state(match_state, NRTypes.MatchState.STARTING):
 		return
+	# Rechecked on the last edge before play: the chosen players must still be exactly whole.
+	var chosen_players := NetManager.initial_cohort_pending()
+	if chosen_players and not NetManager.initial_cohort_intact():
+		_cancel_initial_match()
+		return
 	# The ships are already sitting on their final spawn points; going live only
 	# has to thaw the simulation, which `_apply_simulation_gate()` does.
 	_set_match_state(NRTypes.MatchState.RUNNING)
+	# The chosen-players requirement ends here, once the first match is actually running;
+	# departures from now on follow the ordinary hosted rules.
+	if chosen_players:
+		NetManager.consume_initial_cohort()
 
 
 func _cancel_ship_respawn(ship) -> void:

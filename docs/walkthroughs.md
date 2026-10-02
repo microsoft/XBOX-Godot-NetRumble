@@ -126,6 +126,46 @@ than bypassing readiness. Resume revokes an orphaned outcome-dialog join claim b
 newer buffered invitations for the next ready acquisition handoff. Record whether a real cold activation arrived, not merely
 whether a warm code join worked.
 
+## Matchmaking group, match and rematch
+
+**Prerequisites:** Four authorized XBOX identities on four devices running the identical build,
+signed in with ready saves, in the registered title and sandbox with the `godotnr_q` queue.
+
+**Action:** Choose **Matchmaking** above Host Match. Invite a friend into the group's lobby,
+ready up together, and let the search find the rest. Play the match, return to the lobby and
+start a rematch with whoever stayed. Invite someone back through the shell into the rematch. Then
+gather a full group of four in one lobby and ready up: the match starts without a search.
+
+**Source / addon API:** `NetManager.start_matchmaking()` opens the group through
+`MatchmakingFlow` and the scoped `PartyService` lobby calls; the owner's ticket and the guests'
+joins go through `MatchmakingService` (`create_match_ticket_async()` /
+`join_match_ticket_async()`), the match through `join_arranged_lobby_async()` and a fresh
+`create_and_join_network_async()` by whoever the service made the arranged owner. A full group of
+four submits no ticket: its own lobby and network become the match's through
+`PartyService.promote_staging_to_private()`. A member that
+missed the owner's messages asks through the `_request_flow_state` RPC.
+
+**Observable outcome:** The group advertises a followed, four-slot activity while it gathers and
+withdraws it while it searches and plays. The match starts with the matched players who have
+arrived and are ready -- two, three or four of them -- without waiting for the rest; a player who
+arrives after the start is told the match has already started. Back in the lobby, the same session
+hosts the next round with two or more players and no ticket; the rematch lobby is advertised
+invite-only, and an invite into it joins the replacement to the round. A full group of four shows
+*Private match*, and once all four are ready it starts a private match of those four in the same
+lobby, with rematches that work the same way; see [Private Start](matchmaking.md#private-start).
+
+**Unavailable / failure:** When the queue, the PlayFab addon's matchmaking support or the
+four-player Deathmatch profile is missing, the **Matchmaking** row still takes focus and shows
+that reason instead of starting anything. If a full group's private match cannot start, or the
+group changes while it is starting, the players still in the group are returned to the same
+lobby, unready, with the reason, once the lobby is confirmed back as the group's; a lobby that
+cannot be reopened stays closed until the owner tries again or leaves; and a switch that cannot be
+confirmed or undone, an owner that leaves or is lost, or a failure once the private match is
+committed ends the group with the reason. None of these falls back to a search; see
+[Known issues](known-issues.md#a-full-group-of-four-starts-a-private-match).
+A player the first game started with, lost before it runs, cancels it with the reason. An invite
+into a match that is playing, or into an unrecognized lobby, is refused.
+
 ## Two-way voice and typed text
 
 **Prerequisites:** Two permitted online peers, distinct microphone/headset endpoints and an
