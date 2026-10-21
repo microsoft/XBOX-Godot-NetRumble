@@ -64,8 +64,8 @@ This is a teaching sample, so clarity is a feature and is reviewed as one.
    A change to `net_manager.gd`, `world.gd`, `party_service.gd` or `match_director.gd` needs a
    Tier 3 two-peer run. Tier 1 alone is not sufficient for those files. Chat changes also need
    [typed-text acceptance](docs/manual-test-plan.md#typed-text-acceptance). Use registered Xbox
-   accounts for privilege/privacy coverage; custom-ID on a separate dev title covers only the
-   development transport/UI path. Game Save roaming needs console devices, not a desktop relaunch.
+   accounts for privilege/privacy coverage. Game Save roaming needs console devices, not a
+   desktop relaunch.
 
    Record what actually ran, including unavailable hardware/accounts/services as skips or blockers.
    Preserve gameplay coverage under the manual plan's secondary regression section; do not

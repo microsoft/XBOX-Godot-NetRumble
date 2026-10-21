@@ -61,8 +61,7 @@ means exporting, even for a quick desktop test.
 
 For editor/front-end inspection, run `godot.exe --path .` after addon setup. All gameplay,
 including Practice, requires an identified account and ready Game Saves; failures offer
-Retry/Back, not unsaved play. Debug custom-ID authentication diagnostics require a separate
-development PlayFab title, but without a signed-in XboxUser cannot pass save readiness.
+Retry/Back, not unsaved play.
 Use registered devices/accounts for [multiplayer acceptance](../docs/multiplayer.md#testing-two-players-on-one-pc).
 
 PC and console use the same Xbox-owned `GDK.game_save.get_folder_async` folder through

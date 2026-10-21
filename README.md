@@ -59,25 +59,25 @@ Every platform feature in the sample, and the environments it runs in. This is w
 built to do rather than a record of live test results; service availability, title access and
 account policy still apply.
 
-| Feature | XBOX on PC | XBOX Series X\|S | Debug desktop custom-ID | Offline |
-|---|---|---|---|---|
-| XBOX identity → PlayFab authentication | XBOX-linked | XBOX-linked | PlayFab custom-ID only | Platform-dependent; not guaranteed at cold launch |
-| PlayFab Lobby discovery + Party transport | Yes, after saves are ready | Yes, after saves are ready | No gameplay; diagnostics only | Unavailable |
-| PlayFab Matchmaking (Quick Match) | Yes, after saves are ready | Yes, after saves are ready | No gameplay | Unavailable |
-| PlayFab Party voice + in-match typed text | Subject to XBOX policy | Subject to XBOX policy | No gameplay | Unavailable |
-| XBOX privileges, privacy, string verification, reporting | Yes | Yes | Bypassed / unavailable | Unavailable |
-| XBOX friends, activity, invites, recent players | Yes | Yes | Unavailable | Unavailable |
-| XBOX achievement reporting | Yes | Yes | No gameplay progress | Same-account counters; service reporting needs connectivity |
-| GlobalScore standalone leaderboard | Online-match writes subject to title policy; top-10 reads | Online-match writes subject to title policy; top-10 reads | No gameplay; lower-level API diagnostics only | No submission or cached board; Practice stays local |
-| Xbox XGameSaveFiles roaming | Per-account synced folder | Per-account synced folder | Unavailable without a signed-in XboxUser | No cloud sync while disconnected |
-| Settings, history and counters | Account-owned Game Saves | Account-owned Game Saves | No save cache or gameplay | Platform-managed account folder only, if ready |
-| Lifecycle / controller detection | Focus and device detection | Suspend/resume, constrain, association detection | Desktop behavior | Platform-dependent |
+| Feature | XBOX on PC | XBOX Series X\|S | Offline |
+|---|---|---|---|
+| XBOX identity → PlayFab authentication | XBOX-linked | XBOX-linked | Platform-dependent; not guaranteed at cold launch |
+| PlayFab Lobby discovery + Party transport | Yes, after saves are ready | Yes, after saves are ready | Unavailable |
+| PlayFab Matchmaking (Quick Match) | Yes, after saves are ready | Yes, after saves are ready | Unavailable |
+| PlayFab Party voice + in-match typed text | Subject to XBOX policy | Subject to XBOX policy | Unavailable |
+| XBOX privileges, privacy, string verification, reporting | Yes | Yes | Unavailable |
+| XBOX friends, activity, invites, recent players | Yes | Yes | Unavailable |
+| XBOX achievement reporting | Yes | Yes | Same-account counters; service reporting needs connectivity |
+| GlobalScore standalone leaderboard | Online-match writes subject to title policy; top-10 reads | Online-match writes subject to title policy; top-10 reads | No submission or cached board; Practice stays local |
+| Xbox XGameSaveFiles roaming | Per-account synced folder | Per-account synced folder | No cloud sync while disconnected |
+| Settings, history and counters | Account-owned Game Saves | Account-owned Game Saves | Platform-managed account folder only, if ready |
+| Lifecycle / controller detection | Focus and device detection | Suspend/resume, constrain, association detection | Platform-dependent |
 
 Practice is a local simulation, not an unsigned mode. It requires an identified account and
 a successfully initialized/loaded Game Saves folder, including when the platform supports
 offline access to that folder. A cold offline launch is not guaranteed to resolve the required
 identity and store. PC and console use the same `GameSaveService` / `GDK.game_save`
-backend; historical shared or `--pf-user` token files are never read, imported, moved or deleted.
+backend; historical shared files are never read, imported, moved or deleted.
 
 Hosted matches use **PlayFab Lobby discovery**. **Quick Match** uses **PlayFab Matchmaking**: the
 **Matchmaking** row above Host Match gathers a group of one to four in its own lobby. A group of
@@ -159,10 +159,6 @@ Keep the committed sample title/package identifiers unchanged; see the
 - **Editor exploration:** after addon setup, `godot.exe --path .` (or F5) can inspect the
   front end, but missing identity/save readiness blocks Practice as well as multiplayer.
   An initialized GDK in the editor is **not registered package identity**.
-- **Custom-ID diagnostics:** debug `--pf-user` / `--pf-title` overrides can exercise
-  authentication against a separate development title. Without a signed-in XboxUser
-  they cannot prepare Game Saves or enter gameplay. Use two registered devices/accounts
-  for multiplayer; see [testing prerequisites](docs/multiplayer.md#testing-two-players-on-one-pc).
 - **Console:** after completing the authorized GDKX and devkit setup, use a Middleware console
   fork and `.\tools\deploy-console.ps1 -Launch`; see
   [configuration](docs/configuration.md#running-with-gdk-identity).

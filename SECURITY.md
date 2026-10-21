@@ -62,7 +62,7 @@ production security posture. In particular:
 - The topology is host-authoritative, and the host is trusted. Clients validate the input they send
   and the host ignores client-claimed identity in favor of the transport's authenticated peer id,
   but a compromised host is outside the threat model.
-- Developer overrides (`--pf-user`, `--pf-title`) exist for local testing and are refused on console
-  and in release builds. If you reuse this code, keep that guard.
+- Console and release builds require XBOX user sign-in. Preserve that requirement when reusing
+  this code.
 
 Do not treat the sample's choices as a substitute for a security review of your own title.

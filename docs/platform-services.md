@@ -77,11 +77,6 @@ supplies the launching user. The interactive add (`add_user_with_ui_async()`) fa
 on it to acquire another user. Sign in to the XBOX app before registered PC launch. A failed
 attempt exposes its reason and allows Retry or Back; no failure offers unsaved Practice.
 
-Debug desktop `--pf-user` instead calls `PlayFab.users.sign_in_with_custom_id_async()`, with
-account creation allowed only by the separate development title selected by `--pf-title`.
-There is no signed-in XboxUser on this path. Authentication may
-succeed as a debug diagnostic, but Game Saves cannot become ready, so gameplay stays blocked.
-
 > The GDK singleton is registered under the name in `gdk/runtime/singleton_name`, which this
 > project sets to `XBOX` (see [Addon maintenance](addon-maintenance.md#xbox-class-prefix-and-the-xbox-singleton)).
 > Services resolve it through `XboxBootstrap.find_singleton()` rather than the global, so the
@@ -112,7 +107,7 @@ title-side (see [XBOX Requirements](xr-compliance.md), XR-045 and XR-015).
 
 **Privilege checks fail open** when the GDK/user is unavailable **or the query fails**,
 returning an unchecked verdict and warning on query failure. This is a sample limitation, not
-a certification claim. Registered XBOX on PC can perform real checks; custom-ID cannot.
+a certification claim. Registered XBOX on PC can perform real checks.
 This lower-level privilege behavior does not bypass the separate account/save-readiness gate.
 Answers are warmed after sign-in and cached, and
 the cache is cleared on sign-out and on `user_changed` with a `privileges` change kind, because a
@@ -145,9 +140,7 @@ Inbound Party text is validated against the same per-peer **text** policy before
 emits `text_received`. XBOX peers awaiting a verdict, missing an XUID or denied text are not
 admitted for text. `PrivacyService` defaults missing/failed **text** permission answers to
 `false`, but does not cache those failures as permanent denials; a later evaluation can obtain
-a valid answer. The existing voice-query fallback is unchanged. Lower-level custom-ID
-diagnostics allow text only for authenticated current-roster peers, not arbitrary Party senders;
-they are not a gameplay path past save readiness.
+a valid answer. The existing voice-query fallback is unchanged.
 `PrivacyService` likewise owns invalidation generations for permission and mute/avoid-list
 queries; late responses cannot refill caches cleared for a different account/policy context.
 
@@ -303,8 +296,7 @@ offending substring the service returns is not echoed in the failure dialog.
 the service should not stop a match from starting; publishing unverified user text is the violation
 itself. A message that could not be checked is held back with "try again" rather than "that was
 offensive". The title does not know that it was. With no GDK or no XBOX user there is nothing to
-verify against and the check is skipped entirely at that service boundary. Custom-ID diagnostics
-**cannot demonstrate string verification** or bypass gameplay readiness.
+verify against and the check is skipped entirely at that service boundary.
 The received display uses Party `message.text`, not raw `original_text` or translations;
 no speech/transcription path is enabled.
 
@@ -396,8 +388,8 @@ require reacquisition on resume and prohibit mixing XGameSaveFiles with XGameSav
 mixing providers fails with `E_GS_PROVIDER_MISMATCH`.
 
 Readiness and every file operation bind to that signed-in XboxUser and account generation.
-Custom-ID authentication without an XboxUser is insufficient; a PlayFab local-user handle
-does not establish save ownership. Preparation is single-flight, including native returned
+A PlayFab local-user handle does not establish save ownership.
+Preparation is single-flight, including native returned
 Signals, and rejects canceled or stale completions before publishing a folder.
 
 On resume, `Services.invalidate_saves_for_resume()` invalidates the old binding and generation.
@@ -465,7 +457,7 @@ An ordinary Quit/window close that fails its final save offers Retry/Back before
 begins. Forced platform deadlines remain separate. Process-termination tests do not establish
 hard-power-loss or hardware disk-cache durability.
 
-There are **no desktop or `--pf-user` save caches and no migration**. Historical
+There are **no desktop save caches and no migration**. Historical
 `settings.cfg`, `match_history.json`, `achievement_stats.json` and token variants outside the
 selected folder are left untouched: no reads, imports, moves, copies or deletion. Settings
 keep their current names and defaults, including music `0.25`; explicitly saved music `0.7`

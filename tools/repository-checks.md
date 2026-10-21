@@ -77,8 +77,8 @@ caches and migration code supplement behavior tests; they do not replace them.
 Registered-PC A/B isolation, console parity and same-account roaming still require live
 [manual acceptance](../docs/manual-test-plan.md#account-owned-saves-pc-and-console).
 Mocked success, import success and local file presence are not runtime parity evidence.
-Custom-ID authentication diagnostics cannot substitute for gameplay: without a signed-in
-XboxUser, account saves cannot become ready. Do not add a shipping bypass to run tests.
+Without a signed-in XboxUser, account saves cannot become ready. Do not add a shipping
+bypass to run tests.
 
 ## `check-deport.ps1`
 

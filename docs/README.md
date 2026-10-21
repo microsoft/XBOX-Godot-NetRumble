@@ -38,7 +38,7 @@ docs/
 
 - [**Configuration**](configuration.md): machine and account prerequisites for the primary
   demonstration (an exported, registered XBOX on PC build), the fixed sample title
-  configuration, editor/custom-ID diagnostics (not gameplay bypasses), and console export traps
+  configuration, editor exploration, and console export traps
 - [**Walkthroughs**](walkthroughs.md): prerequisites, player action, API and observable
   outcome for each platform demonstration, including what failure looks like. These are
   instructions and expected observations, not recorded test results

@@ -12,7 +12,7 @@ new issue.
 When reporting a problem, the following make it far easier to act on:
 
 - Which platform you were running on (Godot editor on desktop, an exported PC build, or console)
-- Whether you were signed in to an XBOX account, running offline, or using a `--pf-user` test client
+- Whether you were signed in to an XBOX account or running offline
 - Your Godot version, and whether you were using a Middleware console fork
 - The relevant output from the Godot Output panel or the console log
 - For a multiplayer issue, whether both peers saw it and what each one showed

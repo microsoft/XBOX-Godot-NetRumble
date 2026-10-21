@@ -54,7 +54,7 @@ gameplay and must be retried; a displayed identity is not save-readiness evidenc
 
 **Prerequisites:** Two distinct signed-in players on compatible builds using the same title,
 network access, ready account saves and allowed multiplayer privilege. Use separate registered
-machines/accounts. Custom-ID users without a signed-in XboxUser cannot pass readiness;
+machines/accounts;
 see [testing prerequisites](multiplayer.md#testing-two-players-on-one-pc).
 
 **Action:** Host a match, read the five-character code and enter it through Join Match's code
@@ -88,7 +88,7 @@ session, and a join replaced by an accepted invite reports nothing at all.
 
 **Prerequisites:** Two authorized XBOX identities with the appropriate friend relationship,
 registered PC/console packages in the same sandbox/title, and a host waiting in the lobby.
-XBOX activity must actually publish; custom-ID is not coverage.
+XBOX activity must actually publish.
 
 **Action:** First join through **Join Friend** on the main menu. Leave, then use an empty host
 lobby slot's **Invite To Game** action. Accept through the XBOX shell while the recipient title
@@ -169,8 +169,8 @@ into a match that is playing, or into an unrecognized lobby, is refused.
 ## Two-way voice and typed text
 
 **Prerequisites:** Two permitted online peers, distinct microphone/headset endpoints and an
-active Party connection. Use registered XBOX identities with ready saves;
-custom-ID diagnostics cannot enter these gameplay flows. Check actual audio routing and avoid acoustic
+active Party connection. Use registered XBOX identities with ready saves.
+Check actual audio routing and avoid acoustic
 feedback between nearby devices.
 
 **Action:** In the lobby, microphones start **muted**. Use `T` / gamepad Y to unmute and exchange
@@ -208,7 +208,7 @@ never raw `original_text` or translations. See [full chat acceptance](manual-tes
 **Prerequisites:** Authorized registered XBOX accounts with known multiplayer/communications
 privileges and reproducible **separate text and voice** privacy verdicts. Use accounts/settings
 you are permitted to manage. If the available account controls cannot produce a case, record
-it as untested; do not substitute a custom-ID result.
+it as untested.
 
 **Action:** Attempt host/code join/invite join with multiplayer denied; exercise resolvable
 denial where available. Join with multiplayer allowed but communications denied. With permitted
@@ -238,8 +238,7 @@ accepted feedback, not that a moderation action occurred.
 **Unavailable / failure:** Privilege-query failure currently fails open; missing/failed XBOX text
 privacy answers fail closed without caching query failures as permanent denials; existing
 voice fallback is unchanged. XBOX string verification
-failure with an available user/service blocks publication. Lower-level custom-ID diagnostics
-skip those XBOX checks, but cannot bypass the title's account/save gate.
+failure with an available user/service blocks publication.
 Policy is refreshed through roster/account events, not a claimed continuous privacy feed.
 No live network reconfiguration is supplied for restored communications privilege.
 Gamercards/reporting are available from the lobby, not every name-bearing surface; see

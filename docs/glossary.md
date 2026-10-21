@@ -35,7 +35,6 @@ You do not need to read this page front to back. Skim it once, then come back to
 | **mute list / avoid list** | Per-account privacy lists. A muted player's voice is suppressed for you; an avoided player is one the platform keeps you apart from. Both are the platform's decision, not the title's. |
 | **Guide** | The XBOX system overlay, opened with the XBOX button. Invites and profile cards are raised from it. |
 | **PlayFab entity** | PlayFab's addressable identity object, identified by an entity id and an entity type. Roster and chat code resolves entity ids back to display names. |
-| **Custom ID** | A PlayFab login identified by a developer-supplied string. It is limited to debug authentication diagnostics in this title; without a signed-in XboxUser it cannot initialize XGameSaveFiles or enter gameplay. |
 
 ## Multiplayer and communication
 

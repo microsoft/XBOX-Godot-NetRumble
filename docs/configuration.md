@@ -1,9 +1,13 @@
 # Configuration: GDK, PlayFab and sandbox setup
 
 The primary demonstration is an **exported, registered XBOX on PC build**. This page covers
-its machine/account prerequisites, fixed sample configuration, secondary editor/custom-ID
-paths and console export traps. For environment capabilities, use the
+its machine/account prerequisites, fixed sample configuration, editor exploration
+and console export traps. For environment capabilities, use the
 [README matrix](../README.md#what-works-where), not the presence of a loaded addon.
+
+XBOX user sign-in is the preferred authentication path:
+`PlayFab.users.sign_in_with_xuser_async(xbox_user)` authenticates the signed-in XBOX user
+with PlayFab. Failed XBOX authentication is reported, not replaced with another login method.
 
 See also: [Architecture](architecture.md) · [Multiplayer](multiplayer.md) ·
 [Matchmaking foundations](matchmaking.md) · [Platform Services](platform-services.md)
@@ -83,7 +87,7 @@ to create a studio and a title. Background reading:
 [PlayFab documentation](https://learn.microsoft.com/en-us/gaming/playfab/).
 
 You do **not** need your own title for the primary XBOX path; the committed sample title serves
-it. You need one for the custom-ID path below, and for any game of your own.
+it. You need your own PlayFab title for any game of your own.
 
 Matchmaking uses queue `godotnr_q` and reads the exported `GameModeConfig.player_count` as the
 room/network capacity. The supported capacity remains four and each ticket has one 600-second
@@ -142,29 +146,6 @@ runs in **XDKS.1**, a shared sample sandbox whose access you must already hold. 
 publishing relationship yet, start at [ID@XBOX](https://www.xbox.com/en-US/developers/id). For
 the switch itself, see [Set the sandbox to XDKS.1](#set-the-sandbox-to-xdks1).
 
-### A development PlayFab title for custom-ID testing
-
-The [debug custom-ID diagnostic](#debug-custom-id-diagnostics) authenticates without XBOX;
-it does not enable gameplay. The committed sample title refuses it and returns `0x892357BA`
-(`E_PF_PLAYER_CREATION_DISABLED`), because client-side account creation is disabled there. A
-title you own can permit it.
-
-1. Create a second title in Game Manager, kept separate from anything you ship.
-2. In that title's **Settings → API Features**, enable the option that lets clients create
-   player accounts. This is what `LoginWithCustomID` needs when it creates a player on first
-   use. See
-   [anonymous login](https://learn.microsoft.com/en-us/xbox/playfab/identity/player-identity/platform-specific-authentication/anonymous-login)
-   for what that flow is and what it trades away.
-3. Pass the title id at launch, without editing any committed file:
-
-   ```powershell
-   godot.exe --path . -- --pf-title=<dev-title-id> --pf-user=alice
-   ```
-
-Keep this title out of your shipping path. It deliberately relaxes an account-creation control
-for authentication diagnostics only. A custom-ID user has no signed-in XboxUser,
-so cannot initialize the game's saves or enter Practice, host/join or invite flows.
-
 ### Running the PowerShell scripts
 
 The `tools/` scripts are unsigned `.ps1` files. A default Windows configuration refuses to run
@@ -190,7 +171,7 @@ clone does not carry the zip download's mark-of-the-web, so `Unblock-File` is un
 | You have | You can run |
 | --- | --- |
 | Godot only, addons not built | Source/scene inspection; missing extensions may prevent import, and gameplay is unavailable |
-| Steps 1 and 2 | Build/import checks and debug custom-ID authentication diagnostics; no gameplay without account/save readiness |
+| Steps 1 and 2 | Build/import checks and editor exploration; no gameplay without account/save readiness |
 | Steps 1, 2 and 3 | Registered demonstration after account acquisition and Game Saves loading succeed; service/policy requirements still apply |
 
 Practice also requires ready account-owned saves. A valid identified account with a usable
@@ -232,22 +213,10 @@ and does not demonstrate XBOX sign-in or invites. It is useful for source/front-
 and diagnostics, not unsigned Practice. All gameplay requires an identified account and
 successfully initialized/loaded Game Saves; authentication alone is insufficient.
 
-<a id="debug-custom-id-multiplayer"></a>
-
-### Debug custom-ID diagnostics
-
-Authentication diagnostics may use `--pf-user=<token>` and `--pf-title=<dev-title-id>`
-(or `PF_CUSTOM_ID` / `PF_TITLE_ID`).
-This requires a **separate development PlayFab title** permitting custom-ID creation; the
-committed sample title does not. Overrides affect runtime settings in debug desktop/editor
-builds only, never console or exported release builds. Do not edit committed identifiers to
-enable this path.
-
-This is **not a two-instance multiplayer workaround**. The custom-ID user lacks the signed-in
-XboxUser required by XGameSaveFiles, so cannot pass readiness or play. No token-based
-settings/history/counter files substitute for the account store. XBOX sign-in/policy,
-friends/invites, achievement awards and roaming are not covered by these diagnostics.
-Use [registered multiplayer prerequisites](multiplayer.md#testing-two-players-on-one-pc).
+For debugging multiplayer locally, debug desktop/editor builds expose Custom ID sign-in via
+`--pf-user=<name> --pf-title=<dev-title-id>` against a separate development PlayFab title
+permitting account creation. This is authentication-only and does not bypass the signed-in
+XBOX user and Game Saves requirements for gameplay.
 
 ### Game Saves prerequisites
 
@@ -268,7 +237,7 @@ canceled sync, inaccessible paths and invalid saves remain blocking Retry/Back e
 `profile.json`, `history.json` and `stats.json` belong in its `NetRumble` subdirectory,
 not directly in the SDK root. PC preparation preserves valid current-format saves from the
 legacy root-level layout without deleting source files.
-No shared `settings.cfg`/history/stats or `--pf-user` cache is read or imported, and historical
+No shared `settings.cfg`/history/stats cache is read or imported, and historical
 files are not moved or deleted. There is no migration setup step or alternate save backend.
 See [Game Saves behavior](platform-services.md#game-saves) and
 [PC/console acceptance](manual-test-plan.md#account-owned-saves-pc-and-console).
@@ -399,10 +368,9 @@ runtime/initialize_on_startup = true    ; correct
 ```
 
 **`[playfab] runtime/initialize_on_startup=false`**: must stay `false`.
-`IdentityService._ensure_playfab()` applies the `--pf-title` command-line override *before*
-calling `PlayFab.initialize()`, because the title id is read from `ProjectSettings` at init time.
-If PlayFab self-initialized at startup the override would arrive too late. The title owns the
-moment of initialization.
+`IdentityService._ensure_playfab()` applies title configuration before calling
+`PlayFab.initialize()`, which reads the title id from `ProjectSettings` at init time.
+Startup initialization would run before that setup. The title owns the moment of initialization.
 
 **`[gdk] runtime/initialize_on_startup=true`**: correct. The GDK has no equivalent pre-init
 override, so self-initialization is fine.
@@ -426,8 +394,7 @@ queue; Quick Match uses `godotnr_q`.
 ## Configuration checklist
 The registered sample uses the committed configuration below; **do not change these values**
 for the demonstration. XBOX authentication and achievement definitions must agree with the
-sample's provisioned services. Debug custom-ID authentication diagnostics use a runtime override
-for a separate development PlayFab title, not a replacement package identity or gameplay bypass.
+sample's provisioned services.
 
 | Setting | File | Value |
 |---|---|---|

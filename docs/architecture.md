@@ -81,8 +81,7 @@ The call still runs at title exit and on privilege withdrawal, so the
 `PlatformSession` reacts to roster and match signals to publish/update/retire XBOX activity,
 set presence, report recent players once play begins, resolve names and apply communication
 policy. It also listens for account changes. XBOX-facing operations are unavailable without an
-XBOX user. Lower-level custom-ID diagnostics retain Party text eligibility and player-mute
-logic, but cannot enter gameplay without account/save readiness or demonstrate XBOX policy.
+XBOX user. All gameplay requires account/save readiness.
 
 All gameplay `@rpc` declarations stay on `/root/NetManager`: Godot routes by node path.
 Party text is a separate channel, not a gameplay RPC or a protocol-version change.
@@ -104,7 +103,7 @@ A roster's claimed XUID or replicated entity id is not itself proof of ownership
 the resulting title-player entity against `PartyService.entity_key_for(peer_id)`, then requests
 XBOX profiles only for verified claims. Every machine performs its own check.
 `PlayerState.display_label()` prefers the verified gamertag; the existing fallback is the
-roster name when no verified name is available (including bots, custom-ID and failed claims).
+roster name when no verified name is available (including bots and failed claims).
 This fallback is not a verification guarantee.
 
 Typed text resolves its sender through `PartyService.entity_key_for(peer_id)` and the
@@ -161,7 +160,7 @@ restored. Account boundaries clear all settings, history, lifetime/per-match
 counters, cached achievement reports and identity state. New work and ongoing gameplay stop
 on account removal; a surviving process returns to account acquisition.
 
-This is greenfield storage: no desktop or `--pf-user` cache, shared-file import, legacy wrapper
+This is greenfield storage: no desktop cache, shared-file import, legacy wrapper
 reader, compatibility path or music-value remap. Historical `settings.cfg`,
 `match_history.json`, `achievement_stats.json` and token variants outside the selected folder
 are not discovered, read, copied, moved, deleted or imported. Music still defaults to `0.25`;

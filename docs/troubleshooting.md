@@ -111,7 +111,7 @@ the launching user and rejects interactive adds; sign-in has to come from
 sandbox, then launch the registered package again. See [Sign-in](platform-services.md#sign-in)
 and [`AdvancedUserModel=false`](configuration.md#advancedusermodelfalse-simplified-user-model).
 
-## Multiplayer and the two-instance local test
+## Multiplayer
 
 ### AuthenticateLocalUser: invalid argument specified
 
@@ -129,24 +129,6 @@ cannot know.
 **Fix**: Use the five-character join code as the Party invitation identifier on both sides. The
 project already does this in `PartyService`; see
 [The join code is the Party invitation id](multiplayer.md#the-join-code-is-the-party-invitation-id).
-
-### E_PF_PLAYER_CREATION_DISABLED / 0x892357BA
-
-**Symptom**: Debug custom-ID authentication fails with `E_PF_PLAYER_CREATION_DISABLED`
-(`0x892357BA`).
-
-**Cause**: The committed production PlayFab title does not permit custom-ID account creation.
-The debug custom-ID authentication diagnostic requires a separate development PlayFab title that enables
-that flow.
-
-**Fix**: For authentication diagnostics, pass `--pf-title=<dev-title-id>` with a `--pf-user` token, or set the matching
-environment variables, against a development title you control. Do not change committed title or
-package identifiers. Successful custom-ID authentication still cannot enter gameplay: it lacks
-the signed-in XboxUser required by XGameSaveFiles. Use registered XBOX accounts with ready saves
-for Practice and multiplayer, not custom-ID as a workaround. See
-[Testing prerequisites](multiplayer.md#testing-two-players-on-one-pc),
-[Debug custom-ID diagnostics](configuration.md#debug-custom-id-diagnostics) and
-[manual test prerequisites](manual-test-plan.md#prerequisites).
 
 ### Signed in, but save loading fails
 
@@ -166,8 +148,8 @@ the platform sync result. After resolving the cause, choose **Retry** to reload 
 **Back** abandons the attempt without enabling play. Do not overwrite existing saves with
 defaults or copy shared/token files into the folder. Only current-format root-level PC saves
 are copied into the new `NetRumble` subdirectory; historical/shared/token files are left untouched.
-A custom-ID user cannot resolve this by retrying
-authentication alone. See [Game Saves](platform-services.md#game-saves).
+Retrying authentication alone cannot resolve a save failure.
+See [Game Saves](platform-services.md#game-saves).
 
 `GameSaveService` calls `GDK.game_save.get_folder_async(xbox_user)` on both platforms.
 It does not use PlayFab Game Saves or require that service's onboarding. For built-in cloud

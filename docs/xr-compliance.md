@@ -17,8 +17,8 @@ uses, one line each.
 of a submission outcome. It describes implemented paths and known gaps, not complete
 requirement coverage. Use the [README environment matrix](../README.md#what-works-where),
 [Walkthroughs](walkthroughs.md) and [Manual test plan](manual-test-plan.md) to distinguish
-what can be demonstrated from what was actually observed. Custom-ID success is not XBOX
-privilege/privacy coverage; local persistence alone is not PC/console save-roaming evidence.
+what can be demonstrated from what was actually observed. Local persistence alone is not
+PC/console save-roaming evidence.
 
 Scope is the game code under `scripts/`, plus `project.godot`, `MicrosoftGame.config`
 and `export_presets.cfg`. The `addons/` tree (`godot_gdk`, `godot_playfab`) is a
@@ -107,18 +107,7 @@ accounts with `PlayFab.users.sign_in_with_xuser_async(xbox_user)`, which exchang
 GDK `XUser` for a PlayFab identity through XSTS. The title never presents a login form
 and never handles a credential.
 
-A `--pf-user` / `PF_CUSTOM_ID` flag enables `sign_in_with_custom_id_async` for debug
-authentication diagnostics. That path bypasses XBOX sign-in, so it is
-disabled by a runtime build-feature guard on console and exported release builds:
-`IdentityService.developer_overrides_allowed()` returns `false` when
-`OS.has_feature("scarlett")` is true or the build is not a debug build, and both
-`resolve_custom_id_token()` and the `--pf-title` handler consult it. It requires a separate
-development PlayFab title permitting custom-ID creation, not a change to committed identifiers.
-It lacks the signed-in XboxUser required by XGameSaveFiles and cannot enter gameplay,
-including Practice, even after authentication succeeds.
-
-**Code:** `scripts/services/identity_service.gd` (`sign_in`,
-`developer_overrides_allowed`, `resolve_custom_id_token`).
+**Code:** `scripts/services/identity_service.gd` (`sign_in`, `_ensure_playfab_user`).
 
 ---
 
@@ -187,8 +176,7 @@ ReceiveText does not require speech features to be enabled.
 
 The chat flags in `PartyService._make_party_config()` are derived from the
 communications privilege (XR-045) rather than hardcoded. A peer with no XUID on a
-session where privacy is available fails closed. Lower-level custom-ID diagnostics skip XBOX
-privacy and admit text only for recognized peers; they cannot bypass gameplay readiness.
+session where privacy is available fails closed.
 The existing voice-query fail-open behavior
 and account-event refresh coverage remain limitations to exercise, not certification guarantees.
 
@@ -211,8 +199,7 @@ Typed chat is the only content a player authors in this sample.
 `NetManager.send_chat_message()` is the single outgoing funnel and calls
 `Services.verify_chat_text()` before `ChatService.send_chat_text()`. With an XBOX user/GDK,
 verification failure or refusal prevents submission; the entry stays open with its text and a
-reason. Custom-ID diagnostics skip XBOX string verification and cannot validate that protection
-or provide a playable alternative to a ready XBOX account.
+reason.
 Accepted sends produce one local echo after successful Party submission, not a delivery receipt.
 
 Reporting is available from `NRPlayerActions`, opened from an occupied lobby roster row.
@@ -270,8 +257,8 @@ Revocation detected mid-session destroys the chat control. After the privilege i
 leave/rejoin is required to recreate it; live network reconfiguration is not demonstrated.
 
 Privilege queries fail **open** when there is no initialized GDK/user or when the query itself
-fails (with a warning for failed queries). Real registered XBOX on PC is supported; custom-ID
-bypasses these checks. Known denial is enforced, but this fallback is a sample limitation.
+fails (with a warning for failed queries). Real registered XBOX on PC is supported.
+Known denial is enforced, but this fallback is a sample limitation.
 
 **Code:** `scripts/services/privilege_service.gd`,
 `scripts/autoload/net_manager.gd` (`_resolve_signed_in_user`, `_multiplayer_privilege_denial`),

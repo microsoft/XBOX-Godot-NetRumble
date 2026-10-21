@@ -107,8 +107,8 @@ while Gathering; and an arranged Lobby is admitted only during a valid
 before Party authentication. A rematch replacement joins the retained arranged Lobby/network
 with the shared `NetRumble` invitation id and creates neither a ticket nor a new arrangement.
 
-Join Friend and shell invites require a registered XBOX session. Custom-ID has no XBOX friends
-or activity; the UI explains that unavailability. An ended/full/in-progress/incompatible session
+Join Friend and shell invites require a registered XBOX session. Missing XBOX friends or
+activity is explained in the UI. An ended/full/in-progress/incompatible session
 can still refuse a valid-looking activation. See the [invite walkthrough](walkthroughs.md#friends-and-cold-launch-invites).
 
 Full sessions are left out of Join Friend (`ActivityService.joinable_activities()` drops an
@@ -293,8 +293,7 @@ PlayFab.party.chat.text_message_received(entity_key, message)
   → gameplay screen → NRChatLog: sender label + plain text
 ```
 
-Outgoing moderation uses XBOX string verification when an XBOX user/service is available;
-lower-level custom-ID diagnostics skip that check but cannot bypass gameplay readiness.
+Outgoing moderation uses XBOX string verification when an XBOX user/service is available.
 `last_chat_error` explains unavailable chat, no eligible
 recipients, moderation refusal, changed sessions or failed Party submission. Failed sends keep
 the entry text and show the error; they do not add a successful local row.
@@ -307,8 +306,6 @@ denials; a later evaluation can obtain a real verdict. The voice-query fallback 
 Account-cache invalidation clears retained text while policy is re-evaluated. Roster removal
 immediately removes that peer from eligible recipients, even if its Party chat control remains.
 An empty target list fails explicitly because the addon treats an empty array as broadcast.
-Lower-level custom-ID diagnostics permit only recognized current-session peers without claiming
-XBOX policy coverage or providing a playable custom-ID session.
 
 Only `message.text` from a valid typed-text event is shown: never `original_text`, translations,
 transcriptions or sender-supplied markup/identity metadata. The sender is matched to the current
@@ -466,10 +463,8 @@ Detailed interpolation, prediction and latency mechanics moved to the
 
 ## Testing two players on one PC
 
-**Two custom-ID windows are not a playable multiplayer test path.** The sample's
-simplified XBOX user model uses the launching account. A `--pf-user` custom-ID login may
-authenticate to PlayFab, but lacks the signed-in XboxUser needed to initialize XGameSaveFiles.
-It cannot enter Practice, host/join or redeem an invite, and there is no per-token save cache.
+The sample's simplified XBOX user model uses the launching account, so two simultaneous
+registered instances on one PC do not provide distinct XBOX players.
 Use two registered PCs or authorized consoles with distinct XBOX accounts, compatible builds,
 the same title and ready saves for multiplayer acceptance.
 
@@ -477,17 +472,9 @@ One PC still supports the **sequential A/B account-isolation test**: close the g
 launching XBOX account, then relaunch the registered package. That is not simultaneous
 multiplayer. See [account-save acceptance](manual-test-plan.md#account-owned-saves-pc-and-console).
 
-### Retained SDK diagnostics
+### Party transport configuration
 
-Debug authentication overrides `--pf-user` / `--pf-title` (`PF_CUSTOM_ID` / `PF_TITLE_ID`)
-remain restricted to debug desktop/editor builds. Console and exported release builds ignore
-them. Custom-ID account creation needs a separate development title; the sample title `186CDB`
-rejects it with `E_PF_PLAYER_CREATION_DISABLED` (`0x892357BA`). See
-[configuration](configuration.md#debug-custom-id-diagnostics).
-
-For lower-level Party diagnostics, the existing custom-ID branch selects `local_udp_port = 0`
-(OS-assigned) for `initialize_async`; XBOX-linked sessions retain `-1` for Game Core's preferred
-multiplayer port. The addon exposes `playfab/party/local_udp_socket_bind_port`; the project
+XBOX-linked sessions use `local_udp_port = -1` for Game Core's preferred multiplayer port
+in `initialize_async`. The addon exposes `playfab/party/local_udp_socket_bind_port`; the project
 leaves it at the addon default. `direct_peer_connectivity = NONE` relays Party traffic through
-PlayFab. These explain SDK transport configuration, not permission to bypass the title's
-account/save gate. Custom-ID results cannot validate XBOX policy, achievement awards or roaming.
+PlayFab.
