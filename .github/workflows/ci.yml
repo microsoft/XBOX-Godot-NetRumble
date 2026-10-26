@@ -22,7 +22,7 @@ jobs:
     name: Sample voice
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check for port framing
         shell: pwsh
@@ -44,7 +44,7 @@ jobs:
     name: Game config
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validate MicrosoftGame.config
         shell: pwsh
@@ -77,13 +77,13 @@ jobs:
     env:
       GODOT_VERSION: 4.6.2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
 
       - name: Cache Godot
         id: cache-godot
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: godot-bin
           key: godot-${{ env.GODOT_VERSION }}-win64
@@ -113,7 +113,7 @@ jobs:
       # is what decides the build output.
       - name: Cache addon build
         id: cache-addons
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: external/xbox-godot-sample/build
           key: addons-windows-2022-${{ hashFiles('.gitmodules') }}-${{ github.event.pull_request.base.sha || github.sha }}
