@@ -8,21 +8,19 @@ extends VBoxContainer
 
 signal focus_changed(index: int)
 
-const _ROW_HEIGHT := 54.0
 const _BUTTON_SCENE := preload("res://scenes/ui/elements/nr_button.tscn")
 const _SPINNER_SCENE := preload("res://scenes/ui/elements/nr_spinner.tscn")
 const _SLIDER_SCENE := preload("res://scenes/ui/elements/nr_slider.tscn")
 
 ## Theme variation applied to buttons added through this list.
 ##
-## Main menu rows render as bare centred text (NRTitleButton), while panel menus and
-## the pause menu use the boxed variation that draws a background slab behind each row.
-## Lists default to the boxed variation; the main menu opts into the transparent one.
+## The front end uses transparent rows with a rounded focus outline (NRTitleButton).
+## Panel menus and the pause menu keep the boxed variation.
 @export var button_variation: StringName = &"NRMenuButton"
 
-## Gap between rows. The main menu stacks its 54px rows at a 54px pitch with no gap;
-## the boxed lists keep a small gap so their backgrounds stay distinct.
 @export var row_separation: int = 5
+@export var row_height: float = 54.0
+@export var button_alignment: HorizontalAlignment = HORIZONTAL_ALIGNMENT_CENTER
 
 ## Focusable rows only. Headers and notes are children but never entries here, so
 ## focus navigation skips straight over them.
@@ -38,7 +36,8 @@ func add_button(text: String, on_selected: Callable) -> NRButton:
 	var button := _BUTTON_SCENE.instantiate() as NRButton
 	button.text = text
 	button.theme_type_variation = button_variation
-	button.custom_minimum_size = Vector2(0, _ROW_HEIGHT)
+	button.alignment = button_alignment
+	button.custom_minimum_size = Vector2(0, row_height)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	if on_selected.is_valid():
 		button.pressed.connect(on_selected)
@@ -54,7 +53,7 @@ func add_spinner(
 		display_texts: PackedStringArray = PackedStringArray()) -> NRSpinner:
 	var spinner := _SPINNER_SCENE.instantiate() as NRSpinner
 	spinner.label_text = label_text
-	spinner.custom_minimum_size = Vector2(0, _ROW_HEIGHT)
+	spinner.custom_minimum_size = Vector2(0, row_height)
 	spinner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(spinner)
 	spinner.set_options(options, display_texts)
@@ -78,7 +77,7 @@ func add_slider(
 		format_value: Callable = Callable()) -> NRSlider:
 	var slider := _SLIDER_SCENE.instantiate() as NRSlider
 	slider.label_text = label_text
-	slider.custom_minimum_size = Vector2(0, _ROW_HEIGHT)
+	slider.custom_minimum_size = Vector2(0, row_height)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(slider)
 	# Configured only once the node is in the tree: the range and value live on the
@@ -117,7 +116,7 @@ func add_note(text: String) -> Label:
 	var note := Label.new()
 	note.text = text
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.custom_minimum_size = Vector2(0, _ROW_HEIGHT)
+	note.custom_minimum_size = Vector2(0, row_height)
 	note.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	add_child(note)
 	return note

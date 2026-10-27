@@ -3,8 +3,7 @@ extends Control
 
 ## One player entry in the lobby roster.
 ##
-## Layout: 520x61 sheared panel — ship silhouette on the left, ready-up ring beside
-## it, nameplate at x=119, microphone indicator hanging outside the panel's left edge.
+## Layout: rounded card with a ship silhouette, ready-up ring and nameplate.
 ## An unoccupied slot renders the panel with "Invite To Game..." and hides everything else.
 ##
 ## The microphone icon is driven by NetManager.chat_indicator_for(). Party's
@@ -78,6 +77,7 @@ func set_state(state: PlayerState) -> void:
 		_mic.visible = false
 		_is_empty = true
 		_peer_id = 0
+		_name_label.offset_left = 15.0
 		_name_label.text = "Invite To Game..."
 		_apply_interactivity()
 		return
@@ -89,6 +89,7 @@ func set_state(state: PlayerState) -> void:
 	_checkmark.visible = state.is_ready
 	_is_empty = false
 	_peer_id = state.peer_id
+	_name_label.offset_left = 116.0
 	_apply_interactivity()
 	_name_label.modulate = Color.WHITE
 	_name_label.text = state.display_label() + (" (You)" if state.is_local_player else "")

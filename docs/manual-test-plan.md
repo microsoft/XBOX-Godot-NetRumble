@@ -461,6 +461,43 @@ cloud synchronization separately. A completed local write is not an upload recei
 Isolated notification/process-termination tests do not establish real Xbox notification
 delivery, roaming, or hard-power-loss durability.
 
+## Background motion
+
+Animated Backgrounds, the session pause shortcut and the covered warm-up. These are expected
+outcomes, not recorded passes. Use disposable test data and dedicated test accounts for every
+persistence case, never a real player's saves. [Background motion](architecture.md#background-motion)
+describes the behaviour, and the [repository checks](../tools/repository-checks.md) list what the
+suites already cover. The PC cases need Tier 2 (a registered build and test accounts with ready
+saves), except BM.8, which runs from the editor.
+
+### PC
+
+| # | Check | Expected |
+| --- | --- | --- |
+| BM.1 | As test account A, set Animated Backgrounds Off, leave Options and relaunch; then launch as test account B | A loads Off and shows the exact static designs; B keeps its own setting, On by default |
+| BM.2 | In a disposable test folder, damage both slots of A's `presentation.json`, then load A | A loads with motion Off and one warning, every other setting loads, and the next Options save replaces the sidecar |
+| BM.3 | After BM.1, load A with a build that predates the presentation sidecar, then with this build | The older build loads `profile.json` and plays; this build still loads Off |
+| BM.4 | Press Ctrl+Shift+M, then View, on the title, main menu, loading and lobby screens | Each press pauses or resumes motion, holding the current pose rather than the static design; the title and loading hints read "Ctrl+Shift+M / View pauses background motion" and stay up while paused |
+| BM.5 | Type m and Shift+M into the join-code field; in a match, press Ctrl+Shift+M and View | The letters type and motion keeps running; in the match nothing toggles and nothing else reacts |
+| BM.6 | Launch minimised and restore the window on the title; then alt-tab away and back during a match | The title shows the static backgrounds, then one brief opaque cover, then motion; no cover ever appears over a match |
+| BM.7 | Alt-tab away and back on a moving background | Motion freezes while unfocused and continues from the same pose, without a jump |
+| BM.8 | In the Godot editor on 4.6.2 and on 4.7.2, run the project in the embedded game view and in a separate window, and press Ctrl+Shift+M on the title | Motion pauses and resumes, and the editor takes no action |
+| BM.9 | Compare the lobby ship card with the design, and watch the Waves and Glow backgrounds animate | The card matches the design, and no visible banding, crawling quantization contours, or grain crawl appears |
+| BM.10 | Profile the main menu and title with motion On and Off at 1080p and 4K | Motion adds at most 0.25 ms of GPU time at 1080p and 0.75 ms at 4K |
+| BM.11 | Measure the loading hint's text against the animated Waves backdrop | At least 4.5:1 contrast at every pose |
+
+### Console (Tier 4)
+
+**NOT YET EXECUTED.** No console run of these cases has been recorded.
+
+| # | Check | Expected |
+| --- | --- | --- |
+| BM.12 | On a devkit (D3D12), view the title, main menu, loading and lobby screens with motion On, then Off | Waves and Glow animate as on PC; Off shows the exact static designs |
+| BM.13 | Profile the front end with motion On and Off at 1080p and 4K output | Motion adds at most 0.25 ms of GPU time at 1080p and 0.75 ms at 4K; record the added memory |
+| BM.14 | Read the title and loading hints on a TV | "View pauses background motion" is legible and inside the title-safe area |
+| BM.15 | Press View on the title, main menu, loading and lobby screens, and during a match | View pauses and resumes motion on those screens and does nothing in a match |
+| BM.16 | Open and close the Guide on a moving background; then suspend through the Guide and resume | Motion freezes while constrained or suspended and continues from the same pose, without a jump; after a resume with the Guide still open, it stays paused until the Guide closes |
+
 ## Secondary gameplay regression
 
 Keep this coverage for simulation, tuning, RPC and presentation changes. Source/behavior detail

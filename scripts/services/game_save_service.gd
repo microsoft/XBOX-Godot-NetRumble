@@ -6,6 +6,12 @@ extends RefCounted
 const SAVE_FILE_NAME := "profile.json"
 const HISTORY_FILE_NAME := "history.json"
 const STATS_FILE_NAME := "stats.json"
+## Optional, account-owned presentation settings, kept out of profile.json: builds that predate
+## this file reject any profile slot that carries a key they do not know. It uses the same
+## two-slot envelope and owner/generation fences as the core payloads, but it never fails an
+## account load, and an explicit save replaces a damaged copy.
+const PRESENTATION_FILE_NAME := "presentation.json"
+const ANIMATE_BACKGROUNDS_KEY := "animateBackgrounds"
 const SAVE_DIRECTORY := "NetRumble"
 const ROOT_MIGRATION_MARKER := "root-files-v1.complete"
 const ROOT_MIGRATION_CONTENT := "NetRumble root-files-v1\n"
@@ -198,6 +204,20 @@ func read(user: Variant, generation: int, file_name: String) -> Dictionary:
 	return result(Status.OK, latest.data.value)
 
 
+## The presentation sidecar, read apart from the three core payloads because it cannot fail an
+## account load: MISSING means the defaults, and FAILED (damaged, conflicting or unreadable
+## slots) is for the caller to treat as unknown.
+func read_presentation(user: Variant, generation: int) -> Dictionary:
+	if not is_bound(user, generation):
+		return result(Status.STALE, null, "The save account is no longer ready.")
+	var latest := _latest(PRESENTATION_FILE_NAME)
+	if latest.status == Status.OK:
+		return result(Status.OK, latest.data.value)
+	if latest.status == Status.MISSING:
+		return result(Status.MISSING, {})
+	return result(Status.FAILED, null, latest.reason)
+
+
 func write_now(user: Variant, generation: int, file_name: String, value: Variant) -> Dictionary:
 	if not is_bound(user, generation):
 		return result(Status.STALE, null, "The save account is no longer ready.")
@@ -211,6 +231,10 @@ func write_now(user: Variant, generation: int, file_name: String, value: Variant
 		var alternate := _read_slot(file_name, file_name + SLOT_SUFFIX)
 		if candidate.status == Status.FAILED and candidate.data != null and alternate.status == Status.MISSING:
 			latest = result(Status.MISSING)
+	# The core payloads fail closed over damage. The optional sidecar holds only presentation
+	# choices, so an explicit save replaces a damaged copy instead of failing every time.
+	if latest.status == Status.FAILED and file_name == PRESENTATION_FILE_NAME:
+		return _replace_damaged(file_name, value)
 	if latest.status not in [Status.OK, Status.MISSING]:
 		return result(Status.FAILED, null, latest.reason)
 	var sequence := 1
@@ -220,12 +244,7 @@ func write_now(user: Variant, generation: int, file_name: String, value: Variant
 			return result(Status.FAILED, null, "The save sequence limit was reached.")
 		sequence = int(latest.data.sequence) + 1
 		slot = file_name + SLOT_SUFFIX if latest.data.slot == file_name else file_name
-	var payload := JSON.stringify(value, "\t")
-	var bytes := JSON.stringify({
-		"sequence": sequence,
-		"payload": payload,
-		"sha256": _digest(sequence, payload),
-	}, "\t").to_utf8_buffer()
+	var bytes := _record_bytes(sequence, value)
 	# Godot's Windows rename deletes an existing destination before moving. Never use
 	# it here: only the inactive integrity slot may be truncated, even on a failed write.
 	var path := _folder.path_join(slot)
@@ -238,6 +257,56 @@ func write_now(user: Variant, generation: int, file_name: String, value: Variant
 	# is insufficient: close and verify the complete candidate through a new handle.
 	if not _verify_bytes(path, bytes):
 		return result(Status.FAILED, null, "Could not verify the completed write to %s. The previous save is unchanged." % slot)
+	_first_write_pending.erase(file_name)
+	return result(Status.OK)
+
+
+## Replaces a damaged optional file so that _latest() selects the value saved. An unreadable slot,
+## or one with an invalid payload, blocks _latest() even beside an intact slot; an incomplete or
+## missing slot does not. So the worst slot (blocking, then incomplete, then missing; ties go to
+## the primary) is overwritten with a sequence above every intact slot, and when both slots block,
+## the alternate is overwritten next with the following sequence. Every write is verified, and
+## success also requires _latest() to select the last record written. A failed write is reported.
+## Cut off between two writes, the file reads as damaged again or as the first write's new value,
+## never as an older one, and the caller's next save completes the repair.
+func _replace_damaged(file_name: String, value: Variant) -> Dictionary:
+	var slots: Array[String] = [file_name, file_name + SLOT_SUFFIX]
+	var ranks: Array[int] = []
+	var highest := 0
+	for slot: String in slots:
+		var state := _read_slot(file_name, slot)
+		if state.status == Status.OK:
+			highest = maxi(highest, int(state.data.sequence))
+			ranks.append(0)
+		elif state.status == Status.MISSING:
+			ranks.append(1)
+		elif state.data != null:
+			ranks.append(2)
+		else:
+			ranks.append(3)
+	var targets: Array[String] = []
+	if ranks[0] == 3 and ranks[1] == 3:
+		targets.append_array(slots)
+	elif ranks[0] >= ranks[1]:
+		targets.append(slots[0])
+	else:
+		targets.append(slots[1])
+	if highest > MAX_SEQUENCE - targets.size():
+		return result(Status.FAILED, null, "The save sequence limit was reached.")
+	var sequence := highest
+	for slot: String in targets:
+		sequence += 1
+		var bytes := _record_bytes(sequence, value)
+		var path := _folder.path_join(slot)
+		var error := _write_bytes(path, bytes)
+		if error != OK:
+			return result(Status.FAILED, null, "Could not write %s (error %d) to replace the damaged %s." % [
+				slot, error, file_name])
+		if not _verify_bytes(path, bytes):
+			return result(Status.FAILED, null, "Could not verify the replacement written to %s." % slot)
+	var latest := _latest(file_name)
+	if latest.status != Status.OK or latest.data.slot != targets.back() or latest.data.sequence != sequence:
+		return result(Status.FAILED, null, "%s is still damaged after its replacement was written." % file_name)
 	_first_write_pending.erase(file_name)
 	return result(Status.OK)
 
@@ -262,6 +331,16 @@ func _verify_bytes(path: String, expected: PackedByteArray) -> bool:
 	var error := file.get_error()
 	file.close()
 	return error == OK and length == expected.size() and actual == expected
+
+
+## One integrity-slot record: the sequence, the serialized payload and their digest.
+static func _record_bytes(sequence: int, value: Variant) -> PackedByteArray:
+	var payload := JSON.stringify(value, "\t")
+	return JSON.stringify({
+		"sequence": sequence,
+		"payload": payload,
+		"sha256": _digest(sequence, payload),
+	}, "\t").to_utf8_buffer()
 
 
 static func _digest(sequence: int, payload: String) -> String:
@@ -390,6 +469,9 @@ static func valid_payload(file_name: String, value: Variant) -> bool:
 				_:
 					return false
 		return true
+	if file_name == PRESENTATION_FILE_NAME:
+		# Forward-tolerant: a newer build may add keys. Known keys must keep their types.
+		return value.get(ANIMATE_BACKGROUNDS_KEY, true) is bool
 	if file_name == STATS_FILE_NAME:
 		for key: String in value:
 			if key not in ["matches_completed", "wins", "flawless_wins", "kills", "deaths", "asteroids_destroyed", "weapons_fired", "buffs_collected", "modes_completed"]:

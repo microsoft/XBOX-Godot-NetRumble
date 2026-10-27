@@ -18,21 +18,28 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 
-[node name="ScoreLabel" type="Label" parent="HUD"]
-unique_name_in_owner = true
+[node name="ScorePanel" type="PanelContainer" parent="HUD"]
 layout_mode = 1
-anchors_preset = 0
-offset_left = 1480.0
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -440.0
 offset_top = 40.0
-offset_right = 1880.0
-offset_bottom = 88.0
-theme_override_font_sizes/font_size = 36
+offset_right = -40.0
+offset_bottom = 100.0
+grow_horizontal = 0
+mouse_filter = 2
+theme_type_variation = &"HUDSurface"
+
+[node name="ScoreLabel" type="Label" parent="HUD/ScorePanel"]
+unique_name_in_owner = true
+layout_mode = 2
+mouse_filter = 2
+theme_type_variation = &"HUDScore"
 text = "Score: 0"
 horizontal_alignment = 2
 vertical_alignment = 1
 
-[node name="TimerLabel" type="Label" parent="HUD"]
-unique_name_in_owner = true
+[node name="TimerPanel" type="PanelContainer" parent="HUD"]
 layout_mode = 1
 anchors_preset = 5
 anchor_left = 0.5
@@ -41,8 +48,14 @@ offset_left = -160.0
 offset_top = 40.0
 offset_right = 160.0
 offset_bottom = 100.0
-theme_type_variation = &"AccentLabel"
-theme_override_font_sizes/font_size = 48
+mouse_filter = 2
+theme_type_variation = &"HUDSurface"
+
+[node name="TimerLabel" type="Label" parent="HUD/TimerPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+mouse_filter = 2
+theme_type_variation = &"HUDTimer"
 text = "0:00"
 horizontal_alignment = 1
 vertical_alignment = 1
@@ -61,12 +74,13 @@ offset_right = 400.0
 offset_bottom = 160.0
 grow_horizontal = 2
 grow_vertical = 2
+theme_type_variation = &"HUDCountdown"
 theme_override_font_sizes/font_size = 180
 text = ""
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="BottomBox" type="VBoxContainer" parent="HUD"]
+[node name="StatusPanel" type="PanelContainer" parent="HUD"]
 layout_mode = 1
 anchors_preset = 2
 anchor_top = 1.0
@@ -75,26 +89,37 @@ offset_left = 40.0
 offset_top = -170.0
 offset_right = 460.0
 offset_bottom = -40.0
+grow_vertical = 0
+mouse_filter = 2
+theme_type_variation = &"HUDSurface"
+
+[node name="BottomBox" type="VBoxContainer" parent="HUD/StatusPanel"]
+layout_mode = 2
+mouse_filter = 2
 theme_override_constants/separation = 8
 
-[node name="WeaponLabel" type="Label" parent="HUD/BottomBox"]
+[node name="WeaponLabel" type="Label" parent="HUD/StatusPanel/BottomBox"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_font_sizes/font_size = 28
+mouse_filter = 2
+theme_type_variation = &"HUDWeapon"
 text = "Weapon: Laser"
+autowrap_mode = 3
 
-[node name="HealthBar" type="ProgressBar" parent="HUD/BottomBox"]
+[node name="HealthBar" type="ProgressBar" parent="HUD/StatusPanel/BottomBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(400, 26)
 layout_mode = 2
+mouse_filter = 2
 max_value = 25.0
 value = 25.0
 show_percentage = false
 
-[node name="ShieldBar" type="ProgressBar" parent="HUD/BottomBox"]
+[node name="ShieldBar" type="ProgressBar" parent="HUD/StatusPanel/BottomBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(400, 20)
 layout_mode = 2
+mouse_filter = 2
 value = 100.0
 show_percentage = false
 

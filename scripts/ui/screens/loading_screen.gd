@@ -1,28 +1,19 @@
 extends NRScreen
 
-## Loading screen: concentric Loading_Ring textures rotating at alternating speeds
-## behind a static caption. configure({"message"}) overrides the caption text.
-##
-## Trailing animated periods on the caption are omitted because the rotating rings
-## already convey that work is in progress.
+## Loading screen: an animated green ring around a stationary Xbox mark.
+## configure({"message"}) overrides the caption; cancellation keeps its existing owner.
 
-## Angular velocity per ring, in rad/s. The speeds start at 0.1 going clockwise, then
-## each ring flips direction and grows by `speed * speed`:
-## (0.1 -> 0.11 -> 0.1221 -> 0.137008 -> 0.155779). Integrating per frame rather than
-## driving an AnimationPlayer keeps the motion seamless; a looping track has to snap
-## back to its first key, and none of these rates land on a whole turn.
-const RING_SPEEDS: Array[float] = [0.1, -0.11, 0.1221, -0.137008, 0.155779]
+const _RING_SPEED := 1.5
 
 signal cancelled()
 
 @onready var _message_label: Label = %MessageLabel
-@onready var _rings_root: Control = %RingsRoot
+@onready var _ring: TextureRect = %Ring
 @onready var _cancel_button: Button = %CancelButton
 
-var _message: String = "Loading"
+var _message: String = "Loading match..."
 var _allow_cancel := false
 var _cancel_requested := false
-var _rings: Array[Control] = []
 
 
 func set_status(message: String, cancelling: bool = true) -> void:
@@ -63,15 +54,10 @@ func _ready() -> void:
 	_cancel_button.pressed.connect(_on_cancel_pressed)
 	if _allow_cancel:
 		_cancel_button.call_deferred("grab_focus")
-	for child in _rings_root.get_children():
-		var ring := child as Control
-		if ring != null:
-			_rings.append(ring)
 
 
 func _process(delta: float) -> void:
-	for i in mini(_rings.size(), RING_SPEEDS.size()):
-		_rings[i].rotation += RING_SPEEDS[i] * delta
+	_ring.rotation += _RING_SPEED * delta
 
 
 func _unhandled_input(event: InputEvent) -> void:

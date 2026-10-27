@@ -20,7 +20,6 @@ const NAME_SCORE_GAP := 16.0
 ## change constantly and a column that resized on every point would jitter the panel.
 const MIN_SCORE_WIDTH := 24.0
 const MAX_SCORE_WIDTH := 64.0
-const FONT_SIZE := 16
 
 ## Breathing room between the panel border and the rows, so the right-aligned score
 ## is not flush against the panel border.
@@ -131,7 +130,7 @@ func _make_row(player: PlayerState, mic_state: String) -> Control:
 	name_label.clip_text = true
 	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	name_label.add_theme_font_size_override("font_size", FONT_SIZE)
+	name_label.theme_type_variation = &"HUDRosterName"
 	row.add_child(name_label)
 
 	var score_label := Label.new()
@@ -142,8 +141,7 @@ func _make_row(player: PlayerState, mic_state: String) -> Control:
 	score_label.size = Vector2(MAX_SCORE_WIDTH, ROW_HEIGHT)
 	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	score_label.add_theme_font_size_override("font_size", FONT_SIZE)
-	score_label.theme_type_variation = &"AccentLabel"
+	score_label.theme_type_variation = &"HUDRosterScore"
 	row.add_child(score_label)
 	return row
 
@@ -168,7 +166,8 @@ func _text_width(label: Label) -> float:
 	var font: Font = label.get_theme_font(&"font")
 	if font == null:
 		return 0.0
-	return font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, FONT_SIZE).x
+	return font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1.0,
+		label.get_theme_font_size(&"font_size")).x
 
 
 func _fit_icon_to_source(mic: TextureRect) -> void:

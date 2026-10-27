@@ -2,6 +2,25 @@ extends Node
 
 const Doubles := preload("res://tools/tests/doubles.gd")
 const FILES := ["profile.json", "history.json", "stats.json"]
+## profile.json keys and types exactly as builds before the presentation sidecar accept them.
+const OLD_PROFILE_NUMBERS := ["masterVolume", "musicVolume", "sfxVolume", "voiceChatVolume", "powerUpFrequency"]
+const OLD_PROFILE_INTEGERS := ["selectedShip", "selectedColor", "practiceOpponents"]
+const OLD_PROFILE_BOOLEANS := ["fullscreen", "showRosterOverlay"]
+
+
+## Cuts writes to one exact slot short, as a crash or a full disk between the two slot writes of a
+## sidecar repair would: the slot is left untouched, or torn to half its bytes, and the write fails.
+class SlotFaultSaves extends Doubles.Saves:
+	var fault_slot := ""
+	var tear := false
+
+	func _write_bytes(path: String, bytes: PackedByteArray) -> Error:
+		if path.get_file() != fault_slot:
+			return super._write_bytes(path, bytes)
+		if tear:
+			super._write_bytes(path, bytes.slice(0, floori(bytes.size() / 2.0)))
+		return ERR_FILE_CANT_WRITE
+
 
 var _assertions := 0
 var _failures: Array[String] = []
@@ -40,6 +59,11 @@ func _run() -> void:
 		await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
 		await _complete()
 		return
+	if OS.get_environment("NR_SAVE_TEST_SUITE") == "UI":
+		await preload("res://tools/tests/ui_tests.gd").new().run(self)
+		await preload("res://tools/tests/background_motion_tests.gd").new().run(self)
+		await _complete()
+		return
 	await _storage_contract()
 	await _storage_single_flight()
 	await _xbox_folder_contract()
@@ -51,6 +75,8 @@ func _run() -> void:
 	await _cancellation_and_shutdown()
 	await _write_retry()
 	await _unconditional_settings()
+	await _background_motion_setting()
+	await _presentation_sidecar()
 	await _history_limit()
 	await _gameplay_and_invites()
 	await _back_during_preparation()
@@ -69,6 +95,8 @@ func _run() -> void:
 	await preload("res://tools/tests/invite_uri_tests.gd").new().run(self)
 	await preload("res://tools/tests/pregame_service_tests.gd").new().run(self)
 	await preload("res://tools/tests/pregame_flow_tests.gd").new().run(self)
+	await preload("res://tools/tests/ui_tests.gd").new().run(self)
+	await preload("res://tools/tests/background_motion_tests.gd").new().run(self)
 	_source_guards()
 	await _complete()
 
@@ -113,7 +141,7 @@ func _put(folder: String, file_name: String, text: String) -> void:
 	for slot: String in [file_name, file_name + GameSaveService.SLOT_SUFFIX]:
 		var path := folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(slot)
 		if FileAccess.file_exists(path):
-			var existing: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+			var existing: Variant = _parse_json(FileAccess.get_file_as_string(path))
 			if existing is Dictionary and existing.get("sequence") is float:
 				sequence = maxi(sequence, int(existing.sequence) + 1)
 	var record := {
@@ -132,6 +160,154 @@ func _json(folder: String, file_name: String, data: Variant) -> void:
 	_put(folder, file_name, JSON.stringify(data))
 
 
+func _slot_path(folder: String, slot: String) -> String:
+	return folder.path_join(GameSaveService.SAVE_DIRECTORY).path_join(slot)
+
+
+## Writes one envelope slot directly, as this build or an older one would.
+func _write_envelope(folder: String, slot: String, sequence: int, payload: Variant) -> void:
+	var text := JSON.stringify(payload)
+	_write_raw(folder, slot, JSON.stringify({
+		"sequence": sequence,
+		"payload": text,
+		"sha256": ("%d\n%s" % [sequence, text]).sha256_text(),
+	}))
+
+
+func _write_raw(folder: String, slot: String, text: String) -> void:
+	var file := FileAccess.open(_slot_path(folder, slot), FileAccess.WRITE)
+	_check(file != null, "write fixture slot " + slot)
+	if file != null:
+		file.store_string(text)
+		file.close()
+
+
+## The intact records of a file's two slots, read straight from disk: slot -> {sequence, payload}.
+## Like the production reader, a slot whose envelope or payload is not valid JSON is unreadable
+## and skipped, silently: deliberately damaged fixtures must not print engine errors.
+func _slot_records(folder: String, file_name: String) -> Dictionary:
+	var records: Dictionary = {}
+	for slot: String in [file_name, file_name + GameSaveService.SLOT_SUFFIX]:
+		var path := _slot_path(folder, slot)
+		if not FileAccess.file_exists(path):
+			continue
+		var envelope: Variant = _parse_json(FileAccess.get_file_as_string(path))
+		if not envelope is Dictionary or envelope.size() != 3 or not envelope.get("payload") is String \
+				or not (envelope.get("sequence") is float or envelope.get("sequence") is int):
+			continue
+		var sequence := int(envelope["sequence"])
+		if envelope.get("sha256") != ("%d\n%s" % [sequence, envelope["payload"]]).sha256_text():
+			continue
+		var payload := JSON.new()
+		if payload.parse(envelope["payload"]) != OK:
+			continue
+		records[slot] = {"sequence": sequence, "payload": payload.data}
+	return records
+
+
+## JSON.parse_string() prints an engine error for invalid input; this returns null instead.
+static func _parse_json(text: String) -> Variant:
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		return null
+	return json.data
+
+
+func _slot_payloads(folder: String, file_name: String) -> Dictionary:
+	var payloads: Dictionary = {}
+	var records := _slot_records(folder, file_name)
+	for slot: String in records:
+		payloads[slot] = records[slot]["payload"]
+	return payloads
+
+
+## Both slots' raw bytes, empty for a missing slot: equal before and after proves nothing wrote them.
+func _slot_bytes(folder: String, file_name: String) -> Array[PackedByteArray]:
+	var bytes: Array[PackedByteArray] = []
+	for slot: String in [file_name, file_name + GameSaveService.SLOT_SUFFIX]:
+		var path := _slot_path(folder, slot)
+		bytes.append(FileAccess.get_file_as_bytes(path) if FileAccess.file_exists(path) else PackedByteArray())
+	return bytes
+
+
+## The newest intact presentation sidecar payload, or null.
+func _sidecar(folder: String) -> Variant:
+	var newest: Variant = null
+	var sequence := 0
+	var records := _slot_records(folder, GameSaveService.PRESENTATION_FILE_NAME)
+	for slot: String in records:
+		if int(records[slot]["sequence"]) > sequence:
+			sequence = int(records[slot]["sequence"])
+			newest = records[slot]["payload"]
+	return newest
+
+
+func _sidecar_exists(folder: String) -> bool:
+	var sidecar := GameSaveService.PRESENTATION_FILE_NAME
+	return FileAccess.file_exists(_slot_path(folder, sidecar)) \
+		or FileAccess.file_exists(_slot_path(folder, sidecar + GameSaveService.SLOT_SUFFIX))
+
+
+## True when no profile.json slot carries a presentation key: those live only in the sidecar.
+func _no_inline_presentation(folder: String) -> bool:
+	var payloads := _slot_payloads(folder, GameSaveService.SAVE_FILE_NAME)
+	for slot: String in payloads:
+		var payload: Variant = payloads[slot]
+		if payload is Dictionary and (payload as Dictionary).has(GameSaveService.ANIMATE_BACKGROUNDS_KEY):
+			return false
+	return true
+
+
+## profile.json validation exactly as builds before the presentation sidecar ship it. Pinned on
+## purpose: it rejects any key it does not know, so one inline presentation key locks them out.
+static func _old_profile_schema(value: Variant) -> bool:
+	if not value is Dictionary:
+		return false
+	for key: String in value:
+		var item: Variant = value[key]
+		var number: bool = (item is int or item is float) and is_finite(float(item))
+		if key in OLD_PROFILE_NUMBERS:
+			if not number:
+				return false
+		elif key in OLD_PROFILE_INTEGERS:
+			if not number or float(item) != floor(float(item)):
+				return false
+		elif key in OLD_PROFILE_BOOLEANS:
+			if not item is bool:
+				return false
+		else:
+			return false
+	return true
+
+
+## profile.json as an older build loads it: the newest intact slot, and any intact slot that its
+## schema rejects fails the whole load.
+func _old_reader_profile(folder: String) -> Dictionary:
+	var records := _slot_records(folder, GameSaveService.SAVE_FILE_NAME)
+	var newest_slot := ""
+	for slot: String in records:
+		if not _old_profile_schema(records[slot]["payload"]):
+			return {"status": "failed"}
+		if newest_slot.is_empty() or int(records[slot]["sequence"]) > int(records[newest_slot]["sequence"]):
+			newest_slot = slot
+	if newest_slot.is_empty():
+		return {"status": "missing"}
+	return {"status": "ok", "slot": newest_slot, "sequence": records[newest_slot]["sequence"],
+		"value": records[newest_slot]["payload"]}
+
+
+## An older build saving profile.json: its own schema, the next sequence, the older slot. It never
+## touches the presentation sidecar, which it does not know.
+func _old_writer_profile(folder: String, payload: Dictionary) -> void:
+	var current := _old_reader_profile(folder)
+	_check(current["status"] == "ok" and _old_profile_schema(payload), "the older build loads, then saves its own schema")
+	if current["status"] != "ok":
+		return
+	var primary := GameSaveService.SAVE_FILE_NAME
+	var slot := primary if current["slot"] != primary else primary + GameSaveService.SLOT_SUFFIX
+	_write_envelope(folder, slot, int(current["sequence"]) + 1, payload)
+
+
 func _saved(folder: String, file_name: String) -> Variant:
 	var store := Doubles.Saves.new()
 	var user := Doubles.User.new("read-back")
@@ -140,6 +316,15 @@ func _saved(folder: String, file_name: String) -> Variant:
 	var read := store.read(user, 1, file_name)
 	_status(read, GameSaveService.Status.OK, "independent committed-slot read-back")
 	return read.data
+
+
+## The presentation sidecar as a fresh reader selects it, through an independent store.
+func _read_sidecar(folder: String) -> Dictionary:
+	var store := Doubles.Saves.new()
+	var user := Doubles.User.new("sidecar-read-back")
+	store.sdk.folder = folder
+	_status(await store.prepare(user, 1), GameSaveService.Status.OK, "prepare independent sidecar read-back")
+	return store.read_presentation(user, 1)
 
 
 func _row(score: int, mode: String = "Deathmatch") -> Dictionary:
@@ -277,8 +462,12 @@ func _account_isolation() -> void:
 		"selectedShip": 3, "selectedColor": 2, "fullscreen": false, "showRosterOverlay": false,
 		"practiceOpponents": 1, "powerUpFrequency": 0.1,
 	})
+	PlayerProfile.animate_backgrounds = false
 	var a_profile: Dictionary = PlayerProfile.to_dict()
 	_check(PlayerProfile.save_settings(), "A saves actual PlayerProfile")
+	_check(_slot_payloads(a, "profile.json").size() >= 1 and _no_inline_presentation(a),
+		"A's profile.json stays in the canonical schema")
+	_check(_sidecar(a) == {"animateBackgrounds": false}, "A's Off lives in A's presentation sidecar")
 	_check(Services.report_match_result(_payload(101)), "A completed match persists")
 	Services.achievement_tracker().note_kill()
 	Services.achievement_tracker().note_death()
@@ -305,6 +494,7 @@ func _account_isolation() -> void:
 	_check(Services.get_match_history().is_empty(), "fresh B never sees A history")
 	_check(is_equal_approx(PlayerProfile.music_volume, 0.25) and PlayerProfile.ship_style_id == 0, "fresh B has default settings")
 	_check(PlayerProfile.to_dict() == defaults, "every fresh B preference is a default, not A's setting")
+	_check(PlayerProfile.animate_backgrounds, "fresh B animates backgrounds although A chose Off")
 	_check(Services.achievement_tracker().kills == 0 and Services.achievement_tracker().matches_completed == 0, "fresh B zero counters")
 	for counter: Variant in Services.achievement_tracker().to_dict().values():
 		_check(counter == 0, "every fresh B lifetime counter/bitset is zero")
@@ -314,6 +504,7 @@ func _account_isolation() -> void:
 		_check(FileAccess.get_file_as_bytes(a.path_join(file_name)) == a_bytes[file_name], "B load preserves A " + file_name)
 	PlayerProfile.music_volume = 0.4
 	_check(PlayerProfile.save_settings(), "B saves its own settings")
+	_check(not _sidecar_exists(b), "B, which never changed Animated Backgrounds, gains no sidecar")
 	_check(Services.report_match_result(_payload(202)), "B records own match")
 	await _reset()
 	_select("A", a)
@@ -323,12 +514,14 @@ func _account_isolation() -> void:
 	_check(is_equal_approx(AudioManager.volumes.Music, 0.7), "actual profile applies loaded music to audio seam")
 	_check(Services.achievement_tracker().kills == 1, "A counters recovered")
 	_check(PlayerProfile.to_dict() == a_profile, "all A preferences recovered")
+	_check(not PlayerProfile.animate_backgrounds, "A's saved Animated Backgrounds Off is recovered")
 	_check(Services.achievement_tracker().to_dict() == a_stats, "all A counters and bitsets recovered")
 	await _reset()
 	_select("B", b)
 	_check(await Services.sign_in(), "populated B reloads")
 	_check(Services.get_match_history().size() == 1 and Services.get_match_history()[0].score == 202, "populated B excludes A rows")
 	_check(is_equal_approx(PlayerProfile.music_volume, 0.4) and PlayerProfile.ship_style_id == 0, "populated B settings exclude A")
+	_check(PlayerProfile.animate_backgrounds, "populated B keeps its own Animated Backgrounds On")
 	_check(Services.achievement_tracker().matches_completed == 1 and Services.achievement_tracker().kills == 0, "populated B counters replace A")
 	for report: Dictionary in Services._achievements.reports:
 		_check(report.owner == Services.xbox_user(), "achievement report belongs to current B")
@@ -739,6 +932,320 @@ func _unconditional_settings() -> void:
 	Services.cancel_sign_in()
 	_check(not NROptionsRows.save() and not Services.persist_for_suspend()
 		and store.write_attempts.is_empty(), "account loss blocks unchanged explicit saves")
+
+
+func _background_motion_setting() -> void:
+	print("CASE: Animated Backgrounds is an account setting kept in the presentation sidecar")
+	await _reset()
+	_check(PlayerProfile.animate_backgrounds and not PlayerProfile.to_dict().has("animateBackgrounds")
+		and PlayerProfile.presentation_dict() == {"animateBackgrounds": true},
+		"the signed-out default animates backgrounds, outside the canonical profile")
+	var folder := _folder()
+	_select("background-motion", folder)
+	_check(await Services.sign_in(), "background-motion account ready")
+	var store: Doubles.Saves = Services._game_saves
+	var list := NRMenuList.new()
+	add_child(list)
+	NROptionsRows.populate(list)
+	var row: NRSpinner = null
+	var note: Label = null
+	for child: Node in list.get_children():
+		if child is NRSpinner and (child as NRSpinner).label_text == "Animated Backgrounds":
+			row = child as NRSpinner
+		elif child is Label and (child as Label).text == "Ctrl+Shift+M / View pauses background motion for this session.":
+			note = child as Label
+	_check(row != null and row.current_value() == true, "Options offers Animated Backgrounds, On by default")
+	_check(note != null and note.focus_mode == Control.FOCUS_NONE,
+		"Options explains the Ctrl+Shift+M / View session pause without adding a focus stop")
+	if row == null:
+		list.queue_free()
+		await _reset()
+		return
+	store.write_attempts.clear()
+	row._step(-1)
+	_check(not PlayerProfile.animate_backgrounds and store.write_attempts.is_empty(),
+		"choosing Off applies live and writes only when Options is left")
+	_check(NROptionsRows.save() and store.write_attempts == ["profile.json", "presentation.json"],
+		"leaving Options saves profile.json, then the changed sidecar")
+	_check(_sidecar(folder) == {"animateBackgrounds": false} and _no_inline_presentation(folder)
+		and _old_reader_profile(folder)["status"] == "ok",
+		"Off is saved in the sidecar, and an older build can still load profile.json")
+	store.write_attempts.clear()
+	_check(NROptionsRows.save() and store.write_attempts == ["profile.json"], "an unchanged sidecar is not rewritten")
+	UIBackgroundMotion.session_paused = true
+	row._step(1)
+	_check(PlayerProfile.animate_backgrounds and not UIBackgroundMotion.session_paused,
+		"explicitly choosing On also lifts a Ctrl+Shift+M / View session pause")
+	UIBackgroundMotion.session_paused = true
+	_check(NROptionsRows.save() and _sidecar(folder) == {"animateBackgrounds": true},
+		"On is saved, and a session pause is never saved with it")
+	UIBackgroundMotion.session_paused = false
+	row._step(-1)
+	_check(NROptionsRows.save(), "Options saves Off again")
+	list.queue_free()
+	await _reset()
+	_check(PlayerProfile.animate_backgrounds, "signing out restores the default")
+	_select("background-motion", folder)
+	_check(await Services.sign_in() and not PlayerProfile.animate_backgrounds, "a saved Off is respected on load")
+	PlayerProfile.reset_to_defaults()
+	_check(PlayerProfile.animate_backgrounds, "reset_to_defaults turns Animated Backgrounds back On")
+	await _reset()
+	var legacy := _folder()
+	_json(legacy, "profile.json", {"musicVolume": 0.3})
+	# A stale Off from the previous account must not leak into an account that never chose.
+	PlayerProfile.animate_backgrounds = false
+	_select("background-motion-legacy", legacy)
+	_check(await Services.sign_in(), "an account saved before the sidecar existed loads")
+	_check(PlayerProfile.animate_backgrounds and is_equal_approx(PlayerProfile.music_volume, 0.3)
+		and not _sidecar_exists(legacy), "a missing sidecar loads as On and is not synthesized")
+	await _reset()
+
+
+func _presentation_sidecar() -> void:
+	print("CASE: presentation sidecar keeps profile.json loadable by older builds; damage and failures stay safe")
+	await _reset()
+	var sidecar := GameSaveService.PRESENTATION_FILE_NAME
+	_check(GameSaveService.valid_payload(sidecar, {"animateBackgrounds": false})
+		and GameSaveService.valid_payload(sidecar, {"futureSetting": "kept"})
+		and not GameSaveService.valid_payload(sidecar, {"animateBackgrounds": 0})
+		and not GameSaveService.valid_payload(sidecar, []),
+		"the sidecar accepts keys from newer builds, never a mistyped known key")
+	_check(not GameSaveService.valid_payload("profile.json", {"animateBackgrounds": true})
+		and not _old_profile_schema({"animateBackgrounds": true})
+		and _old_profile_schema({"musicVolume": 0.5, "fullscreen": true}),
+		"profile.json's schema, like the pinned older one, has no presentation keys")
+
+	# Upgrade -> older build -> upgrade, starting from a profile an older build saved.
+	var folder := _folder()
+	_write_envelope(folder, "profile.json", 1, {"musicVolume": 0.4})
+	_write_envelope(folder, "profile.json.alt", 2, {"musicVolume": 0.6})
+	_select("presentation-upgrade", folder)
+	var store: Doubles.Saves = Services._game_saves
+	var user: Variant = null
+	_check(await Services.sign_in(), "the upgraded build loads an older build's save")
+	_check(PlayerProfile.animate_backgrounds and is_equal_approx(PlayerProfile.music_volume, 0.6)
+		and store.write_attempts.is_empty() and not _sidecar_exists(folder),
+		"the newest core settings load, motion defaults On, and loading writes nothing")
+	PlayerProfile.animate_backgrounds = false
+	_check(PlayerProfile.save_settings() and store.write_attempts == ["profile.json", "presentation.json"],
+		"saving Off writes profile.json, then the sidecar")
+	_check(_sidecar(folder) == {"animateBackgrounds": false} and _no_inline_presentation(folder),
+		"Off lives in the sidecar and profile.json keeps its schema")
+	var old := _old_reader_profile(folder)
+	_check(old["status"] == "ok" and is_equal_approx(float(old["value"]["musicVolume"]), 0.6),
+		"an older build loads the upgraded account")
+	_old_writer_profile(folder, {"musicVolume": 0.2})
+	_check(_sidecar(folder) == {"animateBackgrounds": false}, "the older build leaves the sidecar alone")
+	await _reset()
+	_select("presentation-upgrade", folder)
+	store = Services._game_saves
+	_check(await Services.sign_in(), "upgrading again loads the older build's save")
+	_check(is_equal_approx(PlayerProfile.music_volume, 0.2) and not PlayerProfile.animate_backgrounds,
+		"the older build's core change and the sidecar's Off both apply")
+	_check(store.write_attempts.is_empty(), "loading the upgraded account writes nothing")
+
+	# profile.json never carries presentation keys. A slot that does, newest or older, is not a
+	# supported schema: like any unknown key it fails the load closed, and nothing rewrites it.
+	for layout: String in ["newest", "older"]:
+		await _reset()
+		folder = _folder()
+		_write_envelope(folder, "profile.json", 1, {"musicVolume": 0.5, "animateBackgrounds": false})
+		if layout == "older":
+			_write_envelope(folder, "profile.json.alt", 2, {"musicVolume": 0.5})
+		var before := _slot_bytes(folder, "profile.json")
+		_select("presentation-unsupported-" + layout, folder)
+		store = Services._game_saves
+		_check(not await Services.sign_in() and Services.sign_in_error().contains("profile.json"),
+			"a presentation key in the %s profile slot fails the load like any wrong-schema payload" % layout)
+		_check(not PlayerProfile.save_settings() and store.write_attempts.is_empty()
+			and not _sidecar_exists(folder) and _slot_bytes(folder, "profile.json") == before,
+			"the rejected profile (%s slot) stays byte-intact, and nothing is written" % layout)
+
+	# A damaged sidecar keeps motion off without touching core settings; an explicit save replaces it.
+	for damage: String in ["torn", "mistyped"]:
+		await _reset()
+		folder = _folder()
+		_json(folder, "profile.json", {"musicVolume": 0.3})
+		if damage == "torn":
+			_write_raw(folder, sidecar, "{\"sequence\": 1, \"payload\": \"{}\", \"sha256\": \"torn\"}")
+			_write_raw(folder, sidecar + GameSaveService.SLOT_SUFFIX, "not json")
+		else:
+			_write_envelope(folder, sidecar, 4, {"animateBackgrounds": "yes"})
+		_select("presentation-" + damage, folder)
+		store = Services._game_saves
+		_check(await Services.sign_in(), "a %s sidecar never blocks the account" % damage)
+		_check(not PlayerProfile.animate_backgrounds and is_equal_approx(PlayerProfile.music_volume, 0.3)
+			and store.write_attempts.is_empty(),
+			"a %s sidecar keeps motion off, keeps core settings and is not rewritten on load" % damage)
+		PlayerProfile.animate_backgrounds = true
+		_check(PlayerProfile.save_settings() and _sidecar(folder) == {"animateBackgrounds": true},
+			"an explicit save replaces the %s sidecar" % damage)
+		await _reset()
+		_select("presentation-" + damage, folder)
+		_check(await Services.sign_in() and PlayerProfile.animate_backgrounds, "the replaced %s sidecar loads" % damage)
+
+	# Intact envelopes around invalid payloads in both slots: either one alone stops the reader, so
+	# one explicit save must replace both before it reports success.
+	var sidecar_alt := sidecar + GameSaveService.SLOT_SUFFIX
+	var saved_on := {"animateBackgrounds": true}
+	await _reset()
+	folder = _folder()
+	_json(folder, "profile.json", {"musicVolume": 0.3})
+	_write_envelope(folder, sidecar, 4, {"animateBackgrounds": "yes"})
+	_write_envelope(folder, sidecar_alt, 5, {"animateBackgrounds": 0})
+	_select("presentation-both-invalid", folder)
+	store = Services._game_saves
+	_check(await Services.sign_in() and not PlayerProfile.animate_backgrounds
+		and is_equal_approx(PlayerProfile.music_volume, 0.3) and store.write_attempts.is_empty(),
+		"two invalid sidecar payloads load motion Off and keep core settings, with no rewrite on load")
+	PlayerProfile.animate_backgrounds = true
+	_check(PlayerProfile.save_settings(), "an explicit save over two invalid sidecar payloads succeeds")
+	var selected := store.read_presentation(Services.xbox_user(), Services.account_generation())
+	_check(selected.status == GameSaveService.Status.OK and selected.data == saved_on,
+		"right after that save, the reader selects the saved value")
+	_check(_slot_payloads(folder, sidecar) == {sidecar: saved_on, sidecar_alt: saved_on},
+		"the save replaced both invalid slots")
+	await _reset()
+	_select("presentation-both-invalid", folder)
+	_check(await Services.sign_in() and PlayerProfile.animate_backgrounds
+		and is_equal_approx(PlayerProfile.music_volume, 0.3), "the saved On reloads")
+
+	# The same repair cut off between its two slot writes: the primary already holds the new value
+	# and the alternate is left as it was, or torn. The save reports failure. The sidecar then reads
+	# as damaged (motion Off) or as the new value, never an older one, core settings stay saved, and
+	# the session's next save completes the repair.
+	for cut: String in ["untouched", "torn"]:
+		await _reset()
+		folder = _folder()
+		_json(folder, "profile.json", {"musicVolume": 0.3})
+		_write_envelope(folder, sidecar, 4, {"animateBackgrounds": "yes"})
+		_write_envelope(folder, sidecar_alt, 5, {"animateBackgrounds": 0})
+		var faulty := SlotFaultSaves.new()
+		Services._game_saves = faulty
+		_select("presentation-cut-" + cut, folder)
+		_check(await Services.sign_in() and not PlayerProfile.animate_backgrounds,
+			"the account for the %s cut loads with motion Off" % cut)
+		faulty.fault_slot = sidecar_alt
+		faulty.tear = cut == "torn"
+		_save_errors.clear()
+		PlayerProfile.animate_backgrounds = true
+		_check(not PlayerProfile.save_settings() and _save_errors.size() == 1,
+			"a repair cut off after its first slot (%s) reports one save failure" % cut)
+		var records := _slot_records(folder, sidecar)
+		_check(records.has(sidecar) and records[sidecar]["payload"] == saved_on,
+			"the first slot already holds the new value (%s)" % cut)
+		var interrupted := await _read_sidecar(folder)
+		if cut == "untouched":
+			_check(interrupted.status == GameSaveService.Status.FAILED,
+				"while the untouched invalid slot still blocks, a fresh reader sees damage, so motion loads Off")
+		else:
+			_check(interrupted.status == GameSaveService.Status.OK and interrupted.data == saved_on,
+				"with the alternate torn, a fresh reader selects the first slot's new value")
+		var core: Variant = await _saved(folder, "profile.json")
+		_check(PlayerProfile.animate_backgrounds and core is Dictionary
+			and is_equal_approx(float(core.get("musicVolume", -1.0)), 0.3),
+			"the session keeps the player's On and core settings stay saved (%s)" % cut)
+		faulty.fault_slot = ""
+		faulty.write_attempts.clear()
+		_check(PlayerProfile.save_settings() and faulty.write_attempts.has(sidecar),
+			"the session's next save writes the sidecar again (%s)" % cut)
+		var completed := await _read_sidecar(folder)
+		_check(completed.status == GameSaveService.Status.OK and completed.data == saved_on,
+			"a fresh reader then selects the saved value (%s)" % cut)
+		await _reset()
+		_select("presentation-cut-" + cut, folder)
+		_check(await Services.sign_in() and PlayerProfile.animate_backgrounds
+			and is_equal_approx(PlayerProfile.music_volume, 0.3), "the completed repair reloads On (%s)" % cut)
+
+	# A failed sidecar write is reported once and retried by the next save.
+	await _reset()
+	folder = _folder()
+	_select("presentation-write-failure", folder)
+	store = Services._game_saves
+	_check(await Services.sign_in(), "write-failure account ready")
+	_save_errors.clear()
+	store.failed_files.assign([sidecar])
+	PlayerProfile.animate_backgrounds = false
+	_check(not PlayerProfile.save_settings() and _save_errors.size() == 1 and not _sidecar_exists(folder)
+		and _slot_payloads(folder, "profile.json").size() == 1,
+		"a failed sidecar write reports one save failure after profile.json is saved")
+	store.failed_files.clear()
+	_check(PlayerProfile.save_settings() and _sidecar(folder) == {"animateBackgrounds": false},
+		"the next save retries the unsaved Off")
+
+	# Suspend commits a changed sidecar without Options being left, in the two-slot envelope.
+	await _reset()
+	folder = _folder()
+	_select("presentation-suspend", folder)
+	store = Services._game_saves
+	_check(await Services.sign_in(), "suspend account ready")
+	PlayerProfile.animate_backgrounds = false
+	store.write_attempts.clear()
+	_check(Services.persist_for_suspend()
+		and store.write_attempts == ["profile.json", sidecar, "history.json", "stats.json"],
+		"suspend commits the changed sidecar right after profile.json")
+	_check(_sidecar(folder) == {"animateBackgrounds": false} and _slot_records(folder, sidecar).size() == 1,
+		"the suspended Off is committed to the sidecar's first slot")
+	await _reset()
+	_select("presentation-suspend", folder)
+	store = Services._game_saves
+	_check(await Services.sign_in() and not PlayerProfile.animate_backgrounds, "the suspended Off reloads")
+	# A failed sidecar write during suspend keeps the committed baseline and fails the save.
+	PlayerProfile.animate_backgrounds = true
+	var baseline := _slot_records(folder, sidecar)
+	store.failed_files.assign([sidecar])
+	_save_errors.clear()
+	_check(not Services.persist_for_suspend() and _save_errors.size() == 1,
+		"a failed sidecar write fails the suspend save and is reported once")
+	_check(_slot_records(folder, sidecar) == baseline and _sidecar(folder) == {"animateBackgrounds": false},
+		"the committed sidecar baseline stays intact")
+	store.failed_files.clear()
+	_check(Services.persist_for_suspend() and _sidecar(folder) == {"animateBackgrounds": true}
+		and _slot_records(folder, sidecar).size() == 2,
+		"the next suspend commits On to the sidecar's other slot")
+	await _reset()
+	_select("presentation-suspend", folder)
+	_check(await Services.sign_in() and PlayerProfile.animate_backgrounds, "the retried On reloads")
+
+	# Newer builds' sidecar keys survive this build's saves.
+	await _reset()
+	folder = _folder()
+	_write_envelope(folder, sidecar, 7, {"animateBackgrounds": false, "futureSetting": "kept"})
+	_select("presentation-forward", folder)
+	_check(await Services.sign_in() and not PlayerProfile.animate_backgrounds, "a newer build's sidecar loads")
+	PlayerProfile.animate_backgrounds = true
+	_check(PlayerProfile.save_settings()
+		and _sidecar(folder) == {"animateBackgrounds": true, "futureSetting": "kept"},
+		"saving keeps sidecar settings this build does not know")
+
+	# Owner and generation fences.
+	user = Services.xbox_user()
+	var generation := Services.account_generation()
+	var bound_store: Doubles.Saves = Services._game_saves
+	Services.cancel_sign_in()
+	_check(not Services.save_presentation({"animateBackgrounds": false}), "a sidecar save after the account changes is refused")
+	_check(bound_store.write_now(user, generation, sidecar, {"animateBackgrounds": false}).status == GameSaveService.Status.STALE
+		and bound_store.read_presentation(user, generation).status == GameSaveService.Status.STALE,
+		"sidecar reads and writes are fenced by owner and generation")
+	await _reset()
+	folder = _folder()
+	_write_envelope(folder, "profile.json", 1, {"musicVolume": 0.5})
+	_write_envelope(folder, sidecar, 1, {"animateBackgrounds": false})
+	var fenced := _slot_bytes(folder, sidecar)
+	_select("presentation-fence", folder)
+	store = Services._game_saves
+	PlayerProfile.animate_backgrounds = true
+	store.on_read = func(file_name: String) -> void:
+		if file_name == GameSaveService.STATS_FILE_NAME:
+			Services.cancel_sign_in()
+	_check(not await Services.sign_in(), "an account change while loading cancels the sign-in")
+	store.on_read = Callable()
+	_check(store.write_attempts.is_empty() and _slot_bytes(folder, sidecar) == fenced
+		and PlayerProfile.animate_backgrounds,
+		"a stale generation never applies or writes presentation settings")
+	_check(GameSaveService.new().write_now(null, 0, "profile.json", {"animateBackgrounds": true}).status
+		== GameSaveService.Status.STALE, "an unbound store refuses writes before validating them")
+	await _reset()
 
 
 func _history_limit() -> void:

@@ -49,11 +49,13 @@ initialized services, a registered process, a signed-in user or an allowed privi
 ## Autoload order
 
 ```text
-XboxBootstrap → Assets → AudioManager → PlayerProfile → Services → NetManager → ScreenManager → InviteRouter
+XboxBootstrap → Assets → AudioManager → PlayerProfile → Services → NetManager → ScreenManager → UIBackgroundMotion → InviteRouter
 ```
 
 `project.godot` is the authority for this order. Bootstrap must precede GDK use; profile defaults
 precede account-owned save loading; services precede session checks.
+`UIBackgroundMotion` reads the profile's motion preference and the screens' backgrounds, so it
+follows `PlayerProfile` and `ScreenManager`.
 `InviteRouter` needs both the session and front end before it can redeem an activation.
 These are sibling autoloads, not children of `main.gd`.
 
@@ -146,6 +148,27 @@ behavior and detects incomplete buffered writes; it is not migration or a legacy
 A damaged candidate can be ignored when another intact slot exists; inaccessible slots,
 invalid payloads, or damage with no intact slot fail loading. Both slots absent means no save.
 
+**Presentation sidecar.** `presentation.json` (with its `.alt` slot) sits beside the three payloads
+and holds presentation-only preferences, today `animateBackgrounds`. It uses the same envelope and
+the same owner/generation fences. Its policies:
+- **Downgrade policy.** Builds that predate the sidecar reject any profile slot carrying a key they
+  do not know. So `profile.json` keeps exactly the schema they read, and a newer build never writes
+  a new key into a core payload.
+- **Optional.** It is read apart from the three payloads and never fails sign-in. A missing
+  sidecar means the defaults (motion On), and it is only created once a value differs from them.
+- **Damaged.** No intact slot, conflicting slots, an unreadable slot or a mistyped known key all
+  count as damage. A damaged sidecar logs a warning and loads motion Off, the safe choice for a
+  player who may have turned it off. Every core setting still loads, and the next explicit
+  settings save replaces the damaged sidecar. An unreadable or invalid slot blocks the reader even
+  beside an intact one, so when both slots block, that save overwrites both (primary first, each
+  verified). It reports success only once the reader selects the saved value. Cut off between the
+  two writes, it reports failure, and the sidecar reads as damaged or as the new value, never an
+  older one; the next save completes the repair.
+- **Forward tolerant.** Keys from newer builds are accepted and kept when this build saves.
+- **Never inline.** `profile.json` keeps its strict schema. A profile slot carrying
+  `animateBackgrounds`, like any unknown key, fails the load closed (Retry / Back), and nothing
+  rewrites or erases it.
+
 `Services` coordinates `unbound -> waiting for prior teardown (if needed) -> authenticating -> loading saves -> ready`.
 Authentication alone is not readiness: Practice, host/join, friends and invites all require
 the identified account's initialized store and successful reads. The three payloads are staged,
@@ -169,7 +192,10 @@ an explicitly saved `0.7` remains `0.7`.
 `Services` retains loaded state for synchronous lifecycle persistence without an asynchronous
 read or new store setup. Explicit save requests attempt their relevant current payloads even
 when values are unchanged. Suspend and normal shutdown attempt settings, history and counters;
-there are no save dirty flags or change-detection gates. Writes require a current owner and
+there are no save dirty flags. The one change check is the optional sidecar's: it is written,
+after `profile.json`, only when it would change what the account loads. A failed sidecar write
+reports a save failure and keeps the stored copy as the baseline, so the next save retries.
+Writes require a current owner and
 report failure; current values remain in memory for same-owner retry, never for transfer to
 the next account. Suspension does
 not sign out. Removal handling may persist only while the platform still permits access;
@@ -192,10 +218,10 @@ There is no periodic autosave or new Constrain/settings/session-exit checkpoint 
 
 | Event | Behavior |
 |---|---|
-| Suspend (`NOTIFICATION_APPLICATION_PAUSED`) | `Services.persist_for_suspend()`, `NetManager.abandon_for_suspend()`, then stop game audio. Session/chat state is invalidated synchronously. |
-| Resume (`NOTIFICATION_APPLICATION_RESUMED`) | Restart music; invalidate the old save provider/generation, account-dialog guards and active invite claim, retaining newer buffered invites. Start owner-bound activity retirement and route to acquisition for synchronization and all three loads. After handoff, an abandoned-match notice yields to invite routing; never resume a match. |
-| Constrain (`NOTIFICATION_APPLICATION_FOCUS_OUT`) | Mute game audio and call `MatchDirector.set_externally_paused(true)`; retain session/identity. |
-| Unconstrain (`NOTIFICATION_APPLICATION_FOCUS_IN`) | Restore game audio and local simulation/phase-clock advancement. |
+| Suspend (`NOTIFICATION_APPLICATION_PAUSED`) | `Services.persist_for_suspend()`, then suspend background motion, `NetManager.abandon_for_suspend()`, then stop game audio. Session/chat state is invalidated synchronously. |
+| Resume (`NOTIFICATION_APPLICATION_RESUMED`) | Clear the background-motion suspension and restart music; invalidate the old save provider/generation, account-dialog guards and active invite claim, retaining newer buffered invites. Start owner-bound activity retirement and route to acquisition for synchronization and all three loads, then retry a failed background warm-up. After handoff, an abandoned-match notice yields to invite routing; never resume a match. |
+| Constrain (`NOTIFICATION_APPLICATION_FOCUS_OUT`) | Mute game audio, freeze background motion and call `MatchDirector.set_externally_paused(true)`; retain session/identity. |
+| Unconstrain (`NOTIFICATION_APPLICATION_FOCUS_IN`) | Restore game audio and local simulation/phase-clock advancement; lift the background-motion freeze and retry a failed warm-up. |
 
 **Maintainer invariant: suspend must remain straight-line:** no `await`, timers or deferred
 persistence. The platform may freeze or terminate the process as soon as the handler returns.
@@ -256,6 +282,191 @@ there is no separate offline-login or unsaved-play fallback.
 
 `NRMenuList.refresh_focus_wrap()` rebuilds explicit focus paths when availability changes.
 Focus must move off a newly disabled row rather than leave controller navigation stranded.
+
+## Front-end presentation
+
+Background art and branding assets live in `assets\textures\UI\Background\`,
+`assets\textures\UI\Logo\` and `assets\textures\UI\Loading\`. The Waves background is a 1920x1080
+texture, and the title and lobby glow is drawn in code (see
+[Background motion](#background-motion)); both use keep-aspect cover, so non-16:9 windows
+centre-crop instead of stretching: at 21:9 about rows 135–945 remain, while at 16:10 about
+columns 96–1824 remain. The Waves texture has no mipmaps and is magnified 2x at 4K; its detail is
+limited by a 1536x1024 source raster, so a sharper 4K Waves needs higher-resolution art.
+The NET.RUMBLE wordmarks and Xbox mark are path-only SVGs, with no embedded images or fonts. Each
+wordmark's 1 px outside outline is a separate shape drawn over a fill that extends 0.35 px in SVG
+units (0.7 px in the imported 2x raster) beneath it, so no antialiasing gap appears at the glyph
+edge. The wordmarks, Xbox mark and loading ring are SVGs that import at 2x as lossless textures
+with full mipmaps and `fix_alpha_border`; the Xbox glass PNG is also mipmapped. Their
+`TextureRect` nodes use `LINEAR_WITH_MIPMAPS`, reducing minification aliasing from 960x540
+through 3840x2160 with no branding-texture upscaling. At 4K, the wordmarks, glass logo and ring
+reach 1:1 while the Xbox mark draws at about 98%.
+Interactive captions, account progress, appearance selectors and roster cards are Godot
+controls, not flattened screen images. `assets\ui\netrumble.tres` owns their typography, rounded
+surfaces and focus states.
+
+Each front-end screen or state lives in one scene:
+
+| Screen or state | Scene |
+|---|---|
+| Press prompt, signing in, save synchronization, signed-in confirmation | `acquire_user_screen.tscn` |
+| Main menu | `main_menu_screen.tscn` |
+| Joining/loading | `loading_screen.tscn` |
+| Ship/color selection, rules and roster | `lobby_screen.tscn` |
+
+Layouts use the project's 1920x1080 canvas. Acquisition and loading are center-anchored;
+secondary menu actions and lobby hints are edge-anchored. The primary menu holds the
+Matchmaking / Host / Join flows, while History and Leaderboards have separate footer buttons
+included in keyboard/gamepad navigation. Join codes, practice opponents, matchmaking rules and
+account/save readiness come from the services and `NetManager`.
+The lobby previews the actual gameplay ship textures and palette. History, Leaderboards,
+pause/options, dialogs, social/join/chat overlays and the gameplay HUD share the same visual
+language and navigation patterns. The gameplay arena and the Xbox-owned account pickers,
+keyboards, profile cards and invite dialogs are outside this theme. Warning/error titles keep
+distinct severity accents, and health/shield bars keep their semantic colours.
+See the isolated [UI checks](../tools/repository-checks.md) for layout/input
+coverage and viewport screenshot capture.
+
+### Background motion
+
+The Waves backgrounds (main menu, loading, History, Leaderboards) and the Glow backgrounds
+(title, lobby) move slowly. The `UIBackgroundMotion` autoload owns the session state, and the
+adapters in `scripts\ui\backgrounds\` draw it: `waves_background.gd` sits on each Waves
+`Background` `TextureRect`, and `glow_background.gd` on each Glow `Background` `ColorRect`.
+Each family is in one of three states:
+
+| State | When | What draws |
+|---|---|---|
+| Disabled | Options › Animated Backgrounds is Off; the renderer is unsupported (headless, HDR 2D, transparent viewport); or no covered warm-up has succeeded | The exact static design: Waves is the designer `TextureRect` alone (no material, no dot layers); Glow is its shader's undithered design state |
+| Paused | The session pause (Ctrl+Shift+M / View); suspension; constrain (focus loss, the Guide); `time_override`; or no visible, processing background of that family (a hidden screen, or one under a dialog) | The current pose, frozen: materials stay, while the clock and uniform updates stop |
+| Running | Otherwise | The uniforms follow the family clock every frame |
+
+`effective_enabled()` combines three things:
+- the preference, `PlayerProfile.animate_backgrounds`, saved in the account's presentation
+  sidecar (see [Saves](#saves)); missing loads On, damaged loads Off;
+- renderer support;
+- a successful warm-up.
+
+Waves and Glow have separate clocks. A clock starts at its family's first visible activation, and
+stops whenever the family is paused or disabled. It keeps its phase across screen swaps, so the
+next Waves screen continues the motion instead of restarting it. An adapter reads its time before
+it builds its materials, so a newly shown background never flashes its rest pose. Every pose is a
+pure function of the clock, and time reaches the shaders only through explicit uniforms (never
+`TIME`).
+
+**Suspend.** Suspension is a pause reason of its own. `main.gd` sets it once the suspend handler's
+save has run, and clears it on resume, so both clocks and both ramps hold still in between and then
+continue without a jump. Resume clears only suspension: a focus loss (the Guide) or the session
+pause still holds motion until it ends.
+
+**Re-enable ramp.** Turning motion back on never jumps from the static design to a moving pose.
+- **When it starts.** Every change from Disabled to enabled restarts a 3 s ramp at 0 for both
+  families: Options On, a sign-out reset back to On, or a successful warm-up or retry. A second
+  restart replaces the running ramp; ramps never stack.
+- **How it progresses.** The ramp is a smoothstep that advances only while its family runs, so
+  pauses freeze it, and swaps and Paused-to-Running changes do not restart it.
+- **What it scales.** Waves eases its displacement with `min(first-activation ease, ramp)`. Glow
+  scales its breathing amplitude by the ramp; its screen-fixed noise stays on, even at ramp 0.
+- **Under `time_override`.** The ramp reads 1 for a deterministic pose, and its stored progress
+  resumes when the override clears.
+
+Pipelines compile before any animated frame is presented:
+1. `main.gd` puts an opaque #050505 cover over the window and awaits `prepare()`.
+2. `prepare()` loads and validates the shared resources. It then draws four warm-up nodes under
+   the cover (Waves, Glow, a 589x427 ship card and a ship preview sprite) at a fixed pose, and
+   waits for three drawn frames. The warm-up starts no clock.
+3. Headless runs never wait for frames.
+4. If no frames arrive within 2 s (a minimised start), motion stays disabled and the title shows
+   the static backgrounds. `main.gd` then retries under a fresh cover: once after startup, on each
+   focus event (including the first focus of a title launched minimised, which never had focus to
+   lose), and after a resume has routed to the title or menu, once any warm-up still in flight has
+   finished.
+5. A retry only ever covers the front end. When it runs, it needs a visible front-end background
+   and no gameplay screen on the stack, and the title must be neither constrained nor suspended.
+   An attempt refused this way does not use up the one retry after startup. If gameplay is pushed
+   while a warm-up is still running, `main.gd` cancels it: its cover and draws leave in that frame,
+   and motion stays static until a later retry.
+
+Nothing starts motion without a successful covered warm-up.
+
+Accessibility (motion is slow and continuous, with no flashes):
+- **Off.** Options › Animated Backgrounds Off is the saved, exact static design, so players can
+  stop moving content (XAG 117).
+- **Ctrl+Shift+M / View.** Ctrl+Shift+M, with exactly those modifiers, or the controller's View
+  button pauses motion for the session on any front-end screen with a background, including before
+  sign-in. It writes no account data and does nothing in gameplay. Any other key or set of
+  modifiers passes through, so typing M into a text field such as the join code is unaffected.
+  While motion is disabled the shortcut is consumed and changes nothing, so it never reaches the
+  title's press-any-button prompt. Voice and chat apps can bind the same keys (Discord's Toggle
+  Mute, for example); View and the Options setting are unaffected.
+- **Where it is shown.** Options states the shortcut under the row. The acquisition and loading
+  screens show a `MotionHintLabel` ("Ctrl+Shift+M / View pauses background motion", or "View
+  pauses background motion" on console) only while the shortcut can act, meaning a visible
+  background is running or paused. The hint is hidden while motion is Off, unsupported or not
+  warmed.
+- **Legibility.** The hint uses the `MotionHint` theme type: 26 px text in opaque 0.8 grey, with no
+  translucent modulate, inside the 90 % title-safe area at every window shape. Against the
+  brightest pixel the animated backdrop draws behind the hint, at every measured pose and aspect
+  (16:9, 16:10 and 2560x1080 ultrawide), the text keeps at least 5.4:1 contrast, about 9:1 at
+  16:9, above the 4.5:1 minimum.
+- **On.** Choosing On in Options also lifts the session pause.
+
+**Waves** moves the designer's own 1591 dots on a slow three-wave surface: a 60 s loop, with a 3 s
+ease-in from the design's exact first frame. Rendering takes three passes:
+1. A base pass draws the design raster, with the wave band's strands displaced.
+2. A subtractive instanced pass removes each dot at rest.
+3. An additive pass draws each dot at its displaced position.
+
+At rest the passes cancel, so frame 0 is the design image. The per-dot data lives in
+`assets\textures\UI\Background\Motion\`:
+- `Waves_DotData.res`: an RGBAF 1591x2 image, read by instance ID;
+- `Waves_DotMultiMesh.res`;
+- the dot atlas and strand textures.
+
+The per-dot data (`Waves_DotData.res`, `Waves_DotMultiMesh.res`) was baked once from the design's
+dot positions and is committed as data; the runtime reads only these resources. If any of them
+fails validation, Waves stays static, with one warning.
+
+**Glow** is drawn in code from the design's radial gradient:
+- an elliptical radial light centred at (960, 433.39), with radii 1338.15 x 609.39 in the
+  1920x1080 design;
+- colour (50, 164, 96) at 30 % alpha, interpolated unpremultiplied over #050505.
+
+The shader samples the same centred cover crop as the textured backgrounds and has two paths:
+- **Off (the reference).** It reproduces the design export's staged 8-bit truncation, with no
+  noise. The windowed UI suite holds it within MAE 0.10/255 and max 2 of the exported PNG.
+- **Breathing.** A 12 s sine scales strength ±15 % and ellipse size ±1.5 % about the centre.
+  The design's stops are composited in float and rounded once, `floor(v + 0.5 + noise)`, so no
+  quantization contours move as the glow breathes.
+- **The noise.** It is TPDF noise of ±1 code value, one value shared by R, G and B. It comes only
+  from the pixel's screen position (`FRAGCOORD`), so it never moves between frames or with the
+  breath. It has no boundary gate, so the background is not exact while breathing: outside the
+  glow it rounds the base's 5 to 4, 5 or 6, averaging 5, which is zero mean bias, not
+  pixel-exactness.
+- **Versus Off.** The first breathing frame is not pixel-equal to Off. It stays within 3 code
+  values, with a bias of about 0 outside the glow and up to about +0.75 code values in its core,
+  where Off's staged truncation sits below the float composite.
+
+If the shader cannot load, the `ColorRect`'s own #050505 remains.
+
+**The lobby ship card** (`NRShipCard`, `assets\ui\ship_card.gdshader`) is drawn in code:
+- an opaque #050505 card with square top corners and 12 px rounded bottom corners;
+- three radial teal gradients from its top centre, composited with the design export's 8-bit
+  truncation;
+- a white 1 px outline at 15 % alpha.
+
+It is static. A `ShipCardFill` child drawn behind the `ShipBackground` Panel paints the fill. The
+fill's alpha follows the outline StyleBoxFlat's silhouette, including its anti-aliasing, and its
+gradients are fractions of the card. The Panel keeps `clip_contents` for the rotated ship sprites,
+and one rounded scissor trims the fill and the outline alike. Over the shader fill, the Panel's
+StyleBoxFlat draws only the outline. Without the shader, the theme's opaque `LobbyShipPreview`
+fill is the card.
+
+**The ship preview** draws the 64x64 ship sprites at 300x300 through
+`assets\ui\ship_preview.gdshader`. Bilinear filtering at that scale blurs every edge and shows the
+source pixels as stair-steps. The sprites are hard shapes with anti-aliased edges, so the shader
+takes coverage from a cubic B-spline of the sprite's alpha, re-thresholded at 0.5 with a
+one-screen-pixel edge, and colour from a Catmull-Rom sample of the same texels: the outline stays
+smooth and crisp, and the shading gradients stay smooth.
 
 ## Project layout
 

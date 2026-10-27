@@ -53,6 +53,10 @@ var _clock: OnlineFlowClock = OnlineFlowClock.new()
 
 ## The current account's working copy, newest first.
 var _history: Array[Dictionary] = []
+## The ready account's presentation sidecar as stored, keeping keys a newer build added, and
+## whether it was damaged when loaded. A missing sidecar is stored as {}: the defaults.
+var _presentation_stored: Dictionary = {}
+var _presentation_damaged := false
 var _account_generation := 0
 var _ready_owner: Variant = null
 var _save_error := ""
@@ -421,10 +425,17 @@ func _prepare_account(generation: int) -> bool:
 		staged[file_name] = loaded.data
 	if not _attempt_current(generation) or user != xbox_user() or not user.signed_in:
 		return false
+	var presentation := _load_presentation(user, generation)
+	if not _attempt_current(generation) or user != xbox_user() or not user.signed_in:
+		return false
 	# Nothing may observe a ready account until every payload has passed validation.
 	_clear_player_state()
+	_presentation_stored = presentation["stored"]
+	_presentation_damaged = presentation["damaged"]
 	_history = _rows_to_history(staged[GameSaveService.HISTORY_FILE_NAME])
 	_achievement_tracker.apply_dict(staged[GameSaveService.STATS_FILE_NAME])
+	# Presentation first: apply_dict() notifies settings listeners once, with both applied.
+	PlayerProfile.apply_presentation(presentation["applied"])
 	PlayerProfile.apply_dict(staged[GameSaveService.SAVE_FILE_NAME])
 	PlayerProfile.apply_display_settings()
 	PlayerProfile.set_identity(_identity.display_name, _identity.entity_id, _identity.xbox_user_id)
@@ -437,6 +448,22 @@ func _prepare_account(generation: int) -> bool:
 	_warm_account_state()
 	print("[SaveLoad] account preparation completed")
 	return is_current_account(generation)
+
+
+## Presentation settings for the account being loaded. The sidecar never fails a load: missing
+## means the defaults, and damaged warns and keeps background motion off (the safe choice for a
+## player who may have turned it off).
+func _load_presentation(user: Variant, generation: int) -> Dictionary:
+	var outcome := {"stored": {}, "damaged": false, "applied": {}}
+	var loaded := _game_saves.read_presentation(user, generation)
+	if loaded.status == GameSaveService.Status.OK:
+		outcome["stored"] = loaded.data
+		outcome["applied"] = loaded.data
+	elif loaded.status == GameSaveService.Status.FAILED:
+		outcome["damaged"] = true
+		outcome["applied"] = {GameSaveService.ANIMATE_BACKGROUNDS_KEY: false}
+		push_warning("[Services] %s Background motion stays off until settings are saved again." % loaded.reason)
+	return outcome
 
 
 func _wait_for_session_teardown(generation: int) -> bool:
@@ -481,6 +508,8 @@ func _clear_player_state() -> void:
 	_clear_leaderboard_submission()
 	_history.clear()
 	_achievement_tracker.clear()
+	_presentation_stored = {}
+	_presentation_damaged = false
 	PlayerProfile.reset_to_defaults()
 	PlayerProfile.set_identity("", "", "")
 
@@ -686,6 +715,27 @@ func is_online() -> bool:
 
 func save_profile(data: Dictionary) -> bool:
 	return _write_save(GameSaveService.SAVE_FILE_NAME, data)
+
+
+## Saves the presentation sidecar when it would change what the account loads. A missing sidecar
+## means the defaults, so an account that never changes these settings never gains the file. A
+## damaged sidecar is replaced by any explicit save. A failed write keeps the stored baseline, so
+## the next save retries.
+func save_presentation(data: Dictionary) -> bool:
+	var merged := _presentation_stored.duplicate()
+	merged.merge(data, true)
+	if not _presentation_damaged and _effective_presentation(merged) == _effective_presentation(_presentation_stored):
+		return true
+	if not _write_save(GameSaveService.PRESENTATION_FILE_NAME, merged):
+		return false
+	_presentation_stored = merged
+	_presentation_damaged = false
+	return true
+
+
+static func _effective_presentation(stored: Dictionary) -> Dictionary:
+	var key := GameSaveService.ANIMATE_BACKGROUNDS_KEY
+	return {key: bool(stored.get(key, true))}
 
 
 func _write_save(file_name: String, data: Variant) -> bool:

@@ -1,38 +1,37 @@
 extends NRScreen
 
-## Main menu screen. Layers a starfield, the NetRumble + Xbox logos, the signed-in
-## gamertag, and a vertical menu list. Sign-in belongs to the acquire-user screen,
+## Main menu screen. The designer's wave background sits behind a left-aligned menu
+## and separate History/Leaderboards links. Sign-in belongs to the acquire-user screen,
 ## which runs before this one; this screen only reflects the resulting identity and
 ## offers a way back to it. Hosting and joining are driven through NetManager.
-## Menu entries: Matchmaking / Host Match / Join Match / Practice / Match History /
-## Leaderboards / Options / Quit, with Quit desktop-only — consoles leave the title through
-## the platform. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
+## Primary menu entries: Matchmaking / Host Match / Join Match / Practice / Options / Quit, with
+## Quit desktop-only — consoles leave the title through the platform. History and Leaderboards
+## are footer buttons. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
 ## top-level rows.
 
-const _STARFIELD_SCENE := "res://scenes/gameplay/fx/starfield_background.tscn"
 const _JOIN_CODE_ENTRY_SCENE := preload("res://scenes/ui/elements/nr_join_code_entry.tscn")
 const _FRIEND_LIST_SCENE := preload("res://scenes/ui/elements/nr_friend_list.tscn")
 
-## Position and size for the top-level menu column, and the wider, taller band that
-## Options borrows. Options rows carry a label and a spinner value, so they need more
-## width than a column of centred captions, and there are enough rows to scroll inside
-## the space between the logo and the screen edge.
-const _MENU_RECT := Rect2(768.0, 540.0, 384.0, 486.0)
-const _OPTIONS_RECT := Rect2(610.0, 490.0, 700.0, 550.0)
+## Options uses the wider column beside the branding; the primary actions stay on
+## the left. Both lists scroll and reset their position when their contents change.
+const _MENU_RECT := Rect2(80.0, 508.0, 280.0, 444.0)
+const _OPTIONS_RECT := Rect2(650.0, 188.0, 760.0, 820.0)
 
 ## Written by tools/common.ps1 (Write-BuildStamp) on every export, and gitignored, so
 ## it is absent in a fresh clone and in editor runs that predate an export. Loaded by
-## path behind a ResourceLoader.exists() check for that reason — the same treatment
-## the starfield gets below — rather than preloaded, which would refuse to parse.
+## path behind a ResourceLoader.exists() check rather than preloaded, which would
+## refuse to parse when the generated file is absent.
 const _BUILD_INFO_SCRIPT := "res://scripts/generated/build_info.gd"
 
-@onready var _background: Control = %Background
-@onready var _xbox_logo: TextureRect = %XboxLogo
 @onready var _netrumble_logo: TextureRect = %NetRumbleLogo
 @onready var _gamertag_label: Label = %GamertagLabel
 @onready var _menu_scroll: ScrollContainer = %MenuScroll
 @onready var _menu_list: NRMenuList = %MenuList
 @onready var _build_label: Label = %BuildLabel
+@onready var _secondary_actions: HBoxContainer = %SecondaryActions
+@onready var _leaderboards_button: NRButton = %LeaderboardsButton
+@onready var _history_button: NRButton = %HistoryButton
+@onready var _connectivity_note: Label = %ConnectivityNote
 
 ## Whether the menu currently carries the "Sign In" row, so it can be rebuilt only
 ## when the identity state actually crosses that boundary.
@@ -45,16 +44,13 @@ var _sign_in_row_shown := false
 var _in_join_menu := false
 var _in_options := false
 
-## The two multiplayer rows, and the note that says why they are dark. Held so
+## The three multiplayer rows are held so
 ## connectivity can be applied in place rather than by rebuilding: a rebuild would drop
 ## the player's focus back to the top of the list every time the hint flickered, and on a
-## controller that is far more disruptive than the two rows going grey.
+## controller that is far more disruptive than the rows going grey.
 var _matchmaking_row: NRButton = null
 var _host_row: NRButton = null
 var _join_row: NRButton = null
-## Always present while the top-level menu is up, empty when there is nothing to say, so
-## that connectivity changing never shifts the rows around it.
-var _connectivity_note: Label = null
 ## Bumped on every connectivity change so a stale "Connection restored" timer cannot clear
 ## a message that a later change put up.
 var _note_token := 0
@@ -75,10 +71,9 @@ func _init() -> void:
 func _ready() -> void:
 	super._ready()
 	_account_generation = Services.account_generation()
-	_add_starfield()
-
-	_xbox_logo.texture = Assets.texture("Logo_Xbox")
-	_netrumble_logo.texture = Assets.texture("Logo_NetRumble")
+	_netrumble_logo.texture = Assets.texture("Logo_NetRumbleMenu")
+	_leaderboards_button.pressed.connect(_on_leaderboards)
+	_history_button.pressed.connect(_on_match_history)
 
 	_build_menu()
 	_refresh_gamertag()
@@ -97,7 +92,6 @@ func on_revealed() -> void:
 		_account_generation = Services.account_generation()
 		_build_menu()
 	_refresh_gamertag()
-	focus_menu_list(_menu_list)
 
 
 ## The protocol token is shown beside the commit deliberately: two peers can share a
@@ -124,24 +118,14 @@ func _build_commit() -> String:
 	return commit + ("+" if bool(constants.get("DIRTY", false)) else "")
 
 
-func _add_starfield() -> void:
-	if not ResourceLoader.exists(_STARFIELD_SCENE):
-		return
-	var packed := load(_STARFIELD_SCENE) as PackedScene
-	if packed == null:
-		return
-	var starfield := packed.instantiate()
-	_background.add_child(starfield)
-	if starfield is Control:
-		(starfield as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-
-
 func _build_menu() -> void:
 	_in_join_menu = false
 	_in_options = false
 	allow_back = false
 	_apply_list_rect(_MENU_RECT)
+	_menu_list.row_height = 66.0
 	_sign_in_row_shown = not Services.is_account_ready()
+	_secondary_actions.visible = not _sign_in_row_shown
 	_menu_list.clear_rows()
 	if _sign_in_row_shown:
 		_forget_top_rows()
@@ -149,20 +133,14 @@ func _build_menu() -> void:
 		if not is_console():
 			_menu_list.add_button("Quit", _on_quit)
 		return
-	# Reserved unconditionally so that going offline and back only changes this row's
-	# text, never the height of the list above the rows the player is aiming at.
-	_connectivity_note = _menu_list.add_note("")
-	# The theme's existing status-line type, the same one the lobby uses for its status
-	# text, rather than a new variation that would have to be designed and maintained.
-	_connectivity_note.theme_type_variation = &"LobbyStatus"
+	_connectivity_note.text = ""
+	_connectivity_note.visible = true
 	# One Matchmaking row, directly above Host Match: a group of one to four gathers in its
 	# own lobby and searches together, so a solo player takes the same row as a group.
 	_matchmaking_row = _menu_list.add_button("Matchmaking", _on_matchmaking)
 	_host_row = _menu_list.add_button("Host Match", _on_play)
 	_join_row = _menu_list.add_button("Join Match", _on_join_match)
 	_menu_list.add_button("Practice", _on_practice)
-	_menu_list.add_button("Match History", _on_match_history)
-	_menu_list.add_button("Leaderboards", _on_leaderboards)
 	_menu_list.add_button("Options", _build_options_menu)
 	# Consoles have no in-title Quit: the platform owns leaving the game, and a
 	# second way out that behaves differently is exactly what certification flags.
@@ -202,6 +180,7 @@ func _build_options_menu() -> void:
 	_forget_top_rows()
 	allow_back = true
 	_apply_list_rect(_OPTIONS_RECT)
+	_menu_list.row_height = 54.0
 	_menu_list.clear_rows()
 	NROptionsRows.populate(_menu_list)
 	_menu_list.add_button("Back", _on_options_back)
@@ -231,7 +210,41 @@ func _forget_top_rows() -> void:
 	_matchmaking_row = null
 	_host_row = null
 	_join_row = null
-	_connectivity_note = null
+	_secondary_actions.visible = false
+	_connectivity_note.visible = false
+	_connectivity_note.text = ""
+	_note_token += 1
+
+
+func _wire_secondary_focus() -> void:
+	if not _secondary_actions.visible:
+		return
+	var rows: Array[Control] = []
+	for row in _menu_list.rows():
+		if row.visible and not (row is BaseButton and (row as BaseButton).disabled):
+			rows.append(row)
+	if rows.is_empty():
+		return
+	var first := rows[0].get_path()
+	var last := rows[-1].get_path()
+	var board := _leaderboards_button.get_path()
+	var history := _history_button.get_path()
+	for row in rows:
+		row.focus_neighbor_right = board
+	rows[0].focus_neighbor_top = history
+	rows[0].focus_previous = history
+	rows[-1].focus_neighbor_bottom = board
+	rows[-1].focus_next = board
+	_leaderboards_button.focus_neighbor_left = last
+	_leaderboards_button.focus_neighbor_right = history
+	_leaderboards_button.focus_previous = last
+	_leaderboards_button.focus_next = history
+	_history_button.focus_neighbor_left = board
+	_history_button.focus_previous = board
+	_history_button.focus_next = first
+	for button in [_leaderboards_button, _history_button]:
+		button.focus_neighbor_top = last
+		button.focus_neighbor_bottom = first
 
 
 ## Moves and resizes the scrolling list band. Options rows do not fit the narrow column
@@ -352,6 +365,7 @@ func _apply_connectivity(announce: bool) -> void:
 	# The neighbours are explicit paths, so the wrap has to be recomputed or focus would
 	# still route through the rows that just went dark.
 	_menu_list.refresh_focus_wrap()
+	_wire_secondary_focus()
 
 	_note_token += 1
 	if not online:

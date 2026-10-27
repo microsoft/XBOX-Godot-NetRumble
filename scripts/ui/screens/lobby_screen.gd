@@ -2,7 +2,7 @@ extends NRScreen
 
 ## The lobby screen.
 ##
-## lobby_screen.tscn holds the sheared background panels and section headers at fixed
+## lobby_screen.tscn holds the rounded panels and section headers at fixed
 ## 1920x1080 offsets; this script builds the repeated widgets (ship tabs, colour tabs,
 ## roster rows) into the three placeholder Controls at those same offsets.
 ##
@@ -30,35 +30,27 @@ const _BUTTON_NAMES := {
 }
 
 const _SHIP_STYLE_COUNT := 4
-const _SHIP_TAB_SIZE := Vector2(151.25, 100.0)
-const _SHIP_TAB_PITCH := 156.25
-const _COLOR_TAB_SIZE := Vector2(75.0, 100.0)
-const _COLOR_ACCENT_SIZE := Vector2(76.0, 16.0)
-const _ROSTER_ROW_PITCH := 64.0
+const _SHIP_TAB_SIZE := Vector2(145.0, 92.0)
+const _SHIP_TAB_PITCH := 148.0
+const _COLOR_TAB_SIZE := Vector2(73.5, 110.0)
+const _COLOR_ACCENT_SIZE := Vector2(73.5, 16.0)
+const _ROSTER_ROW_PITCH := 62.0
 const _ROSTER_SLOT_MAX := 8
 
-const _NEUTRAL := Color(0.74, 0.78, 0.78, 0.66)
-const _SHIP_TAB_ALPHA_IDLE := 0.15
-const _SHIP_TAB_ALPHA_HOVER := 0.45
-const _SHIP_TAB_ALPHA_SELECTED := 0.65
-
 @onready var _state_label: Label = %StateLabel
-@onready var _ship_background: TextureRect = %ShipBackground
 @onready var _ship_texture: TextureRect = %ShipTexture
 @onready var _ship_overlay: TextureRect = %ShipOverlay
 @onready var _ship_tabs: Control = %ShipTabs
 @onready var _color_tabs: Control = %ColorTabs
-@onready var _game_type_panel: TextureRect = %GameTypePanel
 @onready var _game_type_value: Label = %GameTypeValue
-@onready var _rules_panel: TextureRect = %RulesPanel
 @onready var _rules_label: Label = %RulesLabel
 @onready var _join_code_title: Label = %JoinCodeTitle
-@onready var _join_code_panel: TextureRect = %JoinCodePanel
+@onready var _join_code_panel: Panel = %JoinCodePanel
 @onready var _join_code_label: Label = %JoinCodeLabel
 ## Practice-only opponent picker. It occupies the same block as the join code, which
 ## is meaningless in a session nobody can join, so the two are never shown together.
 @onready var _opponents_title: Label = %OpponentsTitle
-@onready var _opponents_panel: TextureRect = %OpponentsPanel
+@onready var _opponents_panel: Panel = %OpponentsPanel
 @onready var _opponents_value: Label = %OpponentsValue
 @onready var _opponents_minus: Button = %OpponentsMinus
 @onready var _opponents_plus: Button = %OpponentsPlus
@@ -115,12 +107,6 @@ func _ready() -> void:
 	else:
 		_selected_style_id = PlayerProfile.ship_style_id
 		_selected_color_id = PlayerProfile.ship_color_id
-
-	_ship_background.texture = Assets.texture("Lobby_BackgroundSpaceship")
-	_game_type_panel.texture = Assets.texture("Lobby_BackgroundGameType")
-	_rules_panel.texture = Assets.texture("Lobby_BackgroundRules")
-	_join_code_panel.texture = Assets.texture("Lobby_BackgroundGameType")
-	_opponents_panel.texture = Assets.texture("Lobby_BackgroundGameType")
 
 	# The roster has to be told about the saved opponent count before anything reads
 	# it. Done here rather than in start_offline() so it also re-applies when a
@@ -201,20 +187,15 @@ func _clear_button_styles(button: Button) -> void:
 		button.add_theme_stylebox_override(state, StyleBoxEmpty.new())
 
 
-## Gives a stepper button the same translucent square plate the ship tabs use, so it
-## reads as part of the sheared lobby panelling rather than as a stock grey button.
 func _decorate_stepper(button: Button) -> void:
 	_clear_button_styles(button)
 	button.focus_mode = Control.FOCUS_ALL
-	var plate := TextureRect.new()
+	var plate := Panel.new()
 	plate.name = "Plate"
-	plate.texture = Assets.texture("Shape_Square")
-	plate.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	plate.stretch_mode = TextureRect.STRETCH_SCALE
+	plate.theme_type_variation = &"LobbySurface"
 	plate.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	plate.show_behind_parent = true
-	plate.modulate = Color(0.74, 0.78, 0.78, _SHIP_TAB_ALPHA_IDLE)
 	button.add_child(plate)
 	# A recoloured "-" or "+" glyph was the only feedback these had, which is what sent
 	# a tester hunting for the player-count control.
@@ -223,12 +204,11 @@ func _decorate_stepper(button: Button) -> void:
 
 # --- Ship selector ----------------------------------------------------------
 
-## 4 tabs of 151.25x100 with 5px spacing after the first, overlaying the top of
-## the 620x552 body panel, each carrying a 64x64 silhouette centred at (76, 50).
 func _build_ship_tabs() -> void:
-	var square := Assets.texture("Shape_Square")
 	for index in _SHIP_STYLE_COUNT:
 		var tab := Button.new()
+		tab.name = "Ship%d" % index
+		tab.tooltip_text = "Spaceship %d" % (index + 1)
 		tab.flat = true
 		tab.focus_mode = Control.FOCUS_ALL
 		tab.position = Vector2(index * _SHIP_TAB_PITCH, 0.0)
@@ -236,11 +216,9 @@ func _build_ship_tabs() -> void:
 		tab.mouse_filter = Control.MOUSE_FILTER_STOP
 		_clear_button_styles(tab)
 
-		var background := TextureRect.new()
+		var background := Panel.new()
 		background.name = "Background"
-		background.texture = square
-		background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		background.stretch_mode = TextureRect.STRETCH_SCALE
+		background.theme_type_variation = &"LobbyTab"
 		background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		background.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		background.show_behind_parent = true
@@ -252,7 +230,7 @@ func _build_ship_tabs() -> void:
 		silhouette.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		silhouette.stretch_mode = TextureRect.STRETCH_SCALE
 		silhouette.size = Vector2(64.0, 64.0)
-		silhouette.position = Vector2(76.0 - 32.0, 50.0 - 32.0)
+		silhouette.position = (_SHIP_TAB_SIZE - silhouette.size) * 0.5
 		silhouette.pivot_offset = Vector2(32.0, 32.0)
 		silhouette.rotation = 0.6
 		silhouette.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -265,7 +243,7 @@ func _build_ship_tabs() -> void:
 		tab.focus_exited.connect(_refresh_ship_tabs)
 		# The alpha step alone cannot say "focused" on the tab that is also selected,
 		# which is where focus starts and where a controller most needs to see it.
-		NRFocusRing.attach(tab)
+		NRFocusRing.attach(tab).theme_type_variation = &"LobbyTabFocus"
 		_ship_tabs.add_child(tab)
 		_ship_tab_buttons.append(tab)
 
@@ -283,13 +261,12 @@ func _on_ship_tab_pressed(index: int) -> void:
 func _refresh_ship_tabs() -> void:
 	for index in _ship_tab_buttons.size():
 		var tab := _ship_tab_buttons[index]
-		var alpha := _SHIP_TAB_ALPHA_IDLE
+		var variation: StringName = &"LobbyTab"
 		if index == _selected_style_id:
-			alpha = _SHIP_TAB_ALPHA_SELECTED
+			variation = &"LobbyTabSelected"
 		elif tab.is_hovered() or tab.has_focus():
-			alpha = _SHIP_TAB_ALPHA_HOVER
-		var background := tab.get_node("Background") as TextureRect
-		background.modulate = Color(0.74, 0.78, 0.78, alpha)
+			variation = &"LobbyTabHover"
+		(tab.get_node("Background") as Panel).theme_type_variation = variation
 
 
 ## The preview is two stacked layers: the base carries the player's colour while the
@@ -304,12 +281,13 @@ func _refresh_ship() -> void:
 
 # --- Color selector ---------------------------------------------------------
 
-## 8 tabs of 75x100. Only the selected tab is "expanded": it shows the panel
-## background plus a silhouette, with its 76x16 accent slid to the bottom.
+## Only the selected colour expands to show a silhouette and a bottom accent.
 ## Unselected tabs collapse to the accent strip alone.
 func _build_color_tabs() -> void:
 	for color_id in Assets.player_color_count():
 		var tab := Button.new()
+		tab.name = "Color%d" % color_id
+		tab.tooltip_text = Assets.player_color_name(color_id)
 		tab.flat = true
 		tab.focus_mode = Control.FOCUS_ALL
 		tab.position = Vector2(color_id * _COLOR_TAB_SIZE.x, 0.0)
@@ -317,13 +295,13 @@ func _build_color_tabs() -> void:
 		tab.mouse_filter = Control.MOUSE_FILTER_STOP
 		_clear_button_styles(tab)
 
-		var background := TextureRect.new()
+		var background := Panel.new()
 		background.name = "Background"
-		background.texture = Assets.texture("Lobby_BackgroundColor")
-		background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		background.stretch_mode = TextureRect.STRETCH_SCALE
+		background.theme_type_variation = &"LobbyColorTile"
 		background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		background.modulate = _NEUTRAL
+		# The tile stops where the accent strip begins, so the strip's cut corner shows the
+		# page behind it rather than the tile.
+		background.offset_bottom = -_COLOR_ACCENT_SIZE.y
 		background.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		background.show_behind_parent = true
 		tab.add_child(background)
@@ -333,7 +311,7 @@ func _build_color_tabs() -> void:
 		silhouette.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		silhouette.stretch_mode = TextureRect.STRETCH_SCALE
 		silhouette.size = Vector2(64.0, 64.0)
-		silhouette.position = Vector2(37.0 - 32.0, 37.0 - 32.0)
+		silhouette.position = Vector2((_COLOR_TAB_SIZE.x - 64.0) * 0.5, 15.0)
 		silhouette.pivot_offset = Vector2(32.0, 32.0)
 		silhouette.rotation = 0.6
 		silhouette.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -353,7 +331,7 @@ func _build_color_tabs() -> void:
 		tab.mouse_exited.connect(_refresh_colors)
 		tab.focus_entered.connect(_refresh_colors)
 		tab.focus_exited.connect(_refresh_colors)
-		NRFocusRing.attach(tab)
+		NRFocusRing.attach(tab).theme_type_variation = &"LobbyTabFocus"
 		_color_tabs.add_child(tab)
 		_color_tab_buttons.append(tab)
 
@@ -388,7 +366,7 @@ func _refresh_colors() -> void:
 			accent_color = accent_color.darkened(0.6)
 
 		tab.disabled = taken.has(color_id)
-		(tab.get_node("Background") as TextureRect).visible = selected
+		(tab.get_node("Background") as Panel).visible = selected
 		var silhouette := tab.get_node("Silhouette") as TextureRect
 		silhouette.visible = selected
 		silhouette.texture = Assets.ship_texture(_selected_style_id, "Silhouette")

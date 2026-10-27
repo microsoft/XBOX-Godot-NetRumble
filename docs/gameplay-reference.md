@@ -292,9 +292,9 @@ Headers and notes are children but not focus entries; gamepad navigation skips o
 Anything that appears more than once, or that a screen rebuilds as state changes, is an element
 scene under `scenes/ui/elements/`:
 
-- `nr_roster_row.tscn` (`NRRosterRow`): the sheared roster panel: ship silhouette, ready ring,
-  nameplate and microphone indicator. `set_state(PlayerState)` is the whole API;
-  `set_state(null)` renders the "Invite To Game…" empty slot.
+- `nr_roster_row.tscn` (`NRRosterRow`): the rounded roster card: ship silhouette, ready ring and
+  nameplate, with the microphone indicator just outside its left edge. `set_state(PlayerState)` is
+  the whole API; `set_state(null)` renders the "Invite To Game…" empty slot.
 - `nr_chat_entry.tscn` (`NRChatEntry`): the in-match chat dialog. It does **not** close itself
   on submit: a failed send keeps the typed message, and closing is the owning screen's decision.
 - `nr_chat_log.tscn` (`NRChatLog`): four retained messages rendered by ordinary `Label` rows
@@ -308,10 +308,10 @@ scene under `scenes/ui/elements/`:
 
 ### Lobby layout
 
-The lobby uses a fixed 1920×1080 layout rather than flow containers, so its background textures
-render 1:1 at their authored size. The ship and color selectors are tab strips built in
-`lobby_screen.gd` rather than element scenes, because both are pure functions of the selection
-index.
+The lobby uses a fixed 1920×1080 layout rather than flow containers: `lobby_screen.tscn` places
+its rounded theme panels, the ship card and the section headers at fixed offsets. The ship and
+color selectors are tab strips built in `lobby_screen.gd` rather than element scenes, because both
+are pure functions of the selection index.
 
 Maintainers changing this lobby layout should preserve two behaviors. There are **no footer
 buttons**: ready-up is the `toggle_ready` action, read back from the ring in your own roster row,
@@ -321,8 +321,6 @@ open, so a join, a leave or a ready toggle only re-binds them and gamepad focus 
 
 ### Loading screen
 
-Five concentric rings share one texture at increasing sizes, each rotating at its own rate and
-direction. Two numbers matter and are easy to break: the rings are spaced **geometrically**
-(×1.28) rather than arithmetically, because the texture's opaque band is wide enough that evenly
-spaced rings overlap; and the tint ramp starts dark, because leaving the outer rings near-white
-drops the caption over them to 2.3:1 contrast.
+One 168 px `Loading_ProgressRing.svg` ring turns at 1.5 rad/s around a stationary 104 px Xbox
+mark, over the Waves background. The caption sits below the ring, and the Cancel button shows only
+when the screen is configured with `allow_cancel`.

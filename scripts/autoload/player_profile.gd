@@ -21,6 +21,11 @@ var fullscreen: bool = false
 var show_roster_overlay: bool = true
 var practice_opponents: int = 2
 var power_up_frequency: float = 0.9
+## Front-end background motion (Options > Animated Backgrounds). Off is the exact static art.
+## A presentation setting: saved in the account's optional presentation sidecar, never in
+## profile.json, whose schema older builds must keep reading. UIBackgroundMotion's session-only
+## pause (Ctrl+Shift+M, or View on a controller) is never saved at all.
+var animate_backgrounds: bool = true
 
 var _defaults: Dictionary = {}
 
@@ -39,15 +44,20 @@ func set_identity(gamertag: String, entity: String, xuid: String = "") -> void:
 
 
 func reset_to_defaults() -> void:
+	animate_backgrounds = true
 	apply_dict(_defaults)
 	apply_display_settings()
 
 
+## Saves profile.json, then the presentation sidecar when it changed.
 func save_settings() -> bool:
-	return Services.save_profile(to_dict())
+	if not Services.save_profile(to_dict()):
+		return false
+	return Services.save_presentation(presentation_dict())
 
 
-## Current JSON keys are the account save schema.
+## Current JSON keys are the account save schema (profile.json). Presentation settings are not
+## part of it: see presentation_dict().
 func to_dict() -> Dictionary:
 	return {
 		"masterVolume": master_volume,
@@ -61,6 +71,17 @@ func to_dict() -> Dictionary:
 		"practiceOpponents": practice_opponents,
 		"powerUpFrequency": power_up_frequency,
 	}
+
+
+## The presentation sidecar's keys (presentation.json).
+func presentation_dict() -> Dictionary:
+	return {GameSaveService.ANIMATE_BACKGROUNDS_KEY: animate_backgrounds}
+
+
+## Applies loaded presentation settings without notifying. Call it before apply_dict(), which
+## notifies listeners once for both.
+func apply_presentation(data: Dictionary) -> void:
+	animate_backgrounds = bool(data.get(GameSaveService.ANIMATE_BACKGROUNDS_KEY, animate_backgrounds))
 
 
 func apply_dict(data: Dictionary) -> void:

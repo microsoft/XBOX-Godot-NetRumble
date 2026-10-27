@@ -53,11 +53,12 @@ const _MODIFIER_KEYCODES: Array[int] = [
 
 @onready var _xbox_logo: TextureRect = %XboxLogo
 @onready var _netrumble_logo: TextureRect = %NetRumbleLogo
-@onready var _spinner: Control = %Spinner
+@onready var _branding: Control = %Branding
+@onready var _status_region: Control = %StatusRegion
+@onready var _spinner: ProgressBar = %Spinner
 @onready var _status_label: Label = %StatusLabel
 @onready var _detail_label: Label = %DetailLabel
 @onready var _menu_list: NRMenuList = %MenuList
-@onready var _animation_player: AnimationPlayer = %AnimationPlayer
 
 var _state: State = State.WAITING_FOR_INPUT
 ## When the current sign-in step started, for the stall watchdog. Reset on every step,
@@ -74,12 +75,8 @@ func _init() -> void:
 
 func _ready() -> void:
 	super._ready()
-	# Both logos sit at the same fixed coordinates the main menu uses, so handing over
-	# swaps only the region beneath them. MainMenuScreen::OnEnter does the same thing
-	# with a single overlay container: the branding is up from the first frame and
-	# never waits on sign-in or on title data.
-	_xbox_logo.texture = Assets.texture("Logo_Xbox")
-	_netrumble_logo.texture = Assets.texture("Logo_NetRumble")
+	_xbox_logo.texture = Assets.texture("Logo_XboxGlass")
+	_netrumble_logo.texture = Assets.texture("Logo_NetRumbleTitle")
 	# A re-push from the main menu is itself the player choosing "Sign In", so it goes
 	# straight to the picker; on first run the title waits for a press instead.
 	if ScreenManager.get_stack_size() > 1:
@@ -126,6 +123,9 @@ static func _is_any_key_press(event: InputEvent) -> bool:
 func _enter_waiting_for_input() -> void:
 	_state = State.WAITING_FOR_INPUT
 	_stop_waiting_animation()
+	_set_interaction_layout(false)
+	_status_label.theme_type_variation = &"TitlePrompt"
+	_status_label.position.y = 240.0
 	# The activation can arrive after this screen is already up, so the prompt follows
 	# InviteRouter rather than being decided once.
 	if not InviteRouter.pending_invite_changed.is_connected(_on_pending_invite_changed):
@@ -172,7 +172,10 @@ func _enter_signing_in() -> void:
 	_state = State.SIGNING_IN
 	_stalled = false
 	_stage_started_msec = Time.get_ticks_msec()
-	_status_label.text = "Signing in"
+	_set_interaction_layout(false)
+	_status_label.theme_type_variation = &"TitleStatus"
+	_status_label.position.y = 216.0
+	_status_label.text = "Signing in..."
 	# Sign-in is a chain of platform calls, several of which take seconds and one of
 	# which waits on the player in system UI. Naming the current step is the difference
 	# between "it is working" and "it is stuck", and on a console with no debugger
@@ -183,7 +186,7 @@ func _enter_signing_in() -> void:
 	_menu_list.clear_rows()
 	_menu_list.visible = false
 	_spinner.visible = true
-	_animation_player.play("spin")
+	_spinner.indeterminate = true
 
 
 func _on_sign_in_stage_changed(stage: String) -> void:
@@ -208,6 +211,7 @@ func _process(_delta: float) -> void:
 	if Time.get_ticks_msec() - _stage_started_msec < int(_STALL_SECONDS * 1000.0):
 		return
 	_stalled = true
+	_set_interaction_layout(true)
 	_status_label.text = "Still signing in"
 	var stage := _detail_label.text
 	_detail_label.text = "%s is taking longer than expected.\nKeep waiting, or go Back to abandon this attempt." % (
@@ -225,6 +229,9 @@ func _enter_needs_interaction(reason: String) -> void:
 	_state = State.NEEDS_INTERACTION
 	_stalled = false
 	_stop_waiting_animation()
+	_set_interaction_layout(true)
+	_status_label.theme_type_variation = &"TitleStatus"
+	_status_label.position.y = 216.0
 	_status_label.text = "Account not ready"
 	_detail_label.text = reason if not reason.is_empty() else "Sign-in did not complete."
 	_menu_list.clear_rows()
@@ -242,6 +249,11 @@ func _enter_ready() -> void:
 	_state = State.READY
 	_stalled = false
 	_stop_waiting_animation()
+	_set_interaction_layout(false)
+	_status_label.theme_type_variation = &"TitleStatus"
+	_status_label.position.y = 216.0
+	_spinner.value = 100.0
+	_spinner.visible = true
 	_menu_list.clear_rows()
 	_menu_list.visible = false
 	var suffix := ""
@@ -257,8 +269,16 @@ func _enter_ready() -> void:
 
 
 func _stop_waiting_animation() -> void:
-	_animation_player.stop()
+	_spinner.indeterminate = false
 	_spinner.visible = false
+
+
+func _set_interaction_layout(interactive: bool) -> void:
+	# Recovery choices need room below the diagnostic without leaving the safe area.
+	var shift := -120.0 if interactive else 0.0
+	for region in [_branding, _status_region]:
+		region.offset_top = shift
+		region.offset_bottom = shift
 
 
 ## Leaves the screen. On first run this screen *is* the stack, so it becomes the main
