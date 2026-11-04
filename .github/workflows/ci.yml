@@ -56,12 +56,19 @@ jobs:
   # and scenes that no longer resolve; neither check proves live SDK or networking
   # behavior.
   #
-  # addons/ is gitignored build output, so this job has to build it first --
-  # the GDExtensions have to load for the project to import. -SkipConsoleRedist
-  # is required here: the addon build gets its GDK through vcpkg, but the GRDK
-  # console redistributables come from a Microsoft GDK *installation*, which a
-  # hosted runner does not have. Those two DLLs matter only to the Xbox export,
-  # which this job does not perform.
+  # addons/ is gitignored build output, and the GDExtensions have to load for the
+  # project to import. The installed addons/ tree is cached under a key made of
+  # everything that decides it: the submodule pin, the install script and the
+  # .gdextension overrides. A PR that touches none of those restores the tree
+  # main already built and skips the native build; a PR that changes the pin or
+  # an addon input builds from source. -SkipConsoleRedist is required for that
+  # build: the addon build gets its GDK through vcpkg, but the GRDK console
+  # redistributables come from a Microsoft GDK *installation*, which a hosted
+  # runner does not have. Those two DLLs matter only to the Xbox export, which
+  # this job does not perform.
+  #
+  # GODOT_ADDON_SUPPRESS_TELEMETRY keeps the addons' initialization telemetry
+  # out of CI runs, as upstream does for its own validation.
   #
   # Advisory for now. Whether a hosted runner can initialize the GDK runtime has
   # not been confirmed. Once this has been observed passing on a runner, drop
@@ -76,10 +83,11 @@ jobs:
     continue-on-error: true
     env:
       GODOT_VERSION: 4.6.2
+      GODOT_ADDON_SUPPRESS_TELEMETRY: '1'
     steps:
+      # No submodules here: the pin is read from the gitlink, and the addon
+      # source is only fetched if the build has to run.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          submodules: recursive
 
       - name: Cache Godot
         id: cache-godot
@@ -107,21 +115,57 @@ jobs:
           if (-not $exe) { throw 'Godot console executable was not found.' }
           .\tools\run-save-tests.ps1 -Godot $exe
 
+      - name: Addon inputs
+        id: addon-inputs
+        shell: pwsh
+        run: |
+          $pin = (git rev-parse HEAD:external/xbox-godot-sample).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $pin) { throw 'Could not read the external/xbox-godot-sample pin.' }
+          "pin=$pin" >> $env:GITHUB_OUTPUT
+          Write-Host "Addon pin: $pin"
+
+      - name: Restore installed addons
+        id: installed-addons
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: addons
+          key: installed-addons-debug-windows-2022-${{ steps.addon-inputs.outputs.pin }}-${{ hashFiles('tools/sync_addons.ps1', 'tools/common.ps1', 'tools/addon-overrides/**') }}
+
       # The whole build tree, including build/vcpkg_installed. A cold restore of
-      # the GDK and PlayFab SDKs dominates this job's runtime; a warm one makes
-      # the incremental rebuild cheap. Keyed on the submodule pin, because that
-      # is what decides the build output.
-      - name: Cache addon build
-        id: cache-addons
+      # the GDK and PlayFab SDKs dominates a build; a warm one makes the
+      # incremental rebuild cheap.
+      - name: Cache addon build tree
+        if: steps.installed-addons.outputs.cache-hit != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: external/xbox-godot-sample/build
-          key: addons-windows-2022-${{ hashFiles('.gitmodules') }}-${{ github.event.pull_request.base.sha || github.sha }}
+          key: addons-windows-2022-${{ steps.addon-inputs.outputs.pin }}
           restore-keys: addons-windows-2022-
 
       - name: Build addons
+        if: steps.installed-addons.outputs.cache-hit != 'true'
         shell: pwsh
-        run: .\tools\sync_addons.ps1 -Configuration Debug -SkipSubmoduleUpdate -SkipConsoleRedist
+        run: .\tools\sync_addons.ps1 -Configuration Debug -SkipConsoleRedist
+
+      # Saved straight after the build rather than at job end, so a parse
+      # failure later in the job does not throw away a good build.
+      - name: Save installed addons
+        if: steps.installed-addons.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: addons
+          key: ${{ steps.installed-addons.outputs.cache-primary-key }}
+
+      - name: Report addon source
+        shell: pwsh
+        run: |
+          $source = if ('${{ steps.installed-addons.outputs.cache-hit }}' -eq 'true') {
+            'Reused the addons built for this pin and these inputs; no native build.'
+          } else {
+            'Addon inputs changed or no cached build: built from source.'
+          }
+          Write-Host $source
+          "**Addons** (${{ steps.addon-inputs.outputs.pin }}): $source" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Parse and import project
         shell: pwsh

@@ -135,7 +135,7 @@ must be present. `max_players` belongs to `PlayFabLobbyConfig` and is not an ali
 arranged join field.
 
 Build from Sample addon revision
-`442d7908ab27e18b60d047f51eb2f342efa7df1d` pinned by this repository and record the rebuilt
+`927cdc7a3cd6e026cbddafbb3cd06dccc446dead` pinned by this repository and record the rebuilt
 addon package with validation results. A gitlink by itself does not identify the loaded binaries.
 
 ### 3. Get XBOX title and sandbox access
