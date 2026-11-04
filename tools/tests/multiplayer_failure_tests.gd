@@ -423,9 +423,7 @@ func _fixture() -> void:
 	Services._party = _party
 	Services._connectivity = ConnectivityService.new()
 	Services._connectivity.connectivity_changed.connect(NetManager._on_connectivity_changed)
-	_party.network_lost.connect(NetManager._on_party_network_lost)
-	_party.party_failed.connect(NetManager._on_party_failed)
-	_party.cleanup_status_changed.connect(NetManager._on_party_cleanup_status)
+	NetManager._connect_party(_party)
 	NetManager._clock = _clock.now
 	ScreenManager.set_container(_test)
 	_successes = 0
@@ -502,12 +500,14 @@ func _event_contract() -> void:
 	_check(events == ["joined", "left"] and NetManager.has_session()
 		and _party.runtime.multiplayer.count("republish") == 1, "state/peers/descriptor/error are not destruction")
 	network.change(5)
+	await _frames(1)
 	_check(events == ["joined", "left", "destroyed"] and not NetManager.has_session()
 		and _disconnects == 1, "DESTROYED is terminal exactly once")
 	for state in [PartyService.NETWORK_STATE_FAILED, PartyService.NETWORK_STATE_DISCONNECTED]:
 		await _fixture()
 		_check(await NetManager.host_match(), "host before terminal state")
 		_party._network.change(1, state)
+		await _frames(1)
 		_check(not NetManager.has_session() and _disconnects == 1, "terminal STATE routes loss")
 
 
@@ -1097,6 +1097,8 @@ func _regressions() -> void:
 	NetManager._accept_join()
 	NetManager._on_party_network_lost("Lost after admission")
 	NetManager._on_party_network_lost("Duplicate terminal event")
+	# Party's losses are acted on once its notice returns; the transport's report is not.
+	await _frames(1)
 	NetManager._on_server_disconnected("Duplicate transport event")
 	await _wait_request(request)
 	_check(request.reason == "Lost after admission" and not request.succeeded() and _disconnects == 0,

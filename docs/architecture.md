@@ -239,6 +239,13 @@ The game explicitly treats loss of that peer as loss of simulation authority. Th
 `party_failed` also describes recoverable operation errors and is not by itself terminal.
 Teardown detaches network listeners to avoid interpreting a deliberate leave as another failure.
 
+Party raises these losses, and Godot raises the transport's `peer_disconnected`, from inside the
+native state-change batch. `NetManager` records the notice and acts on it once the batch has
+returned (deferred to the end of the frame), dropping it if the session, join or transport that
+reported it has been replaced meanwhile. A peer that reconnects under the same id before then
+settles the old departure first. `server_disconnected` and `connection_failed` already arrive
+from Godot's own multiplayer poll and are handled directly.
+
 ## Connectivity detection
 
 `ConnectivityService` subscribes to `gdk.networking.connectivity_hint_changed` and emits

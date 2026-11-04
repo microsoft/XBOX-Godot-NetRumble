@@ -40,6 +40,7 @@ func _run() -> void:
 		preload("res://tools/tests/gameplay_load_tests.gd").new().run(self)
 		await preload("res://tools/tests/network_diagnostics_tests.gd").new().run(self)
 		await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
+		await preload("res://tools/tests/cable_pull_tests.gd").new().run(self)
 		await _complete()
 		return
 	await _storage_contract()
@@ -70,6 +71,7 @@ func _run() -> void:
 	preload("res://tools/tests/gameplay_load_tests.gd").new().run(self)
 	await preload("res://tools/tests/network_diagnostics_tests.gd").new().run(self)
 	await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
+	await preload("res://tools/tests/cable_pull_tests.gd").new().run(self)
 	await preload("res://tools/tests/invite_uri_tests.gd").new().run(self)
 	await preload("res://tools/tests/pregame_service_tests.gd").new().run(self)
 	await preload("res://tools/tests/pregame_flow_tests.gd").new().run(self)
