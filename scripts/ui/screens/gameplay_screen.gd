@@ -68,6 +68,11 @@ func _ready() -> void:
 	_style_bar(_health_bar, &"HealthBar")
 	_style_bar(_shield_bar, &"ShieldBar")
 	_countdown_label.text = ""
+	# Listening before anything is built: building the world, the director and the overlays
+	# can itself end the session -- a loss reported while they load has no other screen left
+	# to hear it, since the lobby is already on its way out -- and every handler here is
+	# safe before the overlays exist.
+	_connect_signals()
 
 	# Gameplay is parented outside this screen's CanvasLayer so a real Camera2D
 	# drives the view. Moving a CanvasLayer's contents by hand would also fight
@@ -84,7 +89,6 @@ func _ready() -> void:
 	_setup_screen_flash()
 
 	_start_director()
-	_connect_signals()
 	_chat_context = NetManager.begin_match_chat()
 	_refresh_roster()
 	_apply_overlay_visibility()

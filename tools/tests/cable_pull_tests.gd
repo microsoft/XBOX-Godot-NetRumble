@@ -67,6 +67,7 @@ func run(test: Node) -> void:
 	await _transport_host_loss()
 	await _loss_while_closing_joins()
 	await _loss_during_world_init()
+	await _session_end_during_world_init()
 	await _loss_during_countdown()
 	await _dispose()
 	NetManager.server_disconnected.disconnect(_disconnected)
@@ -288,6 +289,17 @@ func _loss_during_world_init() -> void:
 		await _frames(1)
 		_check(pulled[0], "world init %s: the loss landed inside the handoff" % kind[2])
 		await _expect_menu("world init " + String(kind[2]))
+
+
+func _session_end_during_world_init() -> void:
+	print("CASE: a session ended synchronously while gameplay builds its world still reaches the menu")
+	await _fixture()
+	await _ready_lobby()
+	_world.child_entered_tree.connect(func(_node: Node) -> void:
+		NetManager._on_server_disconnected("Injected end during world init."), CONNECT_ONE_SHOT)
+	NetManager.set_local_ready(true)
+	await _frames(1)
+	await _expect_menu("synchronous end during world init")
 
 
 func _loss_during_countdown() -> void:

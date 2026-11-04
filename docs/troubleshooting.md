@@ -171,12 +171,14 @@ player instead of returning to the main menu with an error dialog.
 **Cause**: PlayFab Party reports the loss from inside its native state-change batch, and Godot
 raises the transport peer's departure from inside that same notice. Leaving the network, detaching
 the peer and changing screens from there tears the session down while the notice is still on the
-stack.
+stack. A loss raised while the gameplay screen was still building its world also had no listener
+yet.
 
 **Fix**: `NetManager` acts on Party `network_lost`, `context_lost` and transport peer departures
 only after the notice returns, and only if the session that reported them is still current; see
-[How a match ends badly](architecture.md#how-a-match-ends-badly). If a cable pull still
-misbehaves, record which transition it was in and whether the error dialog appeared.
+[How a match ends badly](architecture.md#how-a-match-ends-badly). The gameplay screen connects its
+disconnect handlers before it builds the world. If a cable pull still misbehaves, record which
+transition it was in and whether the error dialog appeared.
 
 ### Signed in, but save loading fails
 
