@@ -23,7 +23,7 @@ extends RefCounted
 ## **Remote objects are interpolated, the local ship is reconciled.** A remote ship has
 ## no local simulation worth preserving, so it is eased toward the host's copy at
 ## [constant SNAPSHOT_LERP]. The local ship is different: it is predicted every frame
-## from the player's own input, and snapping it onto the host's copy 30 times a second
+## from the player's own input, and snapping it onto the host's copy every snapshot
 ## would make the controls feel like they were fighting back. [method
 ## _reconcile_local_ship] therefore nudges rather than sets, and only takes the host's
 ## state outright when prediction has diverged too far to close smoothly.
@@ -36,7 +36,7 @@ extends RefCounted
 ## and asks it to do things; it owns no game state beyond the outgoing snapshot counter.
 
 ## How far a remote object is eased toward the host's copy each snapshot. Interpolating
-## rather than snapping hides the 30 Hz snapshot cadence and ordinary jitter.
+## rather than snapping hides the snapshot cadence and ordinary jitter.
 const SNAPSHOT_LERP := 0.35
 ## The same idea for the local ship, but gentler, because the player is watching their
 ## own prediction and a hard correction reads as input lag.
@@ -92,7 +92,7 @@ func _init(world: World) -> void:
 
 # --- Outbound: the host describes the world ---------------------------------
 
-## Build a world snapshot and send it. MatchDirector drives this on its own 30 Hz
+## Build a world snapshot and send it. MatchDirector drives this on its own snapshot
 ## schedule through World.broadcast_snapshot(), so nothing here keeps a timer.
 func broadcast_snapshot() -> void:
 	if not _world.is_authority:
@@ -109,7 +109,7 @@ func broadcast_snapshot() -> void:
 
 
 ## One object's row in a snapshot, and therefore the definition of the wire format.
-## Keys are short because this goes out 30 times a second for every ship and asteroid
+## Keys are short because this goes out every snapshot for every ship and asteroid
 ## in the match.
 func _snapshot_entry(obj: GameObject, is_ship: bool) -> Dictionary:
 	var entry := {
@@ -155,13 +155,15 @@ func _on_world_snapshot_received(payload: Dictionary) -> void:
 		return
 	var frame := int(payload.get("frame", 0))
 	if frame <= _world.last_world_data_frame:
+		NetManager._network_diagnostics.note_snapshot(0, 0, false)
 		return
+	var started_usec := Time.get_ticks_usec()
 	_world.last_world_data_frame = frame
 
 	var local_id := _world.local_ship.unique_id if _world.local_ship != null else -1
 	for od in payload.get("objects", []):
 		# One bad entry drops itself rather than the whole snapshot: the rest of the
-		# world is still describable, and at 30 Hz discarding every frame that carries
+		# world is still describable, and discarding every snapshot that carries
 		# one unreadable object would stop the match dead.
 		if typeof(od) != TYPE_DICTIONARY or not _accepts(od, SNAPSHOT_OBJECT_KEYS, "snapshot object"):
 			continue
@@ -187,6 +189,8 @@ func _on_world_snapshot_received(payload: Dictionary) -> void:
 			s.shield = od.get("s", s.shield)
 			s.set_primary_weapon_networked(int(od.get("w", int(s.primary_weapon))) as NRTypes.WeaponType)
 			s.apply_buff_state(od.get("b", {}))
+	NetManager._network_diagnostics.note_snapshot(
+		Time.get_ticks_usec() - started_usec, payload.get("objects", []).size(), true)
 
 
 ## The local ship is predicted locally rather than interpolated, so it is nudged

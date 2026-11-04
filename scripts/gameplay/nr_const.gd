@@ -61,9 +61,8 @@ const MAX_ROCKETS_PER_PLAYER := 10
 ## is a seed that multiplies into several generations of fragments. The starting count
 ## is deliberately low for that reason.
 const ASTEROID_COUNT := 12
-## Hard ceiling on live asteroids. A HUGE rock yields split_count^4 fragments, so
-## without a cap a field of large rocks can multiply into thousands of bodies and
-## bury the physics server. Splits past the cap destroy the rock without fragments.
+## Hard ceiling on live asteroids, in addition to the MEDIUM terminal split tier.
+## Splits past the cap destroy the rock without fragments.
 const MAX_ASTEROIDS := 96
 const WORLD_WIDTH := 2400
 const WORLD_HEIGHT := 2400
@@ -77,7 +76,7 @@ const SHIP_RESPAWN_DELAY := 5.0
 ## Host broadcasts an authoritative world snapshot at this rate, giving clients
 ## enough correction ticks to keep remote objects smooth without saturating the
 ## connection with full-world payloads.
-const WORLD_SNAPSHOT_HZ := 30.0
+const WORLD_SNAPSHOT_HZ := 20.0
 ## Host broadcasts the authoritative match clock at this rate so client HUD timers
 ## stay locked to it.
 const MATCH_CLOCK_HZ := 2.0

@@ -119,10 +119,10 @@ enum ProjectileType {
 	ROCKET,
 }
 
-## Asteroid size tiers, smallest first. Five tiers let a large rock break down through
-## several visibly different generations before the last fragment is destroyed outright.
+## Asteroid size tiers, smallest first. Splitting stops at MEDIUM; smaller tiers
+## remain valid sizes but are destroyed without producing fragments.
 ## Values are ordered and contiguous, and code relies on that: a split spawns the tier
-## at `size - 1`, and TINY is the terminal tier.
+## at `size - 1` above the terminal tier.
 enum AsteroidSize {
 	TINY,
 	SMALL,
