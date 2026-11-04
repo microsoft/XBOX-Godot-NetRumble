@@ -131,6 +131,15 @@ jobs:
           path: addons
           key: installed-addons-debug-windows-2022-${{ steps.addon-inputs.outputs.pin }}-${{ hashFiles('tools/sync_addons.ps1', 'tools/common.ps1', 'tools/addon-overrides/**') }}
 
+      # Clone before restoring build output into the submodule directory;
+      # git cannot initialize a submodule in a nonempty directory.
+      - name: Initialize addon source
+        if: steps.installed-addons.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git submodule update --init --recursive -- external/xbox-godot-sample
+          if ($LASTEXITCODE -ne 0) { throw "Addon source checkout failed with exit code $LASTEXITCODE." }
+
       # The whole build tree, including build/vcpkg_installed. A cold restore of
       # the GDK and PlayFab SDKs dominates a build; a warm one makes the
       # incremental rebuild cheap.
