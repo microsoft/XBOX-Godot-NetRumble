@@ -78,6 +78,11 @@ A client ticks its `World` before the host's match-created payload arrives, so t
 asteroids and ships may not exist yet. `World` guards against this rather than assuming an
 initialized world.
 
+Asteroids split into two fragments per destruction along the chain HUGE -> LARGE ->
+MEDIUM. MEDIUM and smaller rocks are destroyed without fragments. A HUGE rock can
+therefore produce four terminal fragments rather than sixteen. The initial asteroid
+count remains 12 and the live-asteroid ceiling remains 96.
+
 ---
 
 ## Netcode model and latency limits
@@ -88,7 +93,7 @@ describes the exact reader/writer contract.
 
 | Mechanism | Behavior |
 |---|---|
-| Remote interpolation | Non-local objects ease toward host state at `SNAPSHOT_LERP` (0.35), hiding the 30 Hz cadence and some jitter. |
+| Remote interpolation | Non-local objects ease toward host state at `SNAPSHOT_LERP` (0.35), hiding the 20 Hz cadence and some jitter. |
 | Local prediction | Local input moves the local ship each frame. Correction uses `LOCAL_SNAPSHOT_LERP` (0.12), preserves facing inside 25 degrees, and snaps beyond 250 px error. |
 | Authoritative damage | Health, shield, weapon and buffs come from host snapshots rather than client prediction. |
 

@@ -175,7 +175,7 @@ func tick(delta: float) -> void:
 		_detect_split_asteroids()
 
 
-## Build a world snapshot and send it. MatchDirector calls this on its own 30 Hz
+## Build a world snapshot and send it. MatchDirector calls this on its own snapshot
 ## schedule, so the world keeps no snapshot timer of its own. The snapshot's contents
 ## are defined in world_network_sync.gd, alongside the client code that reads them.
 func broadcast_snapshot() -> void:
@@ -444,7 +444,7 @@ func _detect_split_asteroids() -> void:
 
 
 ## Replaces one destroyed asteroid with the fragments it breaks into. The terminal
-## (TINY) tier yields no fragments and simply disappears, which is what makes the
+## (MEDIUM or smaller) tier yields no fragments and simply disappears, which makes the
 ## chain finite.
 func _split_asteroid(parent: Asteroid) -> void:
 	var parent_id := parent.unique_id

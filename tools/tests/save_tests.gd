@@ -37,6 +37,8 @@ func _run() -> void:
 	_check(Services.get_match_history().is_empty(), "startup ignores legacy history")
 
 	if OS.get_environment("NR_SAVE_TEST_SUITE") == "Multiplayer":
+		preload("res://tools/tests/gameplay_load_tests.gd").new().run(self)
+		await preload("res://tools/tests/network_diagnostics_tests.gd").new().run(self)
 		await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
 		await _complete()
 		return
@@ -65,6 +67,8 @@ func _run() -> void:
 	await preload("res://tools/tests/leaderboard_tests.gd").new().run(self)
 	await preload("res://tools/tests/pr_feedback_tests.gd").new().run(self)
 	await preload("res://tools/tests/join_failure_tests.gd").new().run(self)
+	preload("res://tools/tests/gameplay_load_tests.gd").new().run(self)
+	await preload("res://tools/tests/network_diagnostics_tests.gd").new().run(self)
 	await preload("res://tools/tests/multiplayer_failure_tests.gd").new().run(self)
 	await preload("res://tools/tests/invite_uri_tests.gd").new().run(self)
 	await preload("res://tools/tests/pregame_service_tests.gd").new().run(self)

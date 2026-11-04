@@ -723,7 +723,7 @@ func report_match_result(payload: Dictionary) -> bool:
 	# Practice stays local even when signed in. Queuing/uploading must not hold the
 	# results flow, so this standalone coroutine call deliberately ignores its result.
 	if is_current_account(generation) and online_match:
-		@warning_ignore("return_value_discarded", "missing_await")
+		@warning_ignore("return_value_discarded")
 		submit_leaderboard_score(int(payload["score"]))
 	return history_ok and stats_ok
 

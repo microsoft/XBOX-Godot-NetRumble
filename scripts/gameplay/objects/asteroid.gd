@@ -6,7 +6,7 @@ extends GameObject
 ## this script only owns the gameplay consequences.
 ##
 ## Rocks take weapon damage and break apart. Each size tier splits into fragments of
-## the tier below (see AsteroidTuning.split_size_for) until the TINY tier, which is
+## the tier below (see AsteroidTuning.split_size_for) until the MEDIUM tier, which is
 ## destroyed outright. The split itself is World's job, because spawning entities
 ## while the world is mid-iteration over `game_objects` is not safe; this script only
 ## drives health to zero and World's `_detect_split_asteroids` picks it up at the end

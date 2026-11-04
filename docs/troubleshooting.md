@@ -113,6 +113,38 @@ and [`AdvancedUserModel=false`](configuration.md#advancedusermodelfalse-simplifi
 
 ## Multiplayer
 
+### Gameplay falls further behind during a match
+
+Online sessions print one `[NetDiagnostics]` JSON line approximately every five seconds,
+on both host and guests, including release builds. Capture the output on every device
+from lobby entry through the slowdown. Logging does not change delivery or prediction.
+
+`tx_attempted` counts outgoing shared RPCs per recipient plus guest input sends;
+`rx_accepted` counts incoming input, snapshots and gameplay events after their authority
+checks. These are message counts, not packets, confirmed deliveries or complete protocol
+traffic. `snapshot_variant_bytes_sample` samples one snapshot per direction per window,
+using Variant serialization; it is not the encoded RPC or on-wire size.
+
+Compare Party's `currently_queued_send_messages` / `currently_queued_send_message_bytes`
+across windows for sustained send backlog. Active sends, relay round-trip latency,
+and cumulative retry/drop/timeout counters provide supporting context. Missing native
+statistics are reported as `party_statistics: "unavailable"`, never as zero backlog.
+`receive_queue_sample` is only an instantaneous sample, often taken after Godot has
+drained the queue; zero does not rule out expensive receive processing.
+
+`frame_ms_avg`, `frame_ms_max` and `frames_ge_50ms` measure wall-clock gaps between
+main-thread process callbacks, not GPU time or a CPU profile. `rx_between_frames_max`
+shows accepted-message bursts between those callbacks. `snapshot_apply_ms_total` /
+`snapshot_apply_ms_max`, `snapshot_applied`, `snapshot_stale` and `snapshot_objects_max`
+show the cost and volume of applying world snapshots. They do not measure native SDK
+dispatch, all RPC handler time, or network message age. A newer sequence number can
+still describe delayed state.
+
+Counters reset on session teardown and after each report. No account identifiers,
+connection strings, message contents or chat text are logged. Rising queues suggest
+transmission pressure; expensive snapshot application and long frame gaps with flat
+send queues suggest main-thread pressure. Neither alone proves the cause.
+
 ### AuthenticateLocalUser: invalid argument specified
 
 **Symptom**: Joining a Party network fails with:

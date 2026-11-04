@@ -254,7 +254,7 @@ RPC declarations, payloads or protocol version. See [typed-text behavior](multip
 
 ## Snapshot schema
 
-`MatchDirector` drives a snapshot at `NRConst.WORLD_SNAPSHOT_HZ` (30 Hz) by calling
+`MatchDirector` drives a snapshot at `NRConst.WORLD_SNAPSHOT_HZ` (20 Hz) by calling
 `World.broadcast_snapshot()`, which delegates to `WorldNetworkSync`; that builds the
 payload and hands it to `NetManager.broadcast_world_snapshot()` to put on the wire.
 The payload is a `Dictionary`:
@@ -275,7 +275,7 @@ of this schema lives.
 A snapshot entry is sent once per entity per tick. With up to eight ships and
 (typically) a dozen or more asteroids, the key strings repeat across every entry in
 every packet. Single-character keys are a real fraction of the total payload size at
-30 Hz. They are a **wire format**: renaming a key breaks every peer that has not
+20 Hz. They are a **wire format**: renaming a key breaks every peer that has not
 shipped the same change simultaneously. Maintainer instruction: do not rename them without
 bumping `NRProtocol.WIRE_VERSION`, see [Protocol version](#protocol-version).
 

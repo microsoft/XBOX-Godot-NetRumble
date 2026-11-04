@@ -26,7 +26,7 @@ extends Resource
 
 @export_group("Splitting")
 ## Fragments a destroyed asteroid breaks into. The tier below is spawned, so a HUGE
-## rock ultimately yields split_count^4 TINY fragments -- keep this low.
+## rock ultimately yields split_count^2 MEDIUM fragments -- keep this low.
 @export var split_count: int = 2
 ## Fragments are pushed apart from the parent's centre at this speed, on top of
 ## whatever momentum the parent had.
@@ -70,7 +70,7 @@ func radius_for(size: NRTypes.AsteroidSize) -> float:
 ## The tier a destroyed asteroid of `size` breaks into, or -1 when it is the terminal
 ## tier and simply disappears.
 static func split_size_for(size: NRTypes.AsteroidSize) -> int:
-	if int(size) <= int(NRTypes.AsteroidSize.TINY):
+	if int(size) <= int(NRTypes.AsteroidSize.MEDIUM):
 		return -1
 	return int(size) - 1
 

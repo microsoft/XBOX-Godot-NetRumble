@@ -112,6 +112,7 @@ var last_disconnect_reason: String = ""
 
 var _peer: MultiplayerPeer = null
 var _is_offline := false
+var _network_diagnostics := NetworkDiagnostics.new()
 
 ## Whether the host will admit a peer that finishes connecting right now.
 ##
@@ -328,6 +329,21 @@ func _ready() -> void:
 	# Constructed last, because it connects to the signals declared above and expects
 	# the services it wraps to already be reachable.
 	_platform = PlatformSession.new()
+
+
+func _process(_delta: float) -> void:
+	if _peer == null or _is_offline:
+		return
+	var now := Time.get_ticks_usec()
+	_network_diagnostics.note_frame(now)
+	if _network_diagnostics.is_due(now):
+		print("[NetDiagnostics] ", JSON.stringify(
+			_network_diagnostics.take_report(now, is_host(), players.size(), _peer)))
+
+
+func _note_network_rx(kind: StringName) -> void:
+	if _peer != null and not _is_offline:
+		_network_diagnostics.note_rx(kind)
 
 
 func _on_chat_changed() -> void:
@@ -1534,11 +1550,13 @@ func _leave_match_for_join_abort() -> void:
 func _detach_peer() -> void:
 	# PlayFabPartyPeer.close() starts its own network leave. PartyService owns that
 	# operation; detach Godot first rather than leaving the same network twice.
+	_network_diagnostics.reset()
 	_peer = null
 	multiplayer.multiplayer_peer = null
 
 
 func _reset_after_leave(reset_platform: bool = true) -> void:
+	_network_diagnostics.reset()
 	_connectivity_token += 1
 	_clear_match_chat()
 	var chat := _chat()
@@ -3716,7 +3734,10 @@ func _admitted_recipients() -> Array[int]:
 ## method's own delivery settings, exactly as a broadcast would reach them. The welcome, the
 ## replay and acceptance, and refusals go to one peer by id instead.
 func _share(method: StringName, args: Array = []) -> void:
-	for peer_id: int in _admitted_recipients():
+	var recipients := _admitted_recipients()
+	if not recipients.is_empty():
+		_network_diagnostics.note_tx(method, recipients.size())
+	for peer_id: int in recipients:
 		callv(&"rpc_id", [peer_id, method] + args)
 
 
@@ -5060,6 +5081,7 @@ func _receive_match_starting(payload: Dictionary) -> void:
 
 func broadcast_world_snapshot(payload: Dictionary) -> void:
 	if is_host() and not _is_offline:
+		_network_diagnostics.sample_snapshot(&"tx", payload)
 		_share(&"_receive_world_snapshot", [payload])
 
 
@@ -5067,6 +5089,8 @@ func broadcast_world_snapshot(payload: Dictionary) -> void:
 func _receive_world_snapshot(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_world_snapshot")
+	_network_diagnostics.sample_snapshot(&"rx", payload)
 	world_snapshot_received.emit(payload)
 
 
@@ -5085,6 +5109,7 @@ func send_ship_input(movement: Vector2, fire: Vector2, deploy_mine: bool, sequen
 	if is_host():
 		ship_input_received.emit(local_peer_id(), movement, fire, deploy_mine, sequence)
 	else:
+		_network_diagnostics.note_tx(&"_receive_ship_input", 1)
 		_receive_ship_input.rpc_id(
 			HOST_PEER_ID, local_peer_id(), movement, fire, deploy_mine, sequence
 		)
@@ -5114,6 +5139,7 @@ func _receive_ship_input(
 	if claimed_peer_id != sender:
 		_note_misattributed_input(sender, claimed_peer_id)
 		return
+	_note_network_rx(&"_receive_ship_input")
 	ship_input_received.emit(sender, movement, fire, deploy_mine, sequence)
 
 
@@ -5148,6 +5174,7 @@ func broadcast_projectile_spawned(payload: Dictionary) -> void:
 func _receive_projectile_spawned(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_projectile_spawned")
 	projectile_spawned_received.emit(payload)
 
 
@@ -5160,6 +5187,7 @@ func broadcast_projectile_detonated(payload: Dictionary) -> void:
 func _receive_projectile_detonated(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_projectile_detonated")
 	projectile_detonated_received.emit(payload)
 
 
@@ -5172,6 +5200,7 @@ func broadcast_power_up_spawned(payload: Dictionary) -> void:
 func _receive_power_up_spawned(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_power_up_spawned")
 	power_up_spawned_received.emit(payload)
 
 
@@ -5184,6 +5213,7 @@ func broadcast_power_up_collected(payload: Dictionary) -> void:
 func _receive_power_up_collected(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_power_up_collected")
 	power_up_collected_received.emit(payload)
 
 
@@ -5196,6 +5226,7 @@ func broadcast_ship_spawned(payload: Dictionary) -> void:
 func _receive_ship_spawned(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_ship_spawned")
 	ship_spawned_received.emit(payload)
 
 
@@ -5208,6 +5239,7 @@ func broadcast_ship_destroyed(payload: Dictionary) -> void:
 func _receive_ship_destroyed(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_ship_destroyed")
 	ship_destroyed_received.emit(payload)
 
 
@@ -5224,6 +5256,7 @@ func broadcast_asteroid_split(payload: Dictionary) -> void:
 func _receive_asteroid_split(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_asteroid_split")
 	asteroid_split_received.emit(payload)
 
 
@@ -5237,6 +5270,7 @@ func broadcast_score_updated(payload: Dictionary) -> void:
 func _receive_score_updated(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_score_updated")
 	_apply_score(payload)
 
 
@@ -5258,6 +5292,7 @@ func broadcast_gameplay_event(event_type: NRTypes.GameplayEventType, position: V
 func _receive_gameplay_event(event_type: int, position: Vector2) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_gameplay_event")
 	gameplay_event_received.emit(event_type as NRTypes.GameplayEventType, position)
 
 
@@ -5271,6 +5306,7 @@ func broadcast_match_completed(payload: Dictionary) -> void:
 func _receive_match_completed(payload: Dictionary) -> void:
 	if not _authority_trusted():
 		return
+	_note_network_rx(&"_receive_match_completed")
 	match_completed_received.emit(payload)
 
 
