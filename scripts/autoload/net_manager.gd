@@ -281,12 +281,14 @@ var _flow_admitted_session := 0
 ## Peers this host has refused on the current session, peer -> session: each is dropped from
 ## this host's peers at the end of the frame unless it was admitted or reconnected meanwhile.
 var _refused_peers: Dictionary = {}
+## Transport departures not yet acted on, peer -> the transport that reported them.
+var _pending_departures: Dictionary = {}
 
 
 func _ready() -> void:
 	Services.account_lost.connect(_on_account_lost)
 	multiplayer.peer_connected.connect(_on_peer_connected)
-	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	multiplayer.peer_disconnected.connect(_on_transport_peer_left)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
@@ -299,25 +301,7 @@ func _ready() -> void:
 	PlayerProfile.identity_changed.connect(_on_chat_identity_changed)
 	var party := _party()
 	if party != null:
-		# Party losing the network is the other way a session can end. The transport
-		# route below only fires when a *peer* goes away; if Party itself drops the
-		# network -- the relay becomes unreachable, the service fails the session, the
-		# console loses its connection -- no peer disconnects and Godot reports nothing,
-		# so without this the players sit in a match that can no longer send anything.
-		if not party.network_lost.is_connected(_on_party_network_lost):
-			party.network_lost.connect(_on_party_network_lost)
-		if not party.party_failed.is_connected(_on_party_failed):
-			party.party_failed.connect(_on_party_failed)
-		if not party.cleanup_status_changed.is_connected(_on_party_cleanup_status):
-			party.cleanup_status_changed.connect(_on_party_cleanup_status)
-		# A scoped matchmaking lobby reports its own membership and property changes; the
-		# flow re-reads its group and its search envelope from them. Its transport losses and
-		# failures arrive on the two signals above, carrying the lobby's context.
-		if not party.context_updated.is_connected(_on_context_changed):
-			party.context_updated.connect(_on_context_changed)
-		# A scoped lobby's own unexpected terminal loss, independent of its transport.
-		if not party.context_lost.is_connected(_on_context_lost):
-			party.context_lost.connect(_on_context_lost)
+		_connect_party(party)
 	# The flow re-reads its group on every roster change; that is how a ready group starts
 	# a search and how a frozen one notices a player leaving or un-readying.
 	roster_changed.connect(_on_roster_changed_for_flow)
@@ -344,6 +328,29 @@ func _process(_delta: float) -> void:
 func _note_network_rx(kind: StringName) -> void:
 	if _peer != null and not _is_offline:
 		_network_diagnostics.note_rx(kind)
+
+
+## Binds PartyService's notices. Idempotent, so a party bound twice is still told once.
+func _connect_party(party: PartyService) -> void:
+	# Party losing the network is the other way a session can end. The transport route
+	# only fires when a *peer* goes away; if Party itself drops the network -- the relay
+	# becomes unreachable, the service fails the session, the console loses its
+	# connection -- no peer disconnects and Godot reports nothing, so without this the
+	# players sit in a match that can no longer send anything.
+	if not party.network_lost.is_connected(_on_party_network_lost):
+		party.network_lost.connect(_on_party_network_lost)
+	if not party.party_failed.is_connected(_on_party_failed):
+		party.party_failed.connect(_on_party_failed)
+	if not party.cleanup_status_changed.is_connected(_on_party_cleanup_status):
+		party.cleanup_status_changed.connect(_on_party_cleanup_status)
+	# A scoped matchmaking lobby reports its own membership and property changes; the
+	# flow re-reads its group and its search envelope from them. Its transport losses and
+	# failures arrive on the two signals above, carrying the lobby's context.
+	if not party.context_updated.is_connected(_on_context_changed):
+		party.context_updated.connect(_on_context_changed)
+	# A scoped lobby's own unexpected terminal loss, independent of its transport.
+	if not party.context_lost.is_connected(_on_context_lost):
+		party.context_lost.connect(_on_context_lost)
 
 
 func _on_chat_changed() -> void:
@@ -3091,13 +3098,20 @@ func _on_host_return_deadline(flow_id: int) -> void:
 
 # --- Lobby loss and service recovery --------------------------------------------
 
-## A scoped lobby was lost unexpectedly -- not left, and not recovered. Every lobby the flow
-## still holds is the flow's: the arranged lobby is the match, and the staging lobby is the
-## group until the flow's own retirement of it has begun. That holds after arming too --
-## arming proves nothing about who the match starts with, and its exception belongs to the old
-## Party transport alone (see _on_context_transport_lost). A retirement under way is the old group
-## going on purpose, and PartyService reports no loss for a lobby it is leaving.
+## A scoped lobby was lost unexpectedly -- not left, and not recovered. PartyService reports
+## it from inside the native notice, so it is acted on once that notice has returned: ending
+## the flow leaves lobbies and networks, which must not start inside the batch reporting it.
 func _on_context_lost(reason: String, context: Variant) -> void:
+	_end_lost_context.call_deferred(reason, context)
+
+
+## Every lobby the flow still holds is the flow's: the arranged lobby is the match, and the
+## staging lobby is the group until the flow's own retirement of it has begun. That holds after
+## arming too -- arming proves nothing about who the match starts with, and its exception
+## belongs to the old Party transport alone (see _on_context_transport_lost). A retirement under
+## way is the old group going on purpose, and PartyService reports no loss for a lobby it is
+## leaving. Matched by context, so a lobby the player has moved on from meanwhile ends nothing.
+func _end_lost_context(reason: String, context: Variant) -> void:
 	var message: String = reason if not reason.is_empty() else "The matchmaking lobby closed."
 	var flow := _flow
 	if flow != null and flow.is_current() and context != null:
@@ -3695,6 +3709,11 @@ func _request_flow_state(request_id: int, known_epoch: int) -> void:
 # --- Peer plumbing ----------------------------------------------------------
 
 func _on_peer_connected(peer_id: int) -> void:
+	if _pending_departures.has(peer_id):
+		var left: MultiplayerPeer = _pending_departures[peer_id]
+		_pending_departures.erase(peer_id)
+		if left == _peer:
+			_on_peer_disconnected(peer_id)
 	if not is_host():
 		# The host reaching this guest's transport can be what settles its proof.
 		if peer_id == HOST_PEER_ID:
@@ -3986,6 +4005,25 @@ func _initial_start_departure(peer_id: int) -> bool:
 	return false
 
 
+## Godot raises a transport peer's departure from inside the transport's own notice -- for
+## PlayFab Party, inside the native state-change batch, and for a peer this host drops, inside
+## the drop. Ending a session from there would leave the network and change screens while that
+## notice is still on the stack, so the departure is acted on once it has returned, and only for
+## the transport it was reported on. A new connection under the same id before then settles the
+## departure first (see _on_peer_connected), so the newcomer never inherits the old member.
+func _on_transport_peer_left(peer_id: int) -> void:
+	_pending_departures[peer_id] = _peer
+	_finish_transport_peer_left.call_deferred(peer_id, _peer)
+
+
+func _finish_transport_peer_left(peer_id: int, peer: MultiplayerPeer) -> void:
+	if _pending_departures.get(peer_id) != peer:
+		return
+	_pending_departures.erase(peer_id)
+	if peer == _peer:
+		_on_peer_disconnected(peer_id)
+
+
 func _on_peer_disconnected(peer_id: int) -> void:
 	if _peer == null:
 		return
@@ -4092,9 +4130,21 @@ func _on_server_disconnected(reason: String = "", transport_loss: bool = true) -
 ## `context` is the scoped matchmaking lobby whose transport went down -- so an expected
 ## staging loss can be told apart from an arranged one -- or null for the one hosted or
 ## code-joined session.
+##
+## PartyService raises this from inside the native notice that reported the loss -- a cable
+## pull lands here in the middle of Party's state-change batch. Ending the session leaves the
+## network and the lobby and changes screens, none of which may start inside that batch, so
+## the loss is acted on once the notice has returned. A context loss is matched by its context
+## then; a session loss is dropped only if the player started another entry meanwhile.
 func _on_party_network_lost(reason: String, context: Variant = null) -> void:
 	if context != null:
-		_on_context_transport_lost(context, reason)
+		_on_context_transport_lost.call_deferred(context, reason)
+		return
+	_end_lost_network.call_deferred(reason, _entry_epoch, _active_join_request)
+
+
+func _end_lost_network(reason: String, epoch: int, join: JoinRequest) -> void:
+	if epoch != _entry_epoch or (_active_join_request != null and _active_join_request != join):
 		return
 	_on_server_disconnected(reason)
 

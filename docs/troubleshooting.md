@@ -162,6 +162,22 @@ cannot know.
 project already does this in `PartyService`; see
 [The join code is the Party invitation id](multiplayer.md#the-join-code-is-the-party-invitation-id).
 
+### Pulling the network cable during a match transition
+
+**Symptom**: Unplugging the network (or the network failing) while the lobby starts a match, the
+gameplay screen loads, the countdown runs or matchmaking swaps transports crashes or strands the
+player instead of returning to the main menu with an error dialog.
+
+**Cause**: PlayFab Party reports the loss from inside its native state-change batch, and Godot
+raises the transport peer's departure from inside that same notice. Leaving the network, detaching
+the peer and changing screens from there tears the session down while the notice is still on the
+stack.
+
+**Fix**: `NetManager` acts on Party `network_lost`, `context_lost` and transport peer departures
+only after the notice returns, and only if the session that reported them is still current; see
+[How a match ends badly](architecture.md#how-a-match-ends-badly). If a cable pull still
+misbehaves, record which transition it was in and whether the error dialog appeared.
+
 ### Signed in, but save loading fails
 
 **Symptom**: Authentication succeeds but acquisition reports a save initialization, folder or

@@ -2861,6 +2861,7 @@ func _f7_first_start_needs_the_chosen_players_through_running(test: Node) -> voi
 			"[%s] the three present players were chosen and the first match started with the rule armed" % scenario)
 		if scenario == "disconnect":
 			party.fake_arranged_peer.disconnect_remote(3)
+			await test.get_tree().process_frame
 			test._check(flow.retired and NetManager.last_disconnect_reason == MatchmakingFlow.TEXT_MATCH_MEMBER_LOST,
 				"[disconnect] a chosen player leaving before the match runs ends it, never a match of two: %s" % NetManager.last_disconnect_reason)
 			await _teardown(test)
@@ -3224,6 +3225,7 @@ func _b_present_member_not_ready_blocks_the_choice(test: Node) -> void:
 				NetManager._on_context_changed(party.fake_arranged)
 			"admitted_leaves":
 				party.fake_arranged_peer.disconnect_remote(3)
+				await test.get_tree().process_frame
 				test._check(flow.is_current() and NetManager.players.size() == 2 and _commit_not_started(flow),
 					"[admitted_leaves] an admitted arrival outside this host's premade leaving fails nothing; while the lobby still lists it, nobody is chosen")
 				party.fake_remove_member(party.fake_arranged, _key("blk-c"))
@@ -3932,6 +3934,7 @@ func _b_recipients_shared_updates_reach_only_admitted_players(test: Node) -> voi
 	test._check(welcome == 2,
 		"[departure] the welcome is the mode and the identity request, and no roster: %d calls" % welcome)
 	room.disconnect_remote(2)
+	await test.get_tree().process_frame
 	test._check(not NetManager.players.has(2) and _calls_to(room, 3) == welcome,
 		"[departure] a player who leaves before the newcomer is admitted was never shown to it, and it is told nothing")
 	_identify(3, "d-c")
@@ -4413,6 +4416,7 @@ func _f9_lobby_loss_and_recovery_routing(test: Node) -> void:
 	var gathering := await _open_group(test)
 	if gathering != null:
 		NetManager._on_context_lost("Injected lobby loss.", party.fake_staging)
+		await test.get_tree().process_frame
 		test._check(gathering.retired and NetManager.last_disconnect_reason == "Injected lobby loss.",
 			"before arming, a lost staging lobby ends the group: %s" % NetManager.last_disconnect_reason)
 	await _teardown(test)
@@ -4421,6 +4425,7 @@ func _f9_lobby_loss_and_recovery_routing(test: Node) -> void:
 	var armed := _staging_guest(test, 7)
 	_arm(armed, false)
 	NetManager._on_context_lost("Injected lobby loss.", party.fake_staging)
+	await test.get_tree().process_frame
 	test._check(armed.retired, "after arming, an unexpected staging lobby loss still ends the group (phase %d)" % armed.phase)
 	test._check(NetManager.last_disconnect_reason == "Injected lobby loss.",
 		"with the lobby's own reason: %s" % NetManager.last_disconnect_reason)
@@ -4431,6 +4436,7 @@ func _f9_lobby_loss_and_recovery_routing(test: Node) -> void:
 	var matched := _staging_guest(test, 7)
 	_arm(matched, false)
 	NetManager._on_context_lost("Injected match lobby loss.", party.fake_arranged)
+	await test.get_tree().process_frame
 	test._check(matched.retired and NetManager.last_disconnect_reason == "Injected match lobby loss.",
 		"a lost arranged lobby ends the match: %s" % NetManager.last_disconnect_reason)
 	await _teardown(test)
@@ -4439,6 +4445,7 @@ func _f9_lobby_loss_and_recovery_routing(test: Node) -> void:
 	var swapping := _staging_guest(test, 7)
 	_arm(swapping, false)
 	NetManager._on_party_network_lost("Injected staging network loss.", party.fake_staging)
+	await test.get_tree().process_frame
 	test._check(swapping.is_current() and swapping.phase == MatchmakingFlow.Phase.ARMING_HANDOFF,
 		"once armed, the old staging transport going away is the expected exception (phase %d)" % swapping.phase)
 	test._check(swapping.staging_reset and not NetManager.has_session(),
@@ -4464,6 +4471,7 @@ func _f9_lobby_loss_and_recovery_routing(test: Node) -> void:
 	test._check(joining.is_current() and joining.phase == MatchmakingFlow.Phase.ADMITTING_COHORT,
 		"and the flow carries on into the arranged session (phase %d)" % joining.phase)
 	NetManager._on_context_lost("Late report for the retired lobby.", party.fake_staging)
+	await test.get_tree().process_frame
 	test._check(joining.is_current(), "a late report for a lobby the flow has retired is not the flow's loss")
 	party.context_lost.disconnect(observe_loss)
 	await _teardown(test)
@@ -4524,6 +4532,7 @@ func _f9_staging_owner_leaves_its_lobby_last(test: Node) -> void:
 		if loss == "owner_cleared":
 			party.fake_owners[party.fake_staging.context_id] = {}
 		NetManager._on_context_lost("Injected %s." % loss, party.fake_staging)
+		await test.get_tree().process_frame
 		test._check(waiting.retired and NetManager.last_disconnect_reason == "Injected %s." % loss,
 			"[%s] an unexpected loss during the wait ends the flow: %s" % [loss, NetManager.last_disconnect_reason])
 		test._check(not waiting.staging_retired and NetManager.match_state != NRTypes.MatchState.STARTING,
@@ -4706,6 +4715,7 @@ func _f10_host_returns_to_an_arranged_rematch(test: Node) -> void:
 		"replacements fill the session up to its four through the ordinary host handshake: %d players" % NetManager.players.size())
 	party.fake_arranged_peer.disconnect_remote(11)
 	party.fake_arranged_peer.disconnect_remote(10)
+	await test.get_tree().process_frame
 	test._check(flow.is_current() and NetManager.players.size() == 3,
 		"after the first match, departures follow the hosted rules: %d players" % NetManager.players.size())
 	for peer_id: int in NetManager.players.keys():
@@ -5640,6 +5650,7 @@ func _f11_owner_answers_state_requests(test: Node) -> void:
 	test._check(int(replay.get("phase", -1)) == MatchmakingFlow.Phase.SEARCHING and int(detail.get("remaining_ms", -1)) > 0,
 		"the answer is the owner's search with the time it has left: %s" % str(replay))
 	staging_peer.disconnect_remote(7)
+	await test.get_tree().process_frame
 	test._check(not NetManager._flow_state_answers.has(7), "a departed guest's replay dedup leaves with it")
 	party.fake_remove_member(party.fake_staging, _key("f11-guest"))
 	_add_guest(7, "f11-new-guest")
@@ -6016,6 +6027,7 @@ func _c_private_restores_or_ends_cleanly(test: Node) -> void:
 			"member_lost_after_commit":
 				if _commit_private_group(test, flow, scenario):
 					party.fake_staging_peer.disconnect_remote(6)
+					await test.get_tree().process_frame
 					test._check(flow.retired and NetManager.last_disconnect_reason == MatchmakingFlow.TEXT_MATCH_MEMBER_LOST,
 						"[member_lost_after_commit] one of the four lost before the match runs ends it, never a match of three: %s" % [
 							NetManager.last_disconnect_reason])
@@ -6200,6 +6212,7 @@ func _c_rematch_private_session_returns_and_admits_replacements(test: Node) -> v
 	var peer: Variant = party.fake_staging_peer
 	NetManager._apply_ready_state(5, true)
 	peer.disconnect_remote(7)
+	await test.get_tree().process_frame
 	test._check(not NetManager.players.has(7) and _is_ready(5),
 		"a departure between rounds resets nobody else's readiness")
 	party.fake_peer_keys[9] = _key("p4-new")
@@ -6797,6 +6810,7 @@ func _c_rematch_original_member_rejoins_its_round(test: Node) -> void:
 		var entity := "p4-d"
 		if scenario != "outsider" and scenario != "duplicate":
 			peer.disconnect_remote(7)
+			await test.get_tree().process_frame
 		match scenario:
 			"mismatched":
 				var named: Dictionary = protocol.duplicate()
