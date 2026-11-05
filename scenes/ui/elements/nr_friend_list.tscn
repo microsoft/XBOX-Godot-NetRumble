@@ -48,7 +48,7 @@ theme_override_constants/separation = 16
 [node name="TitleLabel" type="Label" parent="Panel/Margin/Inner"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_type_variation = &"AccentLabel"
+theme_type_variation = &"ModalTitle"
 horizontal_alignment = 1
 
 [node name="StatusLabel" type="Label" parent="Panel/Margin/Inner"]

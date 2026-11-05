@@ -32,6 +32,20 @@ static func populate(list: NRMenuList) -> void:
 		PlayerProfile.fullscreen = value
 		PlayerProfile.notify_settings_changed()
 		PlayerProfile.apply_display_settings())
+	# Off is the saved, exact static art. The pause shortcut is a separate session-only pause,
+	# so explicitly choosing On here also lifts that pause.
+	list.add_bool_spinner("Animated Backgrounds", PlayerProfile.animate_backgrounds, func(value: bool) -> void:
+		if not Services.is_current_account(generation):
+			return
+		PlayerProfile.animate_backgrounds = value
+		if value:
+			UIBackgroundMotion.session_paused = false
+		PlayerProfile.notify_settings_changed())
+	var motion_note := list.add_note(
+			"%s pauses background motion for this session." % UIBackgroundMotion.pause_shortcut_label())
+	# The keyboard wording is about as wide as the narrowest Options list, so it wraps rather than
+	# widening the panel.
+	motion_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	# PlayerProfile applies master/music/sfx on notify_settings_changed(), so the
 	# mixer follows these rows immediately rather than on save.

@@ -239,11 +239,9 @@ func _match_and_screen(test: Node) -> void:
 	director.free()
 	await NetManager.leave_match_and_wait()
 	var menu: Variant = ScreenManager.push(ScreenManager.MAIN_MENU)
-	var button: NRButton
-	for row: Control in menu._menu_list.rows():
-		if row is NRButton and row.text == "Leaderboards":
-			button = row
-	test._check(button != null, "upstream Leaderboards button retained on ready menu")
+	var button: NRButton = menu._leaderboards_button
+	test._check(button != null and button.is_visible_in_tree() and not button.disabled,
+		"Leaderboards footer button retained on ready menu")
 	if button == null:
 		await test._reset()
 		Services._party = null

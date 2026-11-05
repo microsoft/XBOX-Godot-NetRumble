@@ -4,6 +4,7 @@ const LEGACY_FILES := [
 	"settings.cfg", "settings_A.cfg", "match_history.json",
 	"match_history_A.json", "achievement_stats.json", "achievement_stats_A.json",
 ]
+var render_ui_assets := false
 
 
 func _enter_tree() -> void:
@@ -26,7 +27,9 @@ func _enter_tree() -> void:
 		file.close()
 
 
-func texture(_key: String) -> Texture2D:
+func texture(key: String) -> Texture2D:
+	if render_ui_assets:
+		return super.texture(key)
 	return GradientTexture2D.new()
 
 

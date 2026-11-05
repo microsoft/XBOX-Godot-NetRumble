@@ -1,7 +1,7 @@
 class_name NRFocusRing
 extends Control
 
-## An accent outline drawn over whichever control currently holds focus.
+## A themed outline drawn over whichever control currently holds focus.
 ##
 ## Most of the menu is built from NRButton, and the shared Theme gives Button a focus
 ## stylebox. The controls that draw their own artwork cannot use it: the options rows
@@ -14,11 +14,6 @@ extends Control
 ## The ring is a child of the control it marks rather than a stylebox on it, so it
 ## works the same for a Button, a Control, or anything else focusable, and it draws
 ## over artwork instead of behind it.
-
-## Outline colour and thickness. The accent matches the theme's focus borders, so a
-## ringed control and a themed button read as the same state.
-const _COLOR := Color(0.12, 0.83, 0.54, 1)
-const _THICKNESS := 3.0
 
 var _host: Control = null
 ## Shrinks the ring inside the host. Used where the host's box is larger than the
@@ -42,6 +37,8 @@ static func attach(host: Control, inset: float = 0.0) -> NRFocusRing:
 
 
 func _ready() -> void:
+	if theme_type_variation == &"":
+		theme_type_variation = &"NRFocusRing"
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	offset_left = _inset
@@ -49,6 +46,7 @@ func _ready() -> void:
 	offset_right = -_inset
 	offset_bottom = -_inset
 	resized.connect(queue_redraw)
+	theme_changed.connect(queue_redraw)
 
 	_host = get_parent() as Control
 	if _host == null:
@@ -63,11 +61,7 @@ func _refresh() -> void:
 	visible = is_instance_valid(_host) and _host.has_focus()
 
 
-## Inset by half the line width, because draw_rect centres the stroke on the edge and
-## the outer half would otherwise spill over the neighbouring row.
 func _draw() -> void:
-	var half := _THICKNESS * 0.5
-	var box := Rect2(Vector2(half, half), size - Vector2(_THICKNESS, _THICKNESS))
-	if box.size.x <= 0.0 or box.size.y <= 0.0:
+	if size.x <= 0.0 or size.y <= 0.0:
 		return
-	draw_rect(box, _COLOR, false, _THICKNESS)
+	draw_style_box(get_theme_stylebox(&"focus"), Rect2(Vector2.ZERO, size))

@@ -40,6 +40,12 @@ var _save_dialog_open := false
 ## This is separate from the forced, deadline-bound platform drain.
 var _shutdown_save_pending := false
 var _resume_generation := -1
+var _startup_background_prepare_complete := false
+var _background_warmup_retrying := false
+var _background_warmup_retry_scheduled := false
+var _post_startup_background_retry_used := false
+## The opaque cover of the warm-up in flight, at startup or on a retry; null when none is up.
+var _warm_up_cover: CanvasLayer = null
 
 
 func _ready() -> void:
@@ -67,14 +73,127 @@ func _ready() -> void:
 		devices.controller_lost.connect(_on_controller_lost)
 		devices.controller_bound.connect(_on_controller_bound)
 
-	# Authentication and account-owned saved data must both be ready before the menu.
-	ScreenManager.push(ScreenManager.ACQUIRE_USER)
+	# Pipeline creation is paid behind an opaque built-in cover. Preparation uses isolated,
+	# deterministic poses, so this does not start either presentation clock.
+	var startup_cover := _create_startup_cover()
+	await UIBackgroundMotion.prepare(_screen_container)
+	_startup_background_prepare_complete = true
+	if (
+		not is_inside_tree()
+		or _quit_pending
+		or _account_route_pending
+		or (Services != null and Services.is_shutting_down())
+	):
+		_remove_startup_cover(startup_cover)
+		return
+
+	# Authentication and account-owned saved data must both be ready before the menu. A route that
+	# won the warm-up race owns the stack already and must not receive a duplicate screen.
+	if ScreenManager.get_stack_size() == 0:
+		ScreenManager.push(ScreenManager.ACQUIRE_USER)
+	_remove_startup_cover(startup_cover)
+	if not UIBackgroundMotion.is_warmed():
+		_schedule_background_warm_up_retry(true)
+
+
+func _create_startup_cover() -> CanvasLayer:
+	var layer := CanvasLayer.new()
+	layer.name = "BackgroundMotionStartupCover"
+	layer.layer = 100
+	var cover := ColorRect.new()
+	cover.color = Color(0.019607843, 0.019607843, 0.019607843, 1.0)
+	cover.mouse_filter = Control.MOUSE_FILTER_STOP
+	cover.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(cover)
+	add_child(layer)
+	_warm_up_cover = layer
+	return layer
+
+
+func _remove_startup_cover(cover: CanvasLayer) -> void:
+	if not is_instance_valid(cover):
+		return
+	if cover == _warm_up_cover:
+		_warm_up_cover = null
+	cover.hide()
+	if cover.get_parent() != null:
+		cover.get_parent().remove_child(cover)
+	cover.queue_free()
+
+
+## A match never starts under a warm-up cover. The lobby starts gameplay with a push, so a warm-up
+## still in flight then, at startup or on a retry, is cancelled at once and its cover leaves in the
+## same frame. Motion stays static until a later retry over the front end.
+func _cancel_warm_up_for_gameplay(screen: NRScreen) -> void:
+	if screen == null or screen.scene_file_path != ScreenManager.GAMEPLAY:
+		return
+	UIBackgroundMotion.cancel_prepare()
+	_remove_startup_cover(_warm_up_cover)
+
+
+func _retry_background_warm_up() -> void:
+	if not _background_warm_up_retry_eligible():
+		return
+	_background_warmup_retrying = true
+	var retry_cover := _create_startup_cover()
+	await UIBackgroundMotion.prepare(_screen_container)
+	_remove_startup_cover(retry_cover)
+	_background_warmup_retrying = false
+
+
+func _schedule_background_warm_up_retry(post_startup: bool = false) -> void:
+	if (
+		_background_warmup_retry_scheduled
+		or _background_warmup_retrying
+		or UIBackgroundMotion.is_warmed()
+	):
+		return
+	_background_warmup_retry_scheduled = true
+	_run_scheduled_background_retry.call_deferred(post_startup)
+
+
+func _run_scheduled_background_retry(post_startup: bool) -> void:
+	if post_startup:
+		await get_tree().process_frame
+	_background_warmup_retry_scheduled = false
+	if post_startup:
+		if _post_startup_background_retry_used:
+			return
+	if not _background_warm_up_retry_eligible():
+		return
+	if post_startup:
+		_post_startup_background_retry_used = true
+	await _retry_background_warm_up()
+
+
+func _background_warm_up_retry_eligible() -> bool:
+	return (
+		not _background_warmup_retrying
+		and not UIBackgroundMotion.is_preparing()
+		and not UIBackgroundMotion.is_warmed()
+		and not UIBackgroundMotion.is_suspended()
+		and not _constrained
+		and not _quit_pending
+		and not _account_route_pending
+		and _window_can_draw()
+		and UIBackgroundMotion.front_end_background_visible()
+		and not ScreenManager.has_screen(ScreenManager.GAMEPLAY)
+		and (Services == null or not Services.is_shutting_down())
+	)
+
+
+func _window_can_draw() -> bool:
+	return UIBackgroundMotion.test_force_gpu or (
+		DisplayServer.get_name() != "headless"
+		and DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_MINIMIZED
+	)
 
 
 func _connect_lifecycle_signals() -> void:
 	Services.account_lost.connect(_on_account_lost)
 	Services.save_failed.connect(_on_save_failed)
 	ScreenManager.screen_pushed.connect(_on_resume_screen_pushed)
+	ScreenManager.screen_pushed.connect(_cancel_warm_up_for_gameplay)
 
 
 func _reset_account_dialogs() -> void:
@@ -170,6 +289,8 @@ func _notification(what: int) -> void:
 			_set_constrained(true)
 		NOTIFICATION_APPLICATION_FOCUS_IN:
 			_set_constrained(false)
+			if _startup_background_prepare_complete and not UIBackgroundMotion.is_warmed():
+				_schedule_background_warm_up_retry()
 
 
 ## The suspend handler. Everything it does, it does now.
@@ -183,6 +304,9 @@ func _on_suspending() -> void:
 	var saved := false
 	if Services != null:
 		saved = Services.persist_for_suspend()
+	# Freeze presentation clocks only after the deadline-bound save has completed. Suspension is
+	# independent of Guide/focus constrain and resume clears only this reason.
+	UIBackgroundMotion.set_suspended(true)
 	# Then drop the session. Holding an open Party network and a bound MultiplayerPeer
 	# across a suspend leaves a peer that never reconnects and an RPC storm against a
 	# dead network; the match is not worth either.
@@ -197,6 +321,7 @@ func _on_suspending() -> void:
 ## awaiting them.
 func _on_resumed() -> void:
 	print("[Lifecycle] Resumed.")
+	UIBackgroundMotion.set_suspended(false)
 	if Services.is_shutting_down():
 		return
 	Services.invalidate_saves_for_resume()
@@ -219,8 +344,17 @@ func _route_after_suspend(generation: int) -> void:
 		return
 	if not Services.is_account_ready():
 		ScreenManager.replace_all(ScreenManager.ACQUIRE_USER)
+		_schedule_background_warm_up_after_resume.call_deferred()
 		return
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
+	_schedule_background_warm_up_after_resume.call_deferred()
+
+
+func _schedule_background_warm_up_after_resume() -> void:
+	await UIBackgroundMotion.wait_for_prepare()
+	if not is_inside_tree():
+		return
+	_schedule_background_warm_up_retry.call_deferred()
 
 
 func _on_resume_screen_pushed(screen: NRScreen) -> void:
@@ -258,6 +392,7 @@ func _set_constrained(constrained: bool) -> void:
 	if _constrained == constrained:
 		return
 	_constrained = constrained
+	UIBackgroundMotion.set_constrained(constrained)
 	AudioManager.set_system_muted(constrained)
 	# Reached through the group for the same reason the shutdown path is: there is at most
 	# one director, it exists only while a match does, and main.gd should not have to know
