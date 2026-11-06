@@ -138,6 +138,7 @@ class Config extends RefCounted:
 	var filter := ""
 	var max_results := 0
 	var invitation_id := ""
+	var audio_device_default_mode := 0
 	var enable_voice_chat := false
 	var enable_text_chat := false
 	var enable_transcription := false
@@ -1282,6 +1283,7 @@ class PlayFabDouble extends RefCounted:
 class Party extends PartyService:
 	var pf := PlayFabDouble.new()
 	var fake_account_current := true
+	var fake_console := false
 	var fake_clock := Clock.new()
 	var fake_warnings: Array[String] = []
 
@@ -1302,6 +1304,9 @@ class Party extends PartyService:
 
 	func _new_party_config() -> Variant:
 		return Config.new()
+
+	func _is_console() -> bool:
+		return fake_console
 
 	func _new_lobby_config() -> Variant:
 		return Config.new()

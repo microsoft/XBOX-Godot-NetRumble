@@ -98,6 +98,7 @@ const REQUIRED_LOBBY_STATE_CHANGE_PROPERTIES := [
 const REQUIRED_PARTY_CONFIG_PROPERTIES := [
 	"max_players",
 	"invitation_id",
+	"audio_device_default_mode",
 	"enable_voice_chat",
 	"enable_text_chat",
 	"enable_transcription",

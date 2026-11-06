@@ -39,8 +39,7 @@ extends RefCounted
 ## exits. Everything else on this class is driven by NetManager, which owns the roster the
 ## privacy verdicts are resolved against.
 
-## Raised whenever the voice-chat mesh changes, so the lobby roster can repaint its
-## microphone indicators without polling.
+## Raised for mesh and mute/policy changes. Speech transitions are polled separately.
 signal chat_changed()
 signal text_received(entity_key: Dictionary, text: String)
 signal text_policy_changed()
@@ -53,7 +52,7 @@ enum ChatIndicator {
 	NONE,      ## No chat control for this player; the icon is hidden.
 	AVAILABLE, ## Voice is up and unmuted.
 	MUTED,     ## Incoming audio muted locally, or the local mic is muted.
-	TALKING,   ## Currently speaking. Unreachable: see chat_indicator_for().
+	TALKING,   ## Party reports active local capture or incoming speech.
 }
 
 ## The local user's chat control, created explicitly before any network join because
@@ -221,9 +220,8 @@ func clear_chat_restrictions() -> void:
 ## The lobby is voice-only: microphone indicators on the roster and nothing else. Text
 ## chat stays off there, so the lobby needs no chat panel.
 ##
-## Party's own "is talking" signal (PartyChatControl::GetChatIndicator) has no binding
-## in godot_playfab, so TALKING is unreachable here; AVAILABLE and MUTED are driven
-## from real state rather than approximated.
+## Party's voice-activity indicators are polled, not signalled. NetManager samples
+## these for both rosters; title/platform mute decisions always win over activity.
 func chat_indicator_for(entity_key: Dictionary) -> ChatIndicator:
 	var chat: Variant = _chat()
 	if chat == null or entity_key.is_empty() or not _chat_allowed:
@@ -236,12 +234,27 @@ func chat_indicator_for(entity_key: Dictionary) -> ChatIndicator:
 	if local != null and _chat_user != null:
 		var local_key: Dictionary = _local_entity_key()
 		if _entity_keys_match(local_key, entity_key):
-			return ChatIndicator.MUTED if _self_muted else ChatIndicator.AVAILABLE
+			if _self_muted:
+				return ChatIndicator.MUTED
+			var indicator: int = chat.get_local_chat_indicator(_chat_user)
+			if indicator == _chat_constant(&"LOCAL_CHAT_INDICATOR_AUDIO_INPUT_MUTED"):
+				return ChatIndicator.MUTED
+			return ChatIndicator.TALKING if indicator == _chat_constant(&"LOCAL_CHAT_INDICATOR_TALKING") \
+				else ChatIndicator.AVAILABLE
 
 	var control: Variant = chat.get_chat_control(entity_key)
 	if control == null:
 		return ChatIndicator.NONE
-	if _muted_ids.has(entity_id) or _restricted_voice.has(entity_id):
+	if _muted_ids.has(entity_id) or _player_muted_ids.has(entity_id) or _restricted_voice.has(entity_id):
+		return ChatIndicator.MUTED
+	var indicator: int = chat.get_chat_indicator(entity_key, _chat_user)
+	if indicator == _chat_constant(&"CHAT_INDICATOR_TALKING"):
+		return ChatIndicator.TALKING
+	if indicator in [
+		_chat_constant(&"CHAT_INDICATOR_INCOMING_VOICE_DISABLED"),
+		_chat_constant(&"CHAT_INDICATOR_INCOMING_COMMUNICATIONS_MUTED"),
+		_chat_constant(&"CHAT_INDICATOR_REMOTE_AUDIO_INPUT_MUTED"),
+	]:
 		return ChatIndicator.MUTED
 	return ChatIndicator.AVAILABLE
 
@@ -314,11 +327,11 @@ func _apply_peer_permissions(entity_key: Dictionary) -> void:
 		return
 	var permissions := 0
 	if _chat_allowed and not _restricted_voice.has(String(entity_key.get("id", ""))):
-		permissions = _chat_permission(&"CHAT_PERMISSION_RECEIVE_AUDIO")
+		permissions = _chat_constant(&"CHAT_PERMISSION_RECEIVE_AUDIO")
 		if not _self_muted:
-			permissions |= _chat_permission(&"CHAT_PERMISSION_SEND_AUDIO")
+			permissions |= _chat_constant(&"CHAT_PERMISSION_SEND_AUDIO")
 	if can_exchange_text(entity_key):
-		permissions |= _chat_permission(&"CHAT_PERMISSION_RECEIVE_TEXT")
+		permissions |= _chat_constant(&"CHAT_PERMISSION_RECEIVE_TEXT")
 	var result: Variant = await chat.set_chat_permissions_async(entity_key, permissions)
 	if result != null and not result.ok:
 		push_warning("[Party] Could not set chat permissions: %s" % _reason(result))
@@ -544,19 +557,24 @@ func _apply_self_mute() -> void:
 		await _apply_peer_permissions(entity_key)
 
 
-## Use the addon's bound PlayFabParty.ChatPermission constants when the extension is
+## Use the addon's bound PlayFabParty constants when the extension is
 ## loaded; fallbacks mirror the documented values so scripts still parse in
 ## editor-only environments that lack the native library.
-func _chat_permission(name: StringName) -> int:
+func _chat_constant(name: StringName) -> int:
 	if ClassDB.class_exists(&"PlayFabParty") and ClassDB.class_has_integer_constant(&"PlayFabParty", name):
 		return ClassDB.class_get_integer_constant(&"PlayFabParty", name)
 	match name:
-		&"CHAT_PERMISSION_SEND_AUDIO":
+		&"CHAT_PERMISSION_SEND_AUDIO", &"LOCAL_CHAT_INDICATOR_TALKING", &"CHAT_INDICATOR_TALKING":
 			return 1
-		&"CHAT_PERMISSION_RECEIVE_AUDIO":
+		&"CHAT_PERMISSION_RECEIVE_AUDIO", &"LOCAL_CHAT_INDICATOR_AUDIO_INPUT_MUTED", \
+				&"CHAT_INDICATOR_INCOMING_VOICE_DISABLED":
 			return 2
+		&"CHAT_INDICATOR_INCOMING_COMMUNICATIONS_MUTED":
+			return 3
 		&"CHAT_PERMISSION_RECEIVE_TEXT":
 			return 4
+		&"CHAT_INDICATOR_REMOTE_AUDIO_INPUT_MUTED":
+			return 5
 		_:
 			return 0
 

@@ -538,6 +538,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("open_voice_chat"):
 		get_viewport().set_input_as_handled()
 		_open_chat()
+	elif event.is_action_pressed("toggle_voice_mute") and _chat_entry == null:
+		get_viewport().set_input_as_handled()
+		NetManager.toggle_voice_mute()
 
 
 ## Opens the chat entry with a single-instance guard: pressing the chat action again

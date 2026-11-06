@@ -204,6 +204,17 @@ class ChatSDK extends RefCounted:
 	var hold_destroy := false
 	var calls: Array[String] = []
 	var controls: Array[ChatControl] = []
+	var local_indicator := 0
+	var remote_indicators: Dictionary = {}
+	var indicator_reads := 0
+
+	func get_local_chat_indicator(_user: Variant = null) -> int:
+		indicator_reads += 1
+		return local_indicator
+
+	func get_chat_indicator(entity_key: Dictionary, _user: Variant = null) -> int:
+		indicator_reads += 1
+		return int(remote_indicators.get(entity_key.get("id", ""), 0))
 
 	func create_local_chat_control_async(user: Variant, _cfg: Variant) -> Dictionary:
 		calls.append("create:" + user.xuid)

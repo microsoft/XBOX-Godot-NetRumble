@@ -42,6 +42,7 @@ const SOURCE_REQUIRED_SURFACES := [
 	"PlayFabLobbyStateChange.result",
 	"PlayFabPartyConfig.max_players",
 	"PlayFabPartyConfig.invitation_id",
+	"PlayFabPartyConfig.audio_device_default_mode",
 	"PlayFabPartyConfig.enable_voice_chat",
 	"PlayFabPartyConfig.enable_text_chat",
 	"PlayFabPartyConfig.enable_transcription",

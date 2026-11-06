@@ -100,6 +100,24 @@ GDExtension manifests are overridden, because NetRumble's differ from upstream's
 export needs. See [`tools/addon-overrides/README.md`](../tools/addon-overrides/README.md) for
 details; **never** hand-edit the copies under `addons/`, which the next sync overwrites.
 
+**Voice-device selection:** The package builds one Windows addon library and uses it for both
+Windows and `scarlett`, so compile-target defaults alone cannot distinguish the two.
+`PartyService` explicitly sets `PlayFabPartyConfig.audio_device_default_mode` before creating
+the local chat control: `AUDIO_DEVICE_DEFAULT_SYSTEM` on PC and
+`AUDIO_DEVICE_DEFAULT_PLATFORM_USER` on console, selected by the runtime `scarlett` feature.
+The addon resolves the owning Xbox user's decimal XUID for platform-user defaults even in a
+desktop-built DLL; the title does not pass or log it. Explicit input/output device IDs still
+select Manual for that direction. Rebuild the addon from the pinned revision before exporting;
+an older installed DLL without this config property is not supported. Two-way audible speech
+still requires verification on hardware, not just successful config/control creation.
+Device defaults apply when the per-user chat control is created; a retained control is not
+reconfigured by leaving and rejoining. Restart the game when testing the rebuilt addon.
+
+The current review pins local-only revision `3443fa07e027d2d63626b17bbe0ef905601a8b62`.
+It has not been published to the public submodule remote: local reviewers must import that
+commit from the addon worktree before checking out the pin. A fresh public-remote clone cannot
+fetch it until publication; do not distribute this review as a publicly reproducible build.
+
 ---
 
 ## Moving the pin

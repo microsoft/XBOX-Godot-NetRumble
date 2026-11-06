@@ -283,6 +283,9 @@ var _flow_admitted_session := 0
 var _refused_peers: Dictionary = {}
 ## Transport departures not yet acted on, peer -> the transport that reported them.
 var _pending_departures: Dictionary = {}
+const CHAT_INDICATOR_POLL_SECONDS := 0.1
+var _chat_indicator_elapsed := 0.0
+var _last_chat_indicators: Dictionary = {}
 
 
 func _ready() -> void:
@@ -315,7 +318,8 @@ func _ready() -> void:
 	_platform = PlatformSession.new()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_poll_chat_indicators(delta)
 	if _peer == null or _is_offline:
 		return
 	var now := Time.get_ticks_usec()
@@ -323,6 +327,25 @@ func _process(_delta: float) -> void:
 	if _network_diagnostics.is_due(now):
 		print("[NetDiagnostics] ", JSON.stringify(
 			_network_diagnostics.take_report(now, is_host(), players.size(), _peer)))
+
+
+func _poll_chat_indicators(delta: float) -> void:
+	if _peer == null or _is_offline or not _session_account_is_current():
+		_chat_indicator_elapsed = 0.0
+		_last_chat_indicators.clear()
+		return
+	_chat_indicator_elapsed += delta
+	if _chat_indicator_elapsed < CHAT_INDICATOR_POLL_SECONDS:
+		return
+	_chat_indicator_elapsed = 0.0
+	var indicators: Dictionary = {}
+	for state: PlayerState in players.values():
+		indicators[state.peer_id] = chat_indicator_for(state.peer_id)
+	if indicators == _last_chat_indicators:
+		return
+	_last_chat_indicators = indicators
+	# Speech only repaints the UI; chat_changed also schedules privacy evaluation.
+	chat_indicators_changed.emit()
 
 
 func _note_network_rx(kind: StringName) -> void:
@@ -1558,6 +1581,8 @@ func _detach_peer() -> void:
 	# PlayFabPartyPeer.close() starts its own network leave. PartyService owns that
 	# operation; detach Godot first rather than leaving the same network twice.
 	_network_diagnostics.reset()
+	_chat_indicator_elapsed = 0.0
+	_last_chat_indicators.clear()
 	_peer = null
 	multiplayer.multiplayer_peer = null
 
