@@ -5684,6 +5684,16 @@ func _f11_invite_destinations_and_exact_credentials(test: Node) -> void:
 	test._check(flow.is_current() and NetManager.is_online_flow_live(), "and the group is not torn down")
 	test._check(not party.fake_calls.has("join_by_connection_string"), "nor rejoined")
 	test._check(not InviteRouter._joining and not InviteRouter.has_pending_invite(), "the duplicate is spent")
+	InviteRouter._on_join_requested({"connection_string": "f11-declined-replacement"})
+	var confirmation: Variant = ScreenManager.current_screen()
+	test._check(confirmation != null and confirmation.scene_file_path == ScreenManager.DIALOG_BOX,
+		"a different invitation still asks before replacing the held group")
+	if confirmation != null and confirmation.scene_file_path == ScreenManager.DIALOG_BOX:
+		confirmation._cancel_button.pressed.emit()
+	await test.get_tree().process_frame
+	test._check(flow.is_current() and ScreenManager.current_screen() == menu
+		and not InviteRouter._joining and not party.fake_calls.has("join_by_connection_string"),
+		"declining the traced replacement preserves the current group and does not join")
 	ScreenManager._stack.erase(menu)
 	menu.queue_free()
 	ScreenManager.clear()
@@ -5711,6 +5721,45 @@ func _f11_invite_destinations_and_exact_credentials(test: Node) -> void:
 	await test.get_tree().process_frame
 	ScreenManager._stack.erase(start)
 	start.queue_free()
+	ScreenManager.clear()
+	await _teardown(test)
+
+	print("CASE: F11 an accepted URI waits for acquisition, then traces admission through real lobby navigation")
+	await _setup(test, "f11-navigation")
+	ScreenManager.set_container(test)
+	var peer: Variant = TransportPeer.new(7)
+	_prove_owner(party.fake_staging, _key("f11-group-owner"))
+	party.fake_join_result = {
+		"ok": true, "peer": peer, "code": "", "error": "",
+		"kind": PartyService.LOBBY_KIND_STAGING, "destination": "staging_gathering", "context": party.fake_staging,
+	}
+	var frontend := NRScreen.new()
+	frontend.scene_file_path = ScreenManager.MAIN_MENU
+	ScreenManager._stack.append(frontend)
+	var acquisition := NRScreen.new()
+	acquisition.scene_file_path = ScreenManager.ACQUIRE_USER
+	ScreenManager._stack.append(acquisition)
+	activity.join_requested.connect(InviteRouter._on_join_requested)
+	activity._on_invite_accepted({
+		"raw_uri": "ms-xbl-7C84AA93://inviteAccept?connectionString=" + exact.uri_encode(),
+	})
+	var attempt := InviteRouter._pending_trace_id
+	test._check(InviteRouter.has_pending_invite() and not InviteRouter._joining
+		and NetManager._active_join_request == null, "accepted URI waits behind acquisition")
+	ScreenManager.remove(acquisition)
+	var joining := NetManager._active_join_request
+	test._check(joining != null and joining.is_pending() and party.fake_last_connection_string == exact
+		and InviteRouter._active_trace_id == attempt, "handoff redeems the exact credential under the same trace attempt")
+	if joining != null:
+		peer.connect_remote(NetManager.HOST_PEER_ID)
+		NetManager._accept_join()
+		clock.advance(MatchmakingFlow.POLL_SECONDS)
+		await test.get_tree().process_frame
+		test._check(joining.succeeded() and NetManager.joined_session_is_live(joining)
+			and ScreenManager.current_screen() != null
+			and ScreenManager.current_screen().scene_file_path == ScreenManager.LOBBY
+			and not InviteRouter._joining and not InviteRouter.has_pending_invite(),
+			"admitted invite selects the real lobby and releases routing once")
 	ScreenManager.clear()
 	await _teardown(test)
 

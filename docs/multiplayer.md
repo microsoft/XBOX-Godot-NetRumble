@@ -100,6 +100,47 @@ code and message go to the `[Party] <stage> failed (…)` warning instead. See
    Save-loading failure offers Retry/Back, not a route around readiness. An invite
    received while already playing asks before leaving the current session.
 
+#### Invite diagnostic builds
+
+`[InviteTrace]` follows the route after the redacted `[Activity]` receipt. It is
+transition-only logging, enabled in release builds too; it does not change sign-in,
+confirmation, cleanup, admission or navigation. `stage=build` reports the existing
+export stamp and protocol. A dirty stamp identifies modified source, not a new commit;
+keep the build's source/artifact manifest with its logs.
+
+`attempt` is a process-local invite sequence, retained while an invite waits for cleanup.
+`join_handle` links it to NetManager's process-local `join` ID. JoinRequest records include
+elapsed milliseconds and numeric outcomes: 0 pending, 1 succeeded, 2 cancelled,
+3 superseded, 4 failed. IDs are local counters, not account/session credentials.
+`cleanup_observed` is the last state already read by routing, or `unknown`: diagnostic
+printing never invokes cleanup or recovery to obtain a fresher value.
+
+| Last stage | What to investigate |
+|---|---|
+| No `[Activity]` receipt | Registered package identity, activation subscription and shell delivery |
+| `pending_accept_start` without `pending_accept_succeeded` | Pending-invite acceptance; distinguish explicit failure from an unfinished call |
+| `received`, then `wait_account`, `wait_acquisition`, `wait_frontend` or `wait_cleanup` | The named prerequisite, not URI parsing |
+| `privilege_denied` or `replacement_declined` | Intentional refusal; the existing UI supplies the reason |
+| `host_lookup` / `destination_unavailable` | Host-only activation lookup, or ended/unavailable activity |
+| `lobby_party_connect` without a result | Lobby/Party connection work; correlate existing `[Party]` warnings |
+| `awaiting_admission` without `host_admitted` | Host admission/identity handshake |
+| `join_succeeded` then `session_not_live` | Session ended before navigation |
+| `lobby_navigation` then `lobby_selected` | Lobby selected on the screen stack; still verify visible roster and gameplay on hardware |
+
+New trace lines contain only stages, booleans, local counters, timing, fixed screen/state
+labels and credential lengths. They do not print raw URIs, connection strings or their
+hashes, XUIDs, gamertags, entity IDs, SDK payloads, or free-form failure messages.
+Keep existing `[Party]` warnings and the visible error alongside the trace when reporting
+a failure; review pre-existing logs for personal data before sharing.
+
+Capture from **process startup**, not just the moment of acceptance. On PC, copy
+`user://logs/godot.log` (normally `%APPDATA%\Godot\app_userdata\NetRumble\logs\godot.log`)
+before another launch rotates it. On Xbox, capture the title's debug output using the
+authorized devkit debugger/GDK tooling, including startup for a cold launch; do not assume
+the PC filesystem path exists on console. Keep both host and recipient logs, build stamps,
+platform, sandbox, starting screen, invitation source and visible outcome together.
+See the [diagnostic retest matrix](manual-test-plan.md#invite-diagnostic-retest).
+
 The same opaque connection-string path has three explicit Matchmaking destinations. Ordinary
 hosted lobbies keep the behavior above; an unlocked matchmaking staging Lobby is admitted only
 while Gathering; and an arranged Lobby is admitted only during a valid

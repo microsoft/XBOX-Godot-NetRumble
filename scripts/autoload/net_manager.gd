@@ -1031,12 +1031,14 @@ func _begin_join(code: String, connection_string: String) -> JoinRequest:
 	var request := JoinRequest.new()
 	request.id = _join_request_sequence
 	request.deadline_msec = _now_msec() + int(NRConst.MATCH_ESTABLISHMENT_SECONDS * 1000.0)
+	request.trace("code_entry" if connection_string.is_empty() else "invite_entry")
 	var error := _entry_error(true)
 	if error.is_empty() and _party() == null:
 		error = _online_cleanup_error()
 	if error.is_empty():
 		error = _online_cleanup_refusal()
 	if not error.is_empty():
+		request.trace("entry_refused")
 		request.settle(JoinRequest.Outcome.FAILED, error)
 		return request
 	var previous := _active_join_request
@@ -1065,11 +1067,13 @@ func cancel_join(request: JoinRequest) -> void:
 ## indefinitely against a host that was never going to answer.
 func _drive_join(request: JoinRequest, code: String, connection_string: String, previous: JoinRequest, generation: int) -> void:
 	if previous == null and _join_cleanup_running:
+		request.trace("previous_cleanup_wait")
 		await _join_cleanup_finished
 		if _active_join_request != request:
 			request.settle(JoinRequest.Outcome.SUPERSEDED)
 			return
 	if previous != null:
+		request.trace("previous_join_replacement")
 		# The join being replaced holds the peer and the Party network. Its teardown is
 		# awaited before this one builds anything, so the replacement never attaches a
 		# transport that the old join's cleanup is about to detach.
@@ -1146,6 +1150,7 @@ func _attach_transport(request: JoinRequest, code: String, connection_string: St
 func _join(request: JoinRequest, code: String, connection_string: String, generation: int) -> String:
 	if not _is_join_current(request) or not _account_is_current(generation):
 		return ""
+	request.trace("resolve_user")
 	var resolved: Dictionary = await _resolve_signed_in_user()
 	if not _is_join_current(request) or not _account_is_current(generation):
 		return ""
@@ -1153,20 +1158,24 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 		return String(resolved.get("error", "Could not join the match."))
 	var user: Variant = resolved.get("user")
 
+	request.trace("leave_previous_session")
 	_leave_match_internal()
 	await _party().leave(false)
 	if not _is_join_current(request) or not _account_is_current(generation):
 		return ""
 
+	request.trace("chat_privilege")
 	await _platform.apply_chat_privilege(func() -> bool: return _is_join_current(request) and _account_is_current(generation))
 	if not _is_join_current(request) or not _account_is_current(generation):
 		return ""
 
 	var result: Dictionary
+	request.trace("lobby_party_connect")
 	if connection_string.is_empty():
 		result = await _party().join(user, code, request.deadline_msec)
 	else:
 		result = await _party().join_by_connection_string(user, connection_string, request.deadline_msec)
+	request.trace("lobby_party_connected" if bool(result.get("ok", false)) else "lobby_party_failed")
 	if not _is_join_current(request) or not _account_is_current(generation):
 		# A scoped lobby the join entered is not the legacy session the aborting teardown
 		# leaves, so a late success releases it through its own handle.
@@ -1184,6 +1193,7 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 	if not kind.is_empty() or not destination.is_empty():
 		var refusal := _destination_refusal(kind, destination)
 		if not refusal.is_empty():
+			request.trace("destination_refused")
 			await _release_join_result_context(result)
 			return refusal
 		_pending_join_kind = kind
@@ -1204,10 +1214,12 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 			}
 
 	if not _bind_peer(result.get("peer")):
+		request.trace("peer_bind_failed")
 		# The abort this failure starts runs the join cleanup, which leaves the Party
 		# session and releases a pending staging context by its own handle.
 		push_warning("[Net] PlayFab Party did not return a usable network peer for the join.")
 		return PartyService.JOIN_FAILED_UNKNOWN
+	request.trace("peer_bound")
 	# Before peer 1 can send anything: the lobby this join entered, and the owner it pinned.
 	var scope_kind: StringName = &"hosted"
 	if _pending_join_destination == _DESTINATION_REMATCH:
@@ -1224,6 +1236,7 @@ func _join(request: JoinRequest, code: String, connection_string: String, genera
 	_is_offline = false
 	join_code = String(result.get("code", ""))
 	_set_match_state(NRTypes.MatchState.LOADING)
+	request.trace("awaiting_admission")
 	return ""
 
 
@@ -3662,6 +3675,7 @@ func _accept_join() -> void:
 	_set_accepting_joins(true)
 	request.session_id = _session_generation
 	request.admitted = true
+	request.trace("host_admitted")
 
 
 # --- Matchmaking flow RPCs ------------------------------------------------------

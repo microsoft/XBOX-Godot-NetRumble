@@ -36,9 +36,24 @@ var _pending_since_msec := 0
 ## rather than tearing down the join it is racing.
 var _joining := false
 var _joining_generation := -1
+var _trace_sequence := 0
+var _pending_trace_id := 0
+var _active_trace_id := 0
+var _last_wait_reason := ""
+var _observed_cleanup: StringName = &"unknown"
 
 
 func _ready() -> void:
+	var build_info := "res://scripts/generated/build_info.gd"
+	if ResourceLoader.exists(build_info):
+		var info := load(build_info) as GDScript
+		if info != null:
+			var constants := info.get_script_constant_map()
+			print("[InviteTrace] stage=build commit=%s dirty=%s protocol=%s" % [
+				String(constants.get("COMMIT", "unknown")),
+				bool(constants.get("DIRTY", false)), NRProtocol.version_string(),
+			])
+	_trace("router_ready")
 	if Services == null:
 		return
 	Services.sign_in_completed.connect(_on_sign_in_completed)
@@ -68,17 +83,26 @@ func _ready() -> void:
 func _on_join_requested(request: Dictionary) -> void:
 	if request.is_empty():
 		return
+	if not _pending_request.is_empty():
+		_trace("pending_replaced", _pending_trace_id)
+	_trace_sequence += 1
+	_pending_trace_id = _trace_sequence
 	_pending_request = request
 	_pending_since_msec = Time.get_ticks_msec()
+	_last_wait_reason = ""
+	_trace("received", _pending_trace_id)
 	pending_invite_changed.emit()
 	_redeem_pending()
 
 
 func _on_sign_in_completed(_success: bool) -> void:
+	if not _pending_request.is_empty():
+		_trace("sign_in_completed" if _success else "sign_in_failed", _pending_trace_id)
 	_redeem_pending()
 
 
 func _on_account_lost() -> void:
+	_trace("account_lost", _active_trace_id)
 	_joining = false
 	_joining_generation = -1
 
@@ -86,6 +110,7 @@ func _on_account_lost() -> void:
 ## Resume replaces awaited dialogs without dismissing them. Keep newer buffered invites,
 ## but revoke the old generation's claim before acquisition can hand off again.
 func invalidate_for_resume() -> void:
+	_trace("resume_invalidated", _active_trace_id)
 	_joining = false
 	_joining_generation = Services.account_generation()
 
@@ -104,7 +129,8 @@ func _on_online_cleanup_changed() -> void:
 
 
 func _cleanup_state() -> StringName:
-	return StringName(NetManager.online_cleanup_readiness().get("state", NetManager.ONLINE_CLEANUP_CLEAR))
+	_observed_cleanup = StringName(NetManager.online_cleanup_readiness().get("state", NetManager.ONLINE_CLEANUP_CLEAR))
+	return _observed_cleanup
 
 
 ## True when a buffered activation has an identity to join with and a front end to come
@@ -134,17 +160,21 @@ func _ready_to_join() -> bool:
 
 func _redeem_pending() -> void:
 	if _is_pending_stale():
+		_trace("expired", _pending_trace_id)
 		# Never silent: an activation that expired unredeemed and one that never arrived
 		# look identical from the outside, and they have entirely different causes.
 		push_warning("[Invite] A buffered activation went unredeemed for %d seconds and was discarded." % int(PENDING_TTL_SECONDS))
 		_clear_pending()
 		return
 	if not _ready_to_join():
+		_trace_wait()
 		return
 	var request := _pending_request
 	var arrived_msec := _pending_since_msec
+	var trace_id := _pending_trace_id
+	_trace("redeeming", trace_id)
 	_clear_pending()
-	await _join(request, arrived_msec)
+	await _join(request, arrived_msec, trace_id)
 
 
 ## True while an activation is waiting on sign-in or on the front end. The acquire-user
@@ -157,6 +187,7 @@ func has_pending_invite() -> bool:
 func decline_pending_invite() -> void:
 	if _pending_request.is_empty():
 		return
+	_trace("declined", _pending_trace_id)
 	print("[Invite] Account acquisition abandoned; the buffered activation was discarded.")
 	_clear_pending()
 
@@ -174,6 +205,8 @@ func _clear_pending() -> void:
 		return
 	_pending_request = {}
 	_pending_since_msec = 0
+	_pending_trace_id = 0
+	_last_wait_reason = ""
 	pending_invite_changed.emit()
 
 
@@ -184,26 +217,35 @@ func _clear_pending() -> void:
 ##
 ## `arrived_msec` is when the activation first arrived, kept so an invite that has to wait
 ## for earlier online cleanup to settle is buffered again under its original TTL.
-func _join(request: Dictionary, arrived_msec: int = 0) -> void:
+func _join(request: Dictionary, arrived_msec: int = 0, trace_id: int = 0) -> void:
 	if not Services.is_account_ready():
+		_trace("account_not_ready", trace_id)
 		return
+	if trace_id == 0:
+		_trace_sequence += 1
+		trace_id = _trace_sequence
+	_active_trace_id = trace_id
 	var generation: int = Services.account_generation()
 	# Claimed before the first await, not after: the confirmation prompt and the activity
 	# lookup are both awaits, and an invite arriving inside either would otherwise start
 	# a second join alongside this one.
 	_joining = true
 	_joining_generation = generation
+	_trace("privilege_check", trace_id)
 
 	var checking := ScreenManager.push(ScreenManager.LOADING, {"message": "Checking online permissions"})
 	var denial := await _multiplayer_denial()
 	ScreenManager.remove(checking)
 	if not Services.is_current_account(generation):
+		_trace("stale_account", trace_id)
 		_finish_join(generation)
 		return
 	if not denial.is_empty():
+		_trace("privilege_denied", trace_id)
 		await ScreenManager.show_dialog("Cannot Join", denial, "error", false)
 		_finish_join(generation)
 		return
+	_trace("privilege_allowed", trace_id)
 
 	# The destination is resolved before anything current is touched. A connection string
 	# the activation carried is authoritative and passed on exactly as it arrived; only an
@@ -211,13 +253,16 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 	# read-only lookup, done now so that a failed one never cost the player their group.
 	var connection_string := String(request.get("connection_string", ""))
 	if connection_string.is_empty():
+		_trace("host_lookup", trace_id)
 		var finding := ScreenManager.push(ScreenManager.LOADING, {"message": "Finding your friend's match"})
 		connection_string = await Services.connection_string_for_xuid(String(request.get("xuid", "")))
 		ScreenManager.remove(finding)
 		if not Services.is_current_account(generation):
+			_trace("stale_account", trace_id)
 			_finish_join(generation)
 			return
 	if connection_string.is_empty():
+		_trace("destination_unavailable", trace_id)
 		await ScreenManager.show_dialog(
 			"Join Failed",
 			"That match is no longer available to join.",
@@ -226,11 +271,13 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 		)
 		_finish_join(generation)
 		return
+	_trace("destination_resolved", trace_id)
 
 	# The lobby this account is already in -- a duplicate activation, or an invite into the
 	# group or match the player is playing -- is acknowledged, not torn down and rejoined.
 	# An exact comparison of the credential, nothing parsed.
 	if NetManager.holds_connection_string(connection_string):
+		_trace("already_in_destination", trace_id)
 		if _same_request(_pending_request, request):
 			_clear_pending()
 		_finish_join(generation)
@@ -244,6 +291,7 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 	# Cleanup still settling with no live group to leave is waited out before the player is
 	# asked anything: the invite is kept, and the question comes once the join could follow it.
 	if not NetManager.is_online_flow_live() and _cleanup_state() == NetManager.ONLINE_CLEANUP_PENDING:
+		_trace("cleanup_wait", trace_id)
 		_keep_pending(request, arrived_msec)
 		_finish_join(generation)
 		return
@@ -253,6 +301,7 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 	# with no transport bound -- between its staging and arranged sessions -- and it is
 	# retired, cleanly, before the ordinary join below is allowed to start.
 	if NetManager.has_session() or NetManager.has_online_flow():
+		_trace("replacement_confirmation", trace_id)
 		var confirmed: bool = await ScreenManager.show_dialog(
 			"Join Match",
 			"Leave the current match and join your friend's match?",
@@ -260,13 +309,16 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 			true,
 		)
 		if not Services.is_current_account(generation) or not confirmed:
+			_trace("stale_account" if not Services.is_current_account(generation) else "replacement_declined", trace_id)
 			_finish_join(generation)
 			return
+		_trace("replacement_confirmed", trace_id)
 		if NetManager.has_online_flow():
 			# Accepting is the old group's binding Leave: its ticket is cancelled, its lobbies
 			# are left, and a match that overtakes the cancel does not revive it.
 			await NetManager.retire_flow_for_replacement()
 			if not Services.is_current_account(generation):
+				_trace("stale_account", trace_id)
 				_finish_join(generation)
 				return
 
@@ -277,17 +329,22 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 	if await _refused_for_restart(request, generation):
 		return
 	if _cleanup_state() == NetManager.ONLINE_CLEANUP_PENDING:
+		_trace("cleanup_wait", trace_id)
 		_keep_pending(request, arrived_msec)
 		_finish_join(generation)
 		return
 
 	var loading := ScreenManager.push(ScreenManager.LOADING, {"message": "Joining match"})
+	_trace("join_start", trace_id)
 	var join_request := NetManager.join_by_invite(connection_string)
+	_trace("join_handle", trace_id, join_request.id)
 	if loading != null:
 		loading.follow_join(join_request)
 	await join_request.wait()
+	_trace("join_" + _outcome_label(join_request.outcome), trace_id, join_request.id)
 	ScreenManager.remove(loading)
 	if not Services.is_current_account(generation):
+		_trace("stale_account", trace_id, join_request.id)
 		_finish_join(generation)
 		return
 	# Another join replaced this one and owns the screen and the outcome, so this flow
@@ -298,11 +355,14 @@ func _join(request: Dictionary, arrived_msec: int = 0) -> void:
 	# Checked together: a join reports success once the host admits this player, and the
 	# session can still end between that and this navigation.
 	if not NetManager.joined_session_is_live(join_request):
+		_trace("session_not_live", trace_id, join_request.id)
 		if not join_request.was_cancelled():
 			await ScreenManager.show_dialog("Join Failed", NetManager.join_failure_reason(join_request), "error", false)
 		_finish_join(generation)
 		return
+	_trace("lobby_navigation", trace_id, join_request.id)
 	ScreenManager.replace_all(ScreenManager.LOBBY, {"option": "join", "code": NetManager.join_code})
+	_trace("lobby_selected" if _screen_label() == "lobby" else "lobby_not_selected", trace_id, join_request.id)
 	# A duplicate of the invite just redeemed — a friend pressing send twice, or the
 	# platform re-raising the same activation — would otherwise ask the player to leave
 	# the match they have this moment landed in.
@@ -325,6 +385,7 @@ func _multiplayer_denial() -> String:
 func _finish_join(generation: int) -> void:
 	if generation != _joining_generation:
 		return
+	_trace("finished", _active_trace_id)
 	_joining = false
 	_redeem_pending()
 
@@ -333,8 +394,10 @@ func _finish_join(generation: int) -> void:
 ## Party's recovery of earlier online cleanup has failed. True when it did.
 func _refused_for_restart(request: Dictionary, generation: int) -> bool:
 	var readiness := NetManager.online_cleanup_readiness()
+	_observed_cleanup = StringName(readiness.get("state", NetManager.ONLINE_CLEANUP_CLEAR))
 	if StringName(readiness.get("state", NetManager.ONLINE_CLEANUP_CLEAR)) != NetManager.ONLINE_CLEANUP_RESTART_REQUIRED:
 		return false
+	_trace("restart_required", _active_trace_id)
 	if _same_request(_pending_request, request):
 		_clear_pending()
 	await ScreenManager.show_dialog("Cannot Join", String(readiness.get("reason", "")), "error", false)
@@ -349,6 +412,8 @@ func _keep_pending(request: Dictionary, arrived_msec: int) -> void:
 		return
 	_pending_request = request
 	_pending_since_msec = arrived_msec if arrived_msec > 0 else Time.get_ticks_msec()
+	_pending_trace_id = _active_trace_id
+	_last_wait_reason = ""
 	pending_invite_changed.emit()
 
 
@@ -359,3 +424,71 @@ func _same_request(left: Dictionary, right: Dictionary) -> bool:
 		String(left.get("connection_string", "")) == String(right.get("connection_string", ""))
 		and String(left.get("xuid", "")) == String(right.get("xuid", ""))
 	)
+
+
+func _trace_wait() -> String:
+	if _pending_request.is_empty():
+		return ""
+	var reason := "not_ready"
+	if _joining:
+		reason = "joining"
+	elif Services == null or Services.is_shutting_down():
+		reason = "shutdown"
+	elif not Services.is_account_ready():
+		reason = "account"
+	elif not NetManager.is_online_flow_live() and _observed_cleanup == NetManager.ONLINE_CLEANUP_PENDING:
+		reason = "cleanup"
+	elif ScreenManager.current_screen() == null:
+		reason = "frontend"
+	elif ScreenManager.has_screen(ScreenManager.ACQUIRE_USER):
+		reason = "acquisition"
+	if reason == _last_wait_reason:
+		return ""
+	_last_wait_reason = reason
+	return _trace("wait_" + reason, _pending_trace_id)
+
+
+func _trace(stage: String, attempt: int = 0, join_id: int = 0) -> String:
+	var line := "[InviteTrace] stage=%s t_ms=%d attempt=%d join=%d ready=%s generation=%d acquiring=%s screen=%s cleanup_observed=%s pending=%s credential_chars=%d host_present=%s" % [
+		stage, Time.get_ticks_msec(), attempt, join_id,
+		Services != null and Services.is_account_ready(),
+		Services.account_generation() if Services != null else -1,
+		ScreenManager.has_screen(ScreenManager.ACQUIRE_USER), _screen_label(),
+		_cleanup_label(_observed_cleanup), not _pending_request.is_empty(),
+		String(_pending_request.get("connection_string", "")).length(),
+		not String(_pending_request.get("xuid", "")).is_empty(),
+	]
+	print(line)
+	return line
+
+
+func _screen_label() -> String:
+	var screen := ScreenManager.current_screen()
+	if screen == null:
+		return "none"
+	match screen.scene_file_path:
+		ScreenManager.ACQUIRE_USER: return "acquisition"
+		ScreenManager.MAIN_MENU: return "menu"
+		ScreenManager.LOBBY: return "lobby"
+		ScreenManager.GAMEPLAY: return "gameplay"
+		ScreenManager.LOADING: return "loading"
+		ScreenManager.DIALOG_BOX: return "dialog"
+	return "other"
+
+
+func _cleanup_label(state: StringName) -> String:
+	match state:
+		NetManager.ONLINE_CLEANUP_CLEAR: return "clear"
+		NetManager.ONLINE_CLEANUP_PENDING: return "pending"
+		NetManager.ONLINE_CLEANUP_RESTART_REQUIRED: return "restart_required"
+	return "unknown"
+
+
+func _outcome_label(outcome: JoinRequest.Outcome) -> String:
+	match outcome:
+		JoinRequest.Outcome.PENDING: return "pending"
+		JoinRequest.Outcome.SUCCEEDED: return "succeeded"
+		JoinRequest.Outcome.CANCELLED: return "cancelled"
+		JoinRequest.Outcome.SUPERSEDED: return "superseded"
+		JoinRequest.Outcome.FAILED: return "failed"
+	return "unknown"

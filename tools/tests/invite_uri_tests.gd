@@ -21,6 +21,27 @@ const ADDON_KEYS := {
 	"joineeXuid": "joinee_xuid",
 }
 
+class PendingActivation extends RefCounted:
+	signal invite_accepted(invite: Dictionary)
+	var calls := 0
+	var result: Variant = {"ok": true, "message": ""}
+
+	func accept_pending_invite(uri: String) -> Variant:
+		calls += 1
+		if result != null and result.ok:
+			invite_accepted.emit({"raw_uri": uri})
+		return result
+
+
+class PendingActivity extends ActivityService:
+	var runtime: Variant = {"activation": PendingActivation.new()}
+
+	func _connect_activation() -> void:
+		pass
+
+	func _gdk() -> Variant:
+		return runtime
+
 
 func run(test: Node) -> void:
 	_connection_string_encodings(test)
@@ -31,6 +52,86 @@ func run(test: Node) -> void:
 	_unusable_uris(test)
 	_activation_logging(test)
 	_emits_exact_request(test)
+	_router_trace(test)
+	_join_trace(test)
+	_pending_acceptance(test)
+
+
+func _pending_acceptance(test: Node) -> void:
+	print("CASE: pending acceptance diagnostics preserve platform acceptance and accepted-event routing")
+	var activity := PendingActivity.new()
+	var requests: Array[Dictionary] = []
+	activity.join_requested.connect(func(request: Dictionary) -> void: requests.append(request))
+	activity.runtime.activation.invite_accepted.connect(activity._on_invite_accepted)
+	var uri := CONSOLE + "?connectionString=" + CS.uri_encode()
+	activity._on_pending_invite_received({"raw_uri": uri})
+	test._check(activity.runtime.activation.calls == 1 and requests.size() == 1 and _cs(requests[0]) == CS,
+		"pending acceptance routes the accepted event exactly once with the exact credential")
+	activity.runtime.activation.result = {"ok": false, "message": "Injected pending acceptance failure."}
+	activity._on_pending_invite_received({"raw_uri": uri})
+	test._check(activity.runtime.activation.calls == 2 and requests.size() == 1,
+		"failed platform acceptance does not synthesize a join")
+	activity._on_pending_invite_received({})
+	test._check(activity.runtime.activation.calls == 2, "missing URI never calls native acceptance")
+	activity.runtime = null
+	activity._on_pending_invite_received({"raw_uri": uri})
+	test._check(requests.size() == 1, "missing runtime never synthesizes a join")
+
+
+func _router_trace(test: Node) -> void:
+	print("CASE: invite trace preserves buffering identity and TTL, bounds wait logs and omits credentials")
+	var router: Variant = load("res://scripts/autoload/invite_router.gd").new()
+	router._joining = true
+	var request := {"connection_string": CS, "xuid": SENDER, "raw_uri": CONSOLE + "?secret=private-marker"}
+	router._on_join_requested(request)
+	var first := int(router._pending_trace_id)
+	var arrived := int(router._pending_since_msec)
+	test._check(first > 0 and router._pending_request == request, "trace leaves the exact pending request intact")
+	test._check(router._last_wait_reason == "joining" and String(router._trace_wait()).is_empty(),
+		"repeated readiness notices do not repeat the same wait log")
+	var line: String = router._trace("test_snapshot", first, 17)
+	_check_redacted(test, PackedStringArray([line]), [CS, SENDER, "private-marker"], "router snapshot")
+	test._check(line.contains("attempt=%d join=17" % first)
+		and line.contains("credential_chars=%d host_present=true" % CS.length()),
+		"router snapshot correlates only local IDs and credential shape")
+	router._clear_pending()
+	router._active_trace_id = first
+	router._keep_pending(request, arrived)
+	test._check(router._pending_trace_id == first and router._pending_since_msec == arrived,
+		"cleanup rebuffering preserves the diagnostic attempt and original TTL")
+	test._check(String(router._trace_wait()).contains("stage=wait_joining") and String(router._trace_wait()).is_empty(),
+		"wait logging restarts once for rebuffering, not every readiness callback")
+	router._on_join_requested({"connection_string": "new-credential-marker", "xuid": INVITED})
+	test._check(router._pending_trace_id > first and router._pending_request.connection_string == "new-credential-marker",
+		"a newer invite gets its own attempt and still replaces the pending request")
+	router._pending_since_msec -= int((router.PENDING_TTL_SECONDS + 1.0) * 1000.0)
+	router._redeem_pending()
+	test._check(router._pending_request.is_empty(), "expiration is still consumed without a join")
+	router._on_join_requested(request)
+	router.decline_pending_invite()
+	test._check(router._pending_request.is_empty() and router._pending_trace_id == 0,
+		"decline clears diagnostic identity with the invite")
+	router.free()
+
+
+func _join_trace(test: Node) -> void:
+	print("CASE: join trace describes terminal outcomes without player-facing or SDK payload values")
+	for outcome: JoinRequest.Outcome in [
+		JoinRequest.Outcome.SUCCEEDED, JoinRequest.Outcome.CANCELLED,
+		JoinRequest.Outcome.SUPERSEDED, JoinRequest.Outcome.FAILED,
+	]:
+		var request := JoinRequest.new()
+		request.id = 31
+		var before := request.trace("test_pending")
+		test._check(request.is_pending() and before.contains("join=31") and before.contains("outcome=0"),
+			"tracing does not settle a pending join")
+		test._check(request.settle(outcome, CS + SENDER), "terminal outcome still settles once")
+		var after := request.trace("test_terminal")
+		_check_redacted(test, PackedStringArray([after]), [CS, SENDER], "join result")
+		test._check(after.contains("outcome=%d" % outcome) and after.contains("reason_present=true"),
+			"join result reports outcome and reason presence, never the reason")
+		test._check(not request.settle(JoinRequest.Outcome.FAILED, "late") and request.outcome == outcome,
+			"logging preserves first-outcome ownership")
 
 
 func _connection_string_encodings(test: Node) -> void:
