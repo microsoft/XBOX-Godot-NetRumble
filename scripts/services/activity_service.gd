@@ -304,6 +304,8 @@ func _connect_activation() -> void:
 		push_warning("[Activity] The GDK singleton is not registered; platform joins and invites cannot be received.")
 		return
 	if not gdk.is_initialized():
+		if not _awaiting_runtime:
+			print("[InviteTrace] stage=activation_wait_runtime t_ms=%d" % Time.get_ticks_msec())
 		_retry_when_initialized(gdk)
 		return
 	var activation: Variant = gdk.activation
@@ -320,6 +322,7 @@ func _connect_activation() -> void:
 	# invite, and it can only be observed on a console in a sandbox. Its absence from
 	# the log is the first thing to check when "Join" does nothing.
 	print("[Activity] Subscribed to platform activation events.")
+	print("[InviteTrace] stage=activation_subscribed t_ms=%d" % Time.get_ticks_msec())
 
 
 ## Waits for the runtime the subscription needs. The signal lives on the singleton, not
@@ -335,6 +338,7 @@ func _retry_when_initialized(gdk: Variant) -> void:
 
 
 func _on_runtime_initialized() -> void:
+	print("[InviteTrace] stage=activation_runtime_ready t_ms=%d" % Time.get_ticks_msec())
 	_awaiting_runtime = false
 	_connect_activation()
 
@@ -361,12 +365,19 @@ func _on_pending_invite_received(invite: Dictionary) -> void:
 	_log_activation("Pending invite", invite, _join_request_from_invite(invite))
 	var gdk: Variant = _gdk()
 	if gdk == null:
+		print("[InviteTrace] stage=pending_accept_no_runtime t_ms=%d" % Time.get_ticks_msec())
 		return
 	var uri := String(invite.get("raw_uri", ""))
 	if uri.is_empty():
+		print("[InviteTrace] stage=pending_accept_no_uri t_ms=%d" % Time.get_ticks_msec())
 		push_warning("[Activity] A pending invite carried no URI to accept; ignoring it.")
 		return
+	print("[InviteTrace] stage=pending_accept_start t_ms=%d" % Time.get_ticks_msec())
 	var result: Variant = gdk.activation.accept_pending_invite(uri)
+	print("[InviteTrace] stage=%s t_ms=%d" % [
+		"pending_accept_succeeded" if result != null and result.ok else "pending_accept_failed",
+		Time.get_ticks_msec(),
+	])
 	if result == null or not result.ok:
 		push_warning("[Activity] Accepting a pending invite failed: %s" % _reason(result))
 

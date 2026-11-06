@@ -44,6 +44,7 @@ enum Outcome {
 ## Monotonic, never reused, and never zero. Identifies this attempt in NetManager's
 ## bookkeeping for as long as it is running.
 var id: int = 0
+var _trace_started_msec := Time.get_ticks_msec()
 var outcome: Outcome = Outcome.PENDING
 ## Player-facing explanation, set only for FAILED.
 var reason: String = ""
@@ -71,6 +72,7 @@ var flow_id := 0
 func set_status(message: String, cancelling: bool = true) -> void:
 	status = message
 	cleaning_up = cancelling
+	trace("cleanup_status" if cancelling else "status")
 	status_changed.emit(message, cancelling)
 
 
@@ -117,5 +119,15 @@ func settle(result: Outcome, message: String = "") -> bool:
 		return false
 	outcome = result
 	reason = message
+	trace("settled")
 	finished.emit()
 	return true
+
+
+func trace(stage: String) -> String:
+	var line := "[InviteTrace] stage=%s t_ms=%d join=%d elapsed_ms=%d outcome=%d admitted=%s session=%d flow=%d cleanup=%s reason_present=%s" % [
+		stage, Time.get_ticks_msec(), id, Time.get_ticks_msec() - _trace_started_msec,
+		outcome, admitted, session_id, flow_id, cleaning_up, not reason.is_empty(),
+	]
+	print(line)
+	return line

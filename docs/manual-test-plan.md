@@ -268,6 +268,38 @@ Use two registered builds/accounts with distinct signed-in XboxUsers and ready G
 | 3.37 | Console A: Host Match → Invite To Game → pick console B → Send Invite; B accepts with its title at the main menu, not running, and suspended | B lands in A's lobby every time without typing a code. Repeat with at least three fresh host lobbies: whether a lobby's connection string holds a `+` differs per lobby |
 | 3.38 | B accepts an invite sent from the XBOX Friends list, then separately uses **Join Game** on A's Friends-list card | Both land in A's lobby. B's log shows `[Activity] … URI:`, with each query value shown only as its length, then `[Activity] … parsed: … -> connection string (N chars)`; capture both lines if a join fails. Neither line may contain the connection string or a XUID |
 
+### Invite diagnostic retest
+
+Use matching diagnostic builds, real XBOX-linked profiles that are friends, compatible
+protocols, the same sandbox, multiplayer privileges and a host lobby with a free seat.
+Capture both processes from startup, retaining `[Activity]`, `[InviteTrace]` and relevant
+`[Party]` output plus the visible result. Record the build stamp and artifact manifest.
+See [trace interpretation and capture](multiplayer.md#invite-diagnostic-builds).
+These cases require hardware/service verification; headless results do not certify them.
+
+| Case | Recipient/source | Required observation |
+|---|---|---|
+| CFR-X1 | Signed in, title running at main menu; host selects Host Match > Invite To Game > recipient > Send Invite | Accept reaches the host lobby without a code; one traced join/admission; both rosters agree. Repeat on Series S and Series X |
+| CFR-X2 | Same starting state; invite sent through XBOX Friends list | Same outcome through the platform activation |
+| CFR-X3 | Same starting state; recipient uses Friends-card **Join Game** | Same outcome through accepted/protocol activation |
+| Encoding | Repeat CFR-X1 through CFR-X3 across at least three fresh host lobbies | Redacted parser summary reports a usable credential; no values or player identifiers in new traces |
+| Cold | Title not running; accept invite, press to sign in, complete save loading | Buffered request redeems once after acquisition handoff, reaches host lobby |
+| Signed out | At acquisition screen when invite accepted; separately complete sign-in and choose Back | Sign-in joins once; Back declines with no delayed join |
+| Resume | Suspended recipient accepts and completes resumed acquisition | Invite owns frontend after readiness, without a competing resume notice |
+| Existing session | Recipient in Practice, another online lobby, or gameplay; test confirmation and cancellation | Confirmation precedes leaving; cancellation keeps current session; confirmation joins invited lobby |
+| Duplicate/replacement | Duplicate invite to held lobby; newer invite while another is joining | Duplicate does not tear down held lobby; newer invite gets its own attempt, buffered without racing |
+| Restricted | Known multiplayer privilege restriction | Explicit denial and no lobby/admission |
+| Unavailable | Host ends lobby, round starts, lobby fills after send, or recipient cancels join | Bounded refusal/cancellation, never success navigation; record the visible reason |
+| PC/cross-device | Registered PC warm/cold invite and shell Join Game; Xbox-to-PC and PC-to-Xbox | Equivalent trace chain using the platform's delivery path |
+| Playable | After successful invite, change readiness and start a round | Confirms usable membership, not merely a selected lobby screen |
+
+The reported Xbox transition failure specifically covers CFR-X1 through CFR-X3 with
+signed-in running titles. Cold/signed-out/resume/in-game cases extend coverage rather
+than reproducing stated report steps. The Windows report's full-lobby invitation note
+is a separate error-wording issue (3.36); do not conflate a legitimate full-lobby refusal
+with this transition failure. Any newly identified behavioral fix needs explanation and
+user approval before implementation.
+
 ### Tier 3 fast path
 
 For iteration, 3.2 → 3.3 → 3.6 → 3.7 → 3.10 covers connection, replication and teardown.
