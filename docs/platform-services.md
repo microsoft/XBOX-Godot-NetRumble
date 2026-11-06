@@ -318,11 +318,15 @@ The sample defines ten XBOX achievements, split between one-shot unlocks and inc
 progress, driven by counters the title keeps itself. These are XBOX service reports,
 not PlayFab achievements.
 
-`AchievementService` wraps a single call, `update_achievement_async(user, id, percent)`,
-which maps to `XblAchievementsManagerUpdateAchievement`. Reporting `100` unlocks;
-anything lower records progress the service retains. That is the whole API, and it is why
-the title never has to ask the service what it already knows: it reports the current
-position and lets the service keep the higher of the two.
+`AchievementService` queries `query_player_achievements_async(user)` and reads
+`get_cached_achievements(user)` before sending
+`update_achievement_async(user, id, percent)`, which maps to
+`XblAchievementsManagerUpdateAchievement`. Reporting `100` unlocks; anything lower records
+progress. Achievements Manager rejects already-unlocked achievements and equal/lower
+percentages, so the sample skips reports already satisfied by Xbox's cached state.
+Overlapping reports are serialized per Xbox user and coalesced to their highest percentage.
+Account loss, resume and shutdown invalidate queued work; an in-flight call may finish but
+cannot start another report for the expired account context.
 
 | Id | Achievement | Rule |
 |---|---|---|
@@ -351,7 +355,8 @@ reports to the ready account. Practice can advance that account's counters with 
 platform-managed offline store, but never unsigned or during failed save preparation.
 Loaded counters replace memory rather than merging progress from another account or failed
 session. Resynchronization reports only the current account's progress. Because the service
-keeps the highest percentage it has seen, replaying a report that already landed changes nothing.
+keeps the highest percentage it has seen, resynchronizing already-recorded progress sends
+no redundant update.
 
 Two details are easy to get wrong when adapting this:
 
@@ -367,7 +372,10 @@ Achievement ids must be published on the title before an unlock can succeed. The
 documents the sample's definitions; it is not a live-service status check. Use the registered
 sample in **XDKS.1** with an eligible account and observe progress in the XBOX achievement UI.
 Already-earned achievements do not unlock again, and no in-game achievement browser is supplied.
-Reporting failures log a warning; locally advanced counters do not prove a service award.
+Missing ids, failed cache reads and genuine update failures log a warning; locally advanced
+counters do not prove a service award. If a redundant-progress rejection races another
+device's update, it is treated as satisfied only after a fresh Xbox query confirms the
+requested percentage. HRESULTs alone are never treated as proof of success.
 See [Configuration](configuration.md#configuration-checklist) and
 [achievement walkthrough](walkthroughs.md#achievements).
 

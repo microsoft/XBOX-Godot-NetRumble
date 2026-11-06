@@ -221,7 +221,7 @@ native edit, fire-and-forget destruction or forced-exit workaround is included.
 `scripts/services/party_service.gd`.
 
 Build from Sample addon revision
-`927cdc7a3cd6e026cbddafbb3cd06dccc446dead` pinned by this repository and record that revision
+`2accce554e0988e5076ac76d22f024307f6744c6` pinned by this repository and record that revision
 with the rebuilt package validation results.
 
 ---
@@ -307,13 +307,28 @@ Maintainer note: two things are worth knowing before editing the voice path:
   join paths *before* the network call. Creation is serialized with ordinary destruction and
   canceled-control cleanup: a replacement cannot be created until the active control's
   destruction completes.
-- **Talking indicators are not wired up.** `Available` and `Muted` reflect real state, but the
-  defined `TALKING` indicator is not emitted by the sample. Demonstrate voice by hearing a
-  distinct phrase in **both directions** on two audio endpoints, not by looking at icons.
+- **Talking indicators must be polled.** `NetManager` samples Party voice activity every
+  100 ms and repaints the lobby and gameplay squawkers only when an indicator changes.
+  `ChatService` uses the owning user's local indicator and each remote entity's incoming
+  indicator; title/platform mutes take precedence. Speech repaint does not re-evaluate privacy
+  or write chat permissions. An icon still cannot prove audible communication: hear a distinct
+  phrase in **both directions** on two audio endpoints.
 
 The local microphone starts **muted** so enabling voice never opens a live mic unasked. In the
 lobby, `T` (or gamepad Y) toggles it. Self-mute is implemented by dropping `SEND_AUDIO` from the
-chat permissions of every remote entity.
+chat permissions of every remote entity. During gameplay, `V` / D-pad Up toggles the microphone
+directly without opening a menu; `T` / gamepad Y remains typed-text entry. The voice shortcut
+does not run while the text entry is open or gameplay is covered by another screen, and cannot
+override Xbox communication restrictions.
+
+The local muted icon reports the title's self-mute choice, not a missing headset or a device
+initialization error. If speech still fails after unmuting, inspect Party's
+`get_audio_input_state()`, `get_audio_output_state()`, `get_local_chat_indicator()` and the
+per-peer `get_chat_permissions()` on both endpoints, along with native audio-setup warnings.
+Successful control creation does not guarantee initialized capture or playback. See
+[addon packaging](addon-maintenance.md#3-the-projects-gdextension-overrides) for how the title
+selects system-default devices on PC and platform-user-default devices on console despite
+using the same addon DLL.
 
 ---
 

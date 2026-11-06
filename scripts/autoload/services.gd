@@ -473,11 +473,15 @@ func invalidate_saves_for_resume() -> void:
 	_account_generation += 1
 	_ready_owner = null
 	_game_saves.reset()
+	if _achievements != null:
+		_achievements.invalidate_pending_reports()
 	_clear_leaderboard_submission()
 	account_state_changed.emit()
 
 
 func _clear_player_state() -> void:
+	if _achievements != null:
+		_achievements.invalidate_pending_reports()
 	_clear_leaderboard_submission()
 	_history.clear()
 	_achievement_tracker.clear()
@@ -642,6 +646,8 @@ func is_shutting_down() -> bool:
 ## on its own -- taking it away mid-flight is the failure mode this exists to avoid.
 func begin_shutdown() -> void:
 	_shutting_down = true
+	if _achievements != null:
+		_achievements.invalidate_pending_reports()
 	_clear_leaderboard_submission()
 	if _signing_in:
 		_account_generation += 1

@@ -177,8 +177,16 @@ func show_invite_ui(user: Variant) -> void:
 	if activity == null or user == null:
 		return
 	var result: Variant = await activity.show_invite_ui_async(user)
-	if result == null or not result.ok:
-		push_warning("[Activity] The invite UI could not be shown: %s" % _reason(result))
+	if result != null and result.ok:
+		return
+	if result != null and String(result.code) == "cancelled" \
+			and (int(result.hresult) & 0xFFFFFFFF) == 0x80004004:
+		return
+	_warn_invite_ui("[Activity] The invite UI could not be shown: %s" % _reason(result))
+
+
+func _warn_invite_ui(message: String) -> void:
+	push_warning(message)
 
 
 ## The activities `xuids` are currently in, keyed by XUID (XR-070). Activities are

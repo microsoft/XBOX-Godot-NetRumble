@@ -148,6 +148,11 @@ InviteRouter="*res://scripts/autoload/invite_router.gd"
 [rendering]
 renderer/rendering_method="gl_compatibility"
 '@ | Set-Content -LiteralPath (Join-Path $sandbox 'project.godot') -Encoding utf8
+    # Exercise the shipped bindings without copying SDK configuration into the sandbox.
+    $project = Get-Content -LiteralPath (Join-Path $repo 'project.godot') -Raw
+    $inputSection = [regex]::Match($project, '(?ms)^\[input\]\r?\n.*?(?=^\[|\z)')
+    if (-not $inputSection.Success) { throw 'The project input map is missing.' }
+    Add-Content -LiteralPath (Join-Path $sandbox 'project.godot') -Value ("`n" + $inputSection.Value) -Encoding utf8
     $common = @('--headless', '--path', $sandbox, '--log-file', (Join-Path $sandbox 'godot.log'))
     $null = Invoke-TestGodot ($common + @('--import', '--quiet'))
     if ($Suite -eq 'All') {

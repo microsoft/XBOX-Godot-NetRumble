@@ -136,7 +136,7 @@ Needs a registered build, an identified XBOX user and ready Game Saves for playa
 | 2.1 | Account acquisition completes on launch | Authentication and save loading finish before menu/gameplay readiness; gamertag alone is insufficient |
 | 2.2 | Fail/decline sign-in or save loading | Reason plus Retry/Back; no Practice or multiplayer |
 | 2.3 | Play a match to completion | Match history gains a row |
-| 2.4 | Earn an unearned achievement / incremental condition | Correct account's XBOX progress changes when service accepts it; an already-earned award does not unlock again |
+| 2.4 | Earn an unearned achievement / incremental condition, then relaunch | Correct account's XBOX progress changes when service accepts it; replayed equal/lower progress and already-earned awards produce no redundant-update warnings; genuine failures remain visible |
 | 2.5 | Registered-PC relaunch as the same account | Settings, history and counters load from that account's Game Saves, not desktop files |
 | 2.6 | Quit during authentication or save synchronization | Exits within the shared shutdown drain window instead of hanging; no fresh preparation |
 | 2.7 | Known multiplayer denial, including an invite path | All entry paths refuse with a reason; resolvable denial uses system UI and re-checks |
@@ -151,6 +151,10 @@ Needs a registered build, an identified XBOX user and ready Game Saves for playa
 Achievement/reporting observations need real XBOX service results. Cached counters and a visible
 gamertag are not substitutes. The current privilege-query fail-open behavior is a documented
 limitation; record failures rather than treating an unchecked verdict as demonstrated policy.
+
+In an online lobby, open the system invite picker and cancel it. A native
+`cancelled`/`E_ABORT` result is a normal outcome, not an invite-UI warning. Other failures
+must still report why the invite UI could not complete.
 
 ## Account-owned saves: PC and console
 
@@ -243,7 +247,7 @@ Use two registered builds/accounts with distinct signed-in XboxUsers and ready G
 | 3.12 | Wrong/newly-created code | One search, then success or readable failure with explicit editable retry; no automatic backoff |
 | 3.13 | Try joining after start or with incompatible protocol | Readable refusal; existing match/roster remains valid; the refused client never sees the lobby, empty or otherwise |
 | 3.14 | Join Friend and accepted invite while warm/cold | Registered XBOX path waits for account/save readiness before lobby; Back abandons acquisition without joining |
-| 3.15 | Lobby voice, then in-match typed text | Hear real speech both directions; complete typed-text acceptance below |
+| 3.15 | Lobby voice, then in-match voice toggle and typed text | Unmute with T / Y in the lobby; in gameplay V / D-pad Up unmutes/remutes without a menu and T / Y opens typed text. Local and remote squawkers light during speech and clear on silence in both rosters; mute/restrictions take precedence. Hear real speech both directions; typing V or navigating text entry must not toggle the mic. Complete typed-text acceptance below |
 | 3.16 | Constrain/alt-tab host and client separately | Local director pauses without a global pause RPC; constrained host stops advancing authoritative simulation |
 | 3.17 | Repeated host/join/leave | No duplicate text handlers/echoes, stale activity, prior-match rows or retained controls |
 | 3.18 | Both ready up, then watch the host's lobby | Status reads "Closing the match to new players…" before the match starts; the join code and Invite slots disappear |

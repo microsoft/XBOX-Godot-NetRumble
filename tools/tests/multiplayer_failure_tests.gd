@@ -181,6 +181,15 @@ class Backend extends RefCounted:
 	func get_remote_entity_keys() -> Array:
 		return []
 
+	func get_local_chat_control(_user: Variant = null) -> Variant:
+		return self if controls > 0 else null
+
+	func get_chat_control(_entity_key: Dictionary) -> Variant:
+		return null
+
+	func get_local_chat_indicator(_user: Variant = null) -> int:
+		return 0
+
 	func pending(stage: String) -> Operation:
 		for operation: Operation in calls:
 			if operation.stage == stage and not operation.done:

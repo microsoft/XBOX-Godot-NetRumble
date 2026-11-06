@@ -107,6 +107,10 @@ const ACCESS_POLICY_PRIVATE := 2
 const OWNER_MIGRATION_AUTOMATIC := 0
 const OWNER_MIGRATION_NONE := 2
 
+## PlayFabPartyConfig default-device modes; the native class is optional at parse time.
+const AUDIO_DEVICE_DEFAULT_SYSTEM := 1
+const AUDIO_DEVICE_DEFAULT_PLATFORM_USER := 2
+
 ## How long a membership-lock update is waited on before the title stops waiting on it.
 ## A lock is on the path between pressing ready and the match starting, so it cannot be
 ## allowed to hang the lobby indefinitely.
@@ -5582,6 +5586,10 @@ func _make_party_config(max_players: int, invitation_id: String) -> Variant:
 	var chat_allowed := _chat.is_chat_allowed()
 	cfg.enable_voice_chat = chat_allowed
 	cfg.enable_text_chat = chat_allowed
+	# PC and console load the same DLL, so select devices by runtime platform rather
+	# than the native library's compile target. The addon resolves the owner's XUID.
+	cfg.audio_device_default_mode = AUDIO_DEVICE_DEFAULT_PLATFORM_USER if _is_console() \
+		else AUDIO_DEVICE_DEFAULT_SYSTEM
 	# Nothing displays transcribed speech, so Party is not asked to produce it.
 	# Translation follows transcription: it only ever applied to transcribed text.
 	cfg.enable_transcription = false
@@ -5595,6 +5603,10 @@ func _make_party_config(max_players: int, invitation_id: String) -> Variant:
 
 func _new_party_config() -> Variant:
 	return ClassDB.instantiate("PlayFabPartyConfig")
+
+
+func _is_console() -> bool:
+	return OS.has_feature("scarlett")
 
 
 ## Five-character lobby code, mirroring LobbyScreen's join-code affordance and the

@@ -175,7 +175,8 @@ feedback between nearby devices.
 
 **Action:** In the lobby, microphones start **muted**. Use `T` / gamepad Y to unmute and exchange
 different spoken phrases in both directions; remute and confirm audio stops. Ready into a match.
-While microphones remain muted, use the same action to open typed-text entry and send a message
+Use `V` / D-pad Up to unmute and remute directly during gameplay, without returning to a menu.
+While microphones remain muted, use `T` / gamepad Y to open typed-text entry and send a message
 from each peer. Exchange five distinguishable messages, including literal markup-like text,
 then leave and enter a new match.
 

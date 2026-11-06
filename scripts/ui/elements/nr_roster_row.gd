@@ -7,9 +7,8 @@ extends Control
 ## it, nameplate at x=119, microphone indicator hanging outside the panel's left edge.
 ## An unoccupied slot renders the panel with "Invite To Game..." and hides everything else.
 ##
-## The microphone icon is driven by NetManager.chat_indicator_for(). Party's
-## GetChatIndicator has no binding in godot_playfab, so Available and Muted are
-## real but Talking is currently unreachable.
+## The microphone icon is driven by NetManager.chat_indicator_for(), combining title
+## mute/privacy state with Party's polled local and remote voice-activity indicators.
 ##
 ## An occupied row is also the entry point to the actions the player can take against
 ## that player (XR-015 mute, XR-018 report): activating it opens the player actions

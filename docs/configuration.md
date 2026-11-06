@@ -135,7 +135,7 @@ must be present. `max_players` belongs to `PlayFabLobbyConfig` and is not an ali
 arranged join field.
 
 Build from Sample addon revision
-`927cdc7a3cd6e026cbddafbb3cd06dccc446dead` pinned by this repository and record the rebuilt
+`2accce554e0988e5076ac76d22f024307f6744c6` pinned by this repository and record the rebuilt
 addon package with validation results. A gitlink by itself does not identify the loaded binaries.
 
 ### 3. Get XBOX title and sandbox access
@@ -301,6 +301,14 @@ Verify the shader cache made it in:
 ```powershell
 python tools\pckdiff.py scarlett_build\NetRumbleConsole.pck
 ```
+
+### Preserve `_cl_` in console layouts
+
+Keep the exporter's `_cl_` file beside `NetRumbleConsole.exe`, even when it is empty.
+The W4 console runtime reads platform arguments from this file during early startup
+and does not check for a failed open before using the file handle. Omitting it from
+a curated layout or package can terminate the title before the W4 splash screen.
+An empty `_cl_` is valid and must not be discarded as a temporary build file.
 
 ### Close the console-fork editor before touching `export_presets.cfg`
 
