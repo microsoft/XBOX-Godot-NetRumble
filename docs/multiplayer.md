@@ -180,7 +180,7 @@ native edit, fire-and-forget destruction or forced-exit workaround is included.
 `scripts/services/party_service.gd`.
 
 Build from Sample addon revision
-`3443fa07e027d2d63626b17bbe0ef905601a8b62` pinned by this repository and record that revision
+`2accce554e0988e5076ac76d22f024307f6744c6` pinned by this repository and record that revision
 with the rebuilt package validation results.
 
 ---

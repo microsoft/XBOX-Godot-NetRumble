@@ -113,10 +113,8 @@ still requires verification on hardware, not just successful config/control crea
 Device defaults apply when the per-user chat control is created; a retained control is not
 reconfigured by leaving and rejoining. Restart the game when testing the rebuilt addon.
 
-The current review pins local-only revision `3443fa07e027d2d63626b17bbe0ef905601a8b62`.
-It has not been published to the public submodule remote: local reviewers must import that
-commit from the addon worktree before checking out the pin. A fresh public-remote clone cannot
-fetch it until publication; do not distribute this review as a publicly reproducible build.
+The current pin is Sample `main` revision `2accce554e0988e5076ac76d22f024307f6744c6`, which
+provides this config property.
 
 ---
 
