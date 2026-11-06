@@ -189,6 +189,46 @@ renderer/rendering_method="gl_compatibility"
     if ($Suite -eq 'All') {
         Assert-SuspendDiagnostics $output 39
         Write-Host 'CASE: suspend diagnostics contain only ordered category outcomes and measured elapsed time'
+        $trace = @($output -split '\r?\n' | Where-Object { $_ -match '^\[InviteTrace\]' })
+        if ($trace.Count -eq 0) { throw 'Invite diagnostics were not exercised.' }
+        foreach ($line in $trace) {
+            if ($line -match 'cv2:|kv1:|2535412345678901|2814654472473943|private-marker|new-credential-marker') {
+                throw 'An invite diagnostic exposed a synthetic credential or account identifier.'
+            }
+        }
+        $stages = @($trace | ForEach-Object {
+            if ($_ -match '^\[InviteTrace\] stage=([a-z_]+) ') { $Matches[1] }
+        })
+        foreach ($stage in @('received', 'wait_account', 'wait_acquisition', 'redeeming',
+            'privilege_check', 'privilege_denied', 'replacement_confirmation', 'replacement_declined',
+            'already_in_destination', 'expired', 'declined', 'invite_entry', 'lobby_party_connect',
+            'awaiting_admission', 'host_admitted', 'settled', 'join_failed', 'join_cancelled',
+            'lobby_navigation', 'lobby_selected', 'stale_account', 'pending_accept_start',
+            'pending_accept_succeeded', 'pending_accept_failed', 'pending_accept_no_uri',
+            'pending_accept_no_runtime')) {
+            if ($stage -notin $stages) { throw "Invite diagnostic stage not exercised: $stage" }
+        }
+        $navigation = $trace | Where-Object { $_ -match '^\[InviteTrace\] stage=lobby_navigation ' } | Select-Object -First 1
+        if ($navigation -notmatch '\battempt=(\d+) join=(\d+) ') { throw 'Navigation has no attempt/join correlation.' }
+        $attempt = $Matches[1]
+        $join = $Matches[2]
+        foreach ($chain in @(
+            @{ Selector = "\battempt=$attempt "; Stages = @('received', 'redeeming', 'privilege_check',
+                'privilege_allowed', 'destination_resolved', 'join_start', 'join_handle',
+                'join_succeeded', 'lobby_navigation', 'lobby_selected', 'finished') },
+            @{ Selector = "\bjoin=$join "; Stages = @('invite_entry', 'resolve_user', 'leave_previous_session',
+                'chat_privilege', 'lobby_party_connect', 'lobby_party_connected', 'peer_bound',
+                'awaiting_admission', 'host_admitted', 'settled') }
+        )) {
+            $cursor = 0
+            foreach ($line in ($trace | Where-Object { $_ -match $chain.Selector })) {
+                if ($cursor -lt $chain.Stages.Count -and $line -match ("^\[InviteTrace\] stage=" + $chain.Stages[$cursor] + ' ')) {
+                    $cursor++
+                }
+            }
+            if ($cursor -ne $chain.Stages.Count) { throw "Invite trace order missing stage: $($chain.Stages[$cursor])" }
+        }
+        Write-Host 'CASE: invite diagnostics cover routing, admission and navigation without synthetic secrets'
     }
 }
 finally {
