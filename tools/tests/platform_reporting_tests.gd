@@ -32,10 +32,15 @@ class Endpoints extends RefCounted:
 	var updates: Array[Request] = []
 	var invites: Array[Request] = []
 	var cache: Dictionary = {}
+	var completing := false
+	var reentrant_calls := 0
+	var cache_reads := 0
 
 	# Mirrors the addon contract: a successful query populates the per-user cache read
 	# via get_cached_achievements(). The result's data is cleared so callers can't rely on it.
 	func query_player_achievements_async(user: Variant) -> Signal:
+		if completing:
+			reentrant_calls += 1
 		var request := Request.new()
 		request.user = user
 		request.completed.connect(func(result: Variant) -> void:
@@ -46,15 +51,25 @@ class Endpoints extends RefCounted:
 		return request.completed
 
 	func get_cached_achievements(user: Variant) -> Array:
+		if completing:
+			reentrant_calls += 1
+		cache_reads += 1
 		return cache.get(user, [])
 
 	func update_achievement_async(user: Variant, id: String, percent: int) -> Signal:
+		if completing:
+			reentrant_calls += 1
 		var request := Request.new()
 		request.user = user
 		request.id = id
 		request.percent = percent
 		updates.append(request)
 		return request.completed
+
+	func complete(request: Request, result: Variant) -> void:
+		completing = true
+		request.completed.emit(result)
+		completing = false
 
 	func show_invite_ui_async(user: Variant) -> Signal:
 		var request := Request.new()
@@ -90,14 +105,71 @@ class Activity extends ActivityService:
 
 
 func run(test: Node) -> void:
-	_cached_progress(test)
-	_serialized_progress(test)
-	_read_failures(test)
-	_submission_races(test)
-	_separate_users(test)
-	_replacement_queue(test)
+	await _completion_reentrancy(test)
+	await _deferred_account_boundary(test)
+	await _cached_progress(test)
+	await _serialized_progress(test)
+	await _read_failures(test)
+	await _submission_races(test)
+	await _separate_users(test)
+	await _replacement_queue(test)
 	await _account_boundaries(test)
 	_invite_outcomes(test)
+
+
+func _complete(test: Node, sdk: Endpoints, request: Request, result: Variant) -> void:
+	sdk.complete(request, result)
+	await test.get_tree().process_frame
+	test._check(sdk.reentrant_calls == 0,
+		"achievement continuation never re-enters a native completion")
+
+
+func _completion_reentrancy(test: Node) -> void:
+	print("CASE: queued unlocks resume only after native request-list cleanup")
+	var service := Reports.new()
+	var sdk := service.sdk
+	var user := RefCounted.new()
+	service.unlock(user, "1")
+	service.unlock(user, "4")
+	sdk.complete(sdk.queries[0], _ok([Achievement.new("1", 0), Achievement.new("4", 0)]))
+	test._check(sdk.updates.is_empty(), "cache completion returns before submitting an unlock")
+	await test.get_tree().process_frame
+	test._check(sdk.updates.size() == 1, "deferred cache completion starts the first unlock")
+	sdk.complete(sdk.updates[0], _ok(Achievement.new("1", 100, true)))
+	test._check(sdk.updates.size() == 1, "unlock completion returns before submitting the next unlock")
+	await test.get_tree().process_frame
+	test._check(sdk.updates.size() == 2 and sdk.updates[1].id == "4",
+		"queued unlock is submitted after native request-list cleanup")
+	await _complete(test, sdk, sdk.updates[1], _ok(Achievement.new("4", 100, true)))
+	test._check(service._pending.is_empty() and service.warnings.is_empty(),
+		"both deferred unlocks drain the queue successfully")
+
+
+func _deferred_account_boundary(test: Node) -> void:
+	for phase: String in ["read", "write", "recheck"]:
+		print("CASE: account invalidation between native completion and deferred ", phase)
+		var service := Reports.new()
+		var sdk := service.sdk
+		var user := RefCounted.new()
+		service.unlock(user, "1")
+		service.unlock(user, "4")
+		if phase != "read":
+			await _complete(test, sdk, sdk.queries[0],
+				_ok([Achievement.new("1", 0), Achievement.new("4", 0)]))
+		if phase == "recheck":
+			await _complete(test, sdk, sdk.updates[0], _error(0x80070057))
+		if phase == "read":
+			sdk.complete(sdk.queries[0], _ok([Achievement.new("1", 0), Achievement.new("4", 0)]))
+		elif phase == "write":
+			sdk.complete(sdk.updates[0], _ok(Achievement.new("1", 100, true)))
+		else:
+			sdk.complete(sdk.queries[1], _ok([Achievement.new("1", 100, true)]))
+		service.invalidate_pending_reports()
+		var counts := [sdk.queries.size(), sdk.updates.size(), sdk.cache_reads]
+		await test.get_tree().process_frame
+		test._check(counts == [sdk.queries.size(), sdk.updates.size(), sdk.cache_reads]
+			and service._pending.is_empty() and service.warnings.is_empty(),
+			"deferred result cannot read cache or report progress after account invalidation")
 
 
 func _ok(data: Variant = null) -> Result:
@@ -126,7 +198,7 @@ func _cached_progress(test: Node) -> void:
 		service.update_progress(user, "6", 20)
 		test._check(service.sdk.queries.size() == 1 and service.sdk.updates.is_empty(),
 			"progress waits for Xbox's initial cache before sending anything")
-		service.sdk.queries[0].completed.emit(_ok([entry]))
+		await _complete(test, service.sdk, service.sdk.queries[0], _ok([entry]))
 		test._check(service.sdk.updates.is_empty() and service.warnings.is_empty()
 			and service._pending.is_empty(), "replayed cached progress is a clean no-op")
 
@@ -151,28 +223,28 @@ func _serialized_progress(test: Node) -> void:
 	service.update_progress(user, "6", 30)
 	service.update_progress(user, "8", 12)
 	test._check(sdk.queries.size() == 1, "same-user reports share the pending cache query")
-	sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0), Achievement.new("8", 0)]))
+	await _complete(test, sdk, sdk.queries[0], _ok([Achievement.new("6", 0), Achievement.new("8", 0)]))
 	test._check(sdk.updates.size() == 1 and sdk.updates[0].id == "6"
 		and sdk.updates[0].percent == 40 and sdk.updates[0].user == user,
 		"first update uses the highest queued percentage and its original user")
 	service.update_progress(user, "6", 80)
 	service.update_progress(user, "6", 60)
-	sdk.updates[0].completed.emit(_ok(Achievement.new("6", 40)))
+	await _complete(test, sdk, sdk.updates[0], _ok(Achievement.new("6", 40)))
 	test._check(sdk.updates.size() == 2 and sdk.updates[1].id == "8"
 		and sdk.updates[1].percent == 12, "second achievement waits for the first native completion")
-	sdk.updates[1].completed.emit(_ok(Achievement.new("8", 12)))
+	await _complete(test, sdk, sdk.updates[1], _ok(Achievement.new("8", 12)))
 	test._check(sdk.queries.size() == 2 and sdk.updates.size() == 2,
 		"reports arriving during a write re-read Xbox rather than trusting a submitted value")
-	sdk.queries[1].completed.emit(_ok([Achievement.new("6", 40)]))
+	await _complete(test, sdk, sdk.queries[1], _ok([Achievement.new("6", 40)]))
 	test._check(sdk.updates.size() == 3 and sdk.updates[2].percent == 80,
 		"late progress keeps its maximum rather than rolling back to a later lower report")
-	sdk.updates[2].completed.emit(_ok(Achievement.new("6", 80)))
+	await _complete(test, sdk, sdk.updates[2], _ok(Achievement.new("6", 80)))
 	test._check(service._pending.is_empty() and service.warnings.is_empty(),
 		"completed queue releases its user and logs no failure")
 	service.update_progress(user, "6", 200)
-	sdk.queries[2].completed.emit(_ok([Achievement.new("6", 80)]))
+	await _complete(test, sdk, sdk.queries[2], _ok([Achievement.new("6", 80)]))
 	test._check(sdk.updates[3].percent == 100, "progress still clamps to a full unlock")
-	sdk.updates[3].completed.emit(_ok(Achievement.new("6", 100, true)))
+	await _complete(test, sdk, sdk.updates[3], _ok(Achievement.new("6", 100, true)))
 
 
 func _read_failures(test: Node) -> void:
@@ -181,7 +253,7 @@ func _read_failures(test: Node) -> void:
 		var service := Reports.new()
 		var read_ok: bool = reply != null and reply.ok
 		service.update_progress(RefCounted.new(), "6", 20)
-		service.sdk.queries[0].completed.emit(reply)
+		await _complete(test, service.sdk, service.sdk.queries[0], reply)
 		test._check(service.sdk.updates.is_empty() and service.warnings.size() == 1
 			and service._pending.is_empty(), "failed/malformed/missing-id read never authorizes a write")
 		if read_ok:
@@ -196,11 +268,12 @@ func _submission_races(test: Node) -> void:
 			var service := Reports.new()
 			var percent := 100 if (hr & 0xFFFFFFFF) == 0x8000FFFF else 20
 			service.update_progress(RefCounted.new(), "6", percent)
-			service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0)]))
-			service.sdk.updates[0].completed.emit(_error(hr))
+			await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 0)]))
+			await _complete(test, service.sdk, service.sdk.updates[0], _error(hr))
 			test._check(service.sdk.queries.size() == 2 and service.warnings.is_empty(),
 				"candidate redundant rejection refreshes the cache before deciding")
-			service.sdk.queries[1].completed.emit(_ok([Achievement.new("6", percent if confirmed else 0)]))
+			await _complete(test, service.sdk, service.sdk.queries[1],
+				_ok([Achievement.new("6", percent if confirmed else 0)]))
 			test._check(service.warnings.size() == (0 if confirmed else 1)
 				and service._pending.is_empty(), "unconfirmed HRESULT is never silently treated as success")
 			if not confirmed:
@@ -213,20 +286,21 @@ func _submission_races(test: Node) -> void:
 		var service := Reports.new()
 		var user := RefCounted.new()
 		service.update_progress(user, "6", 20)
-		service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0)]))
-		service.sdk.updates[0].completed.emit(reply)
+		await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 0)]))
+		await _complete(test, service.sdk, service.sdk.updates[0], reply)
 		test._check(service.warnings.size() == 1 and service.sdk.queries.size() == 1,
 			"null, unrelated HRESULT and invalid-user failures are not swallowed")
 		service.update_progress(user, "6", 20)
-		service.sdk.queries[1].completed.emit(_ok([Achievement.new("6", 0)]))
+		await _complete(test, service.sdk, service.sdk.queries[1], _ok([Achievement.new("6", 0)]))
 		test._check(service.sdk.updates.size() == 2, "a failed write does not create a false high-water mark")
-		service.sdk.updates[1].completed.emit(_ok(Achievement.new("6", 20)))
+		await _complete(test, service.sdk, service.sdk.updates[1], _ok(Achievement.new("6", 20)))
 
 	var service := Reports.new()
 	service.update_progress(RefCounted.new(), "6", 20)
-	service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0)]))
-	service.sdk.updates[0].completed.emit(_error(0x80070057))
-	service.sdk.queries[1].completed.emit(_error(0x80004005, "achievement_cache_read_failed"))
+	await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 0)]))
+	await _complete(test, service.sdk, service.sdk.updates[0], _error(0x80070057))
+	await _complete(test, service.sdk, service.sdk.queries[1],
+		_error(0x80004005, "achievement_cache_read_failed"))
 	test._check(service.warnings.size() == 1 and service.warnings[0].contains("0x80070057"),
 		"failed race recheck preserves the submitted update's error")
 
@@ -239,11 +313,11 @@ func _separate_users(test: Node) -> void:
 	service.update_progress(a, "6", 20)
 	service.update_progress(b, "6", 20)
 	test._check(service.sdk.queries.size() == 2, "different users never share a query")
-	service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 100, true)]))
-	service.sdk.queries[1].completed.emit(_ok([Achievement.new("6", 0)]))
+	await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 100, true)]))
+	await _complete(test, service.sdk, service.sdk.queries[1], _ok([Achievement.new("6", 0)]))
 	test._check(service.sdk.updates.size() == 1 and service.sdk.updates[0].user == b,
 		"A's unlocked state cannot suppress B's update")
-	service.sdk.updates[0].completed.emit(_ok(Achievement.new("6", 20)))
+	await _complete(test, service.sdk, service.sdk.updates[0], _ok(Achievement.new("6", 20)))
 
 
 func _replacement_queue(test: Node) -> void:
@@ -253,13 +327,13 @@ func _replacement_queue(test: Node) -> void:
 	service.update_progress(user, "6", 20)
 	service.invalidate_pending_reports()
 	service.update_progress(user, "6", 40)
-	service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0)]))
+	await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 0)]))
 	test._check(service.sdk.updates.is_empty() and service._pending.has(user),
 		"late old query starts no update and retains the new generation's queue")
-	service.sdk.queries[1].completed.emit(_ok([Achievement.new("6", 0)]))
+	await _complete(test, service.sdk, service.sdk.queries[1], _ok([Achievement.new("6", 0)]))
 	test._check(service.sdk.updates.size() == 1 and service.sdk.updates[0].percent == 40,
 		"replacement queue alone reports its progress")
-	service.sdk.updates[0].completed.emit(_ok(Achievement.new("6", 40)))
+	await _complete(test, service.sdk, service.sdk.updates[0], _ok(Achievement.new("6", 40)))
 
 
 func _account_boundaries(test: Node) -> void:
@@ -275,10 +349,10 @@ func _account_boundaries(test: Node) -> void:
 			var user: Variant = Services.xbox_user()
 			Services._on_achievement_progress("6", 20)
 			if phase != "read":
-				service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0)]))
+				await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 0)]))
 				service.update_progress(user, "6", 40)
 			if phase == "recheck":
-				service.sdk.updates[0].completed.emit(_error(0x80070057))
+				await _complete(test, service.sdk, service.sdk.updates[0], _error(0x80070057))
 			match boundary:
 				"cancel": Services.cancel_sign_in()
 				"removed":
@@ -288,11 +362,11 @@ func _account_boundaries(test: Node) -> void:
 				"shutdown": Services.begin_shutdown()
 			var counts := [service.sdk.queries.size(), service.sdk.updates.size()]
 			if phase == "read":
-				service.sdk.queries[0].completed.emit(_ok([Achievement.new("6", 0)]))
+				await _complete(test, service.sdk, service.sdk.queries[0], _ok([Achievement.new("6", 0)]))
 			elif phase == "write":
-				service.sdk.updates[0].completed.emit(_ok(Achievement.new("6", 20)))
+				await _complete(test, service.sdk, service.sdk.updates[0], _ok(Achievement.new("6", 20)))
 			else:
-				service.sdk.queries[1].completed.emit(_ok([Achievement.new("6", 0)]))
+				await _complete(test, service.sdk, service.sdk.queries[1], _ok([Achievement.new("6", 0)]))
 			test._check(counts == [service.sdk.queries.size(), service.sdk.updates.size()]
 				and service._pending.is_empty() and service.warnings.is_empty(),
 				"expired account context starts no queued native call and emits no stale warning")

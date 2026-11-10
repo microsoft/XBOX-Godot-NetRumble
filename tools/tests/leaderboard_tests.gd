@@ -239,24 +239,23 @@ func _match_and_screen(test: Node) -> void:
 	director.free()
 	await NetManager.leave_match_and_wait()
 	var menu: Variant = ScreenManager.push(ScreenManager.MAIN_MENU)
-	var button: NRButton
+	var captions: Array[String] = []
 	for row: Control in menu._menu_list.rows():
-		if row is NRButton and row.text == "Leaderboards":
-			button = row
-	test._check(button != null, "upstream Leaderboards button retained on ready menu")
-	if button == null:
-		await test._reset()
-		Services._party = null
-		return
-	button.pressed.emit()
+		if row is NRButton:
+			captions.append(row.text)
+	var expected: Array[String] = ["Host Match", "Join Match", "Practice", "Match History", "Options"]
+	if not menu.is_console():
+		expected.append("Quit")
+	test._check(captions == expected, "ready menu omits Matchmaking and Leaderboards without changing remaining rows")
+	menu._on_leaderboards()
 	var screen: Variant = ScreenManager.current_screen()
 	test._check(screen.scene_file_path == ScreenManager.LEADERBOARDS and sdk.queries.size() == 1,
 		"actual leaderboard screen starts live top-ten query")
 	var user: Variant = Services.playfab_user()
 	Services.invalidate_saves_for_resume()
 	var depth := ScreenManager.get_stack_size()
-	button.pressed.emit()
-	test._check(ScreenManager.get_stack_size() == depth, "old menu button cannot bypass resume readiness gate")
+	menu._on_leaderboards()
+	test._check(ScreenManager.get_stack_size() == depth, "retained leaderboard handler cannot bypass resume readiness gate")
 	test._check(await Services.sign_in() and user == Services.playfab_user(), "UI resume reload preserves PFUser but changes generation")
 	sdk.queries[0].completed.emit(_reply([_row(user, 999, "Stale account page")]))
 	var stale_visible := false
@@ -264,7 +263,7 @@ func _match_and_screen(test: Node) -> void:
 		stale_visible = stale_visible or (row is NRButton and row.text.contains("Stale account page"))
 	test._check(not stale_visible and Services.get_leaderboard_submission().is_empty(),
 		"old live screen cannot display a same-PFUser stale query or prior submission")
-	button.pressed.emit()
+	menu._on_leaderboards()
 	test._check(ScreenManager.get_stack_size() == depth, "old menu remains generation-bound even after readiness returns")
 	ScreenManager.replace_all(ScreenManager.MAIN_MENU)
 	ScreenManager.current_screen()._on_leaderboards()

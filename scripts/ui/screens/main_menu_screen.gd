@@ -4,8 +4,8 @@ extends NRScreen
 ## gamertag, and a vertical menu list. Sign-in belongs to the acquire-user screen,
 ## which runs before this one; this screen only reflects the resulting identity and
 ## offers a way back to it. Hosting and joining are driven through NetManager.
-## Menu entries: Matchmaking / Host Match / Join Match / Practice / Match History /
-## Leaderboards / Options / Quit, with Quit desktop-only — consoles leave the title through
+## Menu entries: Host Match / Join Match / Practice / Match History / Options / Quit,
+## with Quit desktop-only — consoles leave the title through
 ## the platform. Join Match opens a submenu (Join Friend / Lobby Code) in place of the
 ## top-level rows.
 
@@ -49,7 +49,6 @@ var _in_options := false
 ## connectivity can be applied in place rather than by rebuilding: a rebuild would drop
 ## the player's focus back to the top of the list every time the hint flickered, and on a
 ## controller that is far more disruptive than the two rows going grey.
-var _matchmaking_row: NRButton = null
 var _host_row: NRButton = null
 var _join_row: NRButton = null
 ## Always present while the top-level menu is up, empty when there is nothing to say, so
@@ -155,14 +154,10 @@ func _build_menu() -> void:
 	# The theme's existing status-line type, the same one the lobby uses for its status
 	# text, rather than a new variation that would have to be designed and maintained.
 	_connectivity_note.theme_type_variation = &"LobbyStatus"
-	# One Matchmaking row, directly above Host Match: a group of one to four gathers in its
-	# own lobby and searches together, so a solo player takes the same row as a group.
-	_matchmaking_row = _menu_list.add_button("Matchmaking", _on_matchmaking)
 	_host_row = _menu_list.add_button("Host Match", _on_play)
 	_join_row = _menu_list.add_button("Join Match", _on_join_match)
 	_menu_list.add_button("Practice", _on_practice)
 	_menu_list.add_button("Match History", _on_match_history)
-	_menu_list.add_button("Leaderboards", _on_leaderboards)
 	_menu_list.add_button("Options", _build_options_menu)
 	# Consoles have no in-title Quit: the platform owns leaving the game, and a
 	# second way out that behaves differently is exactly what certification flags.
@@ -228,7 +223,6 @@ func _build_top_menu() -> void:
 ## frees the nodes, so holding them would leave `_apply_connectivity()` writing to rows
 ## that are on their way out.
 func _forget_top_rows() -> void:
-	_matchmaking_row = null
 	_host_row = null
 	_join_row = null
 	_connectivity_note = null
@@ -333,7 +327,6 @@ func _multiplayer_denial() -> String:
 ## untouched: it is the whole reason the offline case is still worth showing a menu for.
 ##
 ## A ready account's History and Options remain usable without network connectivity.
-## Leaderboards stays reachable for that account and explains connection failures itself.
 ##
 ## `announce` is false while building, because a menu that opens saying "Connection
 ## restored" is announcing a state the player never saw change.
@@ -347,8 +340,6 @@ func _apply_connectivity(announce: bool) -> void:
 
 	_host_row.disabled = not online
 	_join_row.disabled = not online
-	if is_instance_valid(_matchmaking_row):
-		_matchmaking_row.disabled = not online
 	# The neighbours are explicit paths, so the wrap has to be recomputed or focus would
 	# still route through the rows that just went dark.
 	_menu_list.refresh_focus_wrap()
@@ -366,7 +357,7 @@ func _apply_connectivity(announce: bool) -> void:
 	# is no pointer to recover with, and nothing would respond.
 	if not online:
 		var focused := get_viewport().gui_get_focus_owner()
-		if focused == _host_row or focused == _join_row or focused == _matchmaking_row:
+		if focused == _host_row or focused == _join_row:
 			_menu_list.call_deferred("focus_first")
 
 

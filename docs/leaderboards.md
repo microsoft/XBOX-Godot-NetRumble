@@ -1,5 +1,8 @@
 # GlobalScore: standalone leaderboard submission
 
+**Leaderboards is not exposed in the current main menu.** The screen, entry handler and
+backing services remain, and completed online matches still submit scores.
+
 This project's PlayFab title is **`186CDB`**. Its existing **`GlobalScore`** leaderboard
 is **standalone**, with one column named **`Score`**. It is not sourced from a statistic.
 Keep that definition; no statistic creation, linking, aggregation or migration is required.
@@ -87,7 +90,7 @@ update. An update already started settles normally. Known per-entity scores are 
 as a side effect of canceling queued work; an accepted in-flight update still informs that
 entity's highest-score guard, but its stale completion cannot restore the notice.
 
-The facade and Leaderboards menu require the signed-in Xbox account and all three
+The facade and retained Leaderboards entry handler require the signed-in Xbox account and all three
 successful account-save loads, just like the rest of the title. No query or submission
 starts while loading, resuming or closing. Both query and submission capture the account
 generation and PlayFab user, and recheck after awaiting the service. Resume may reuse the
