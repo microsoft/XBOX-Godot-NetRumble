@@ -30,6 +30,13 @@ const ACHIEVEMENT_CENTURION := "10"     ## Destroy 100 enemy ships.
 
 const _REDUNDANT_PROGRESS_HRESULTS := [0x8000FFFF, 0x80070057, 0x8007139F]
 
+class Completion extends RefCounted:
+	signal completed(result: Variant)
+
+	func finish(result: Variant) -> void:
+		completed.emit(result)
+
+
 ## One queue per XboxUser; concurrent reports retain the highest requested percentage.
 var _pending: Dictionary = {}
 var _generation := 0
@@ -74,7 +81,7 @@ func update_progress(user: Variant, achievement_id: String, percent: int) -> voi
 
 func _flush_progress(achievements: Variant, user: Variant, pending: Dictionary, generation: int) -> void:
 	while not pending.is_empty():
-		var query: Variant = await achievements.query_player_achievements_async(user)
+		var query: Variant = await _deferred_result(achievements.query_player_achievements_async(user))
 		if generation != _generation:
 			return
 		if query == null or not query.ok:
@@ -95,12 +102,14 @@ func _flush_progress(achievements: Variant, user: Variant, pending: Dictionary, 
 			if recorded >= percent:
 				continue
 
-			var result: Variant = await achievements.update_achievement_async(user, achievement_id, percent)
+			var result: Variant = await _deferred_result(
+				achievements.update_achievement_async(user, achievement_id, percent))
 			if generation != _generation:
 				return
 			if result != null and result.ok:
 				continue
-			var redundant := await _confirmed_redundant_update(achievements, user, achievement_id, percent, result)
+			var redundant := await _confirmed_redundant_update(
+				achievements, user, achievement_id, percent, result, generation)
 			if generation != _generation:
 				return
 			if redundant:
@@ -110,13 +119,14 @@ func _flush_progress(achievements: Variant, user: Variant, pending: Dictionary, 
 
 
 func _confirmed_redundant_update(
-		achievements: Variant, user: Variant, achievement_id: String, percent: int, result: Variant) -> bool:
+		achievements: Variant, user: Variant, achievement_id: String, percent: int,
+		result: Variant, generation: int) -> bool:
 	if result == null or String(result.code) != "achievement_update_submit_failed" \
 			or not _REDUNDANT_PROGRESS_HRESULTS.has(int(result.hresult) & 0xFFFFFFFF):
 		return false
 	# Another device can advance Xbox's state between our query and submission.
-	var query: Variant = await achievements.query_player_achievements_async(user)
-	return query != null and query.ok \
+	var query: Variant = await _deferred_result(achievements.query_player_achievements_async(user))
+	return generation == _generation and query != null and query.ok \
 		and _recorded_percent(achievements.get_cached_achievements(user), achievement_id) >= percent
 
 
@@ -125,6 +135,14 @@ func _recorded_percent(achievements: Array, achievement_id: String) -> int:
 		if achievement != null and String(achievement.id) == achievement_id:
 			return 100 if achievement.unlocked else int(achievement.progress_percent)
 	return -1
+
+
+func _deferred_result(native_completion: Signal) -> Variant:
+	# Native completion still owns iterators into its pending requests while emitting.
+	# Resume outside that stack before another query or update can mutate those lists.
+	var completion := Completion.new()
+	native_completion.connect(completion.finish, CONNECT_DEFERRED | CONNECT_ONE_SHOT)
+	return await completion.completed
 
 
 func _warn(message: String) -> void:

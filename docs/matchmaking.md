@@ -1,9 +1,12 @@
 # Matchmaking
 
-The current build shows one focusable **Matchmaking** row directly above **Host Match**. When the
-queue, addon and capacity-four Deathmatch profile are available, pressing it opens a four-slot
-group and starts the Quick Match lifecycle. When a dependency is unavailable, the same row shows
-the exact reason without starting online work.
+**Matchmaking is not exposed in the current main menu.** Its backing code, screens and entry
+handler remain. This page describes that retained implementation; menu-driven walkthroughs
+require restoring the entry first.
+
+When the queue, addon and capacity-four Deathmatch profile are available, the entry handler
+opens a four-slot group and starts the Quick Match lifecycle. When a dependency is unavailable,
+it shows the exact reason without starting online work.
 
 When everyone is ready, the current group chooses one automatic route. Groups of one to three
 search for a two- to four-player match. A full group of four uses **Private Start**: it starts a

@@ -1908,13 +1908,13 @@ func _p1_unavailable_matchmaking_explains_at_every_entry(test: Node) -> void:
 	app.set_script(Review.MainProbe)
 	test.add_child(app)
 	var menu: Variant = ScreenManager.push(ScreenManager.MAIN_MENU)
-	_check_matchmaking_row(test, menu, "unavailable")
+	_check_matchmaking_hidden(test, menu, "unavailable")
 	if menu != null:
 		menu._on_matchmaking()
 	var explained: Variant = ScreenManager.current_screen()
 	var shown: bool = explained != null and explained.scene_file_path == ScreenManager.DIALOG_BOX
 	test._check(shown and explained._title == "Matchmaking Unavailable",
-		"pressing it answers with the unavailable dialog: %s" % (explained._title if shown else "no dialog"))
+		"retained handler answers with the unavailable dialog: %s" % (explained._title if shown else "no dialog"))
 	test._check(shown and explained._message == unavailable,
 		"showing the service's exact reason: %s" % (explained._message if shown else "no dialog"))
 	test._check(not NetManager.has_online_flow() and not NetManager.has_session()
@@ -1938,7 +1938,7 @@ func _p1_unavailable_matchmaking_explains_at_every_entry(test: Node) -> void:
 	await _teardown(test)
 
 
-## Once the service reports no reason, the same row opens a group. Its press runs the
+## Once the service reports no reason, the retained handler opens a group. It runs the
 ## permission check and reaches staging creation behind "Opening the group", for a four-slot
 ## group this player owns -- held there, so the case proves the entry without opening a
 ## lobby screen. An invitation into a staging lobby then meets the destination policy
@@ -1946,7 +1946,7 @@ func _p1_unavailable_matchmaking_explains_at_every_entry(test: Node) -> void:
 ## is refused and left, and a staging gathering binds as a guest waiting for the owner's
 ## admission, which F1 carries on into the group.
 func _p1_available_matchmaking_opens_a_group_from_the_row(test: Node) -> void:
-	print("CASE: P1 available Quick Match: the row opens a group, and staging invitations follow the destination policy")
+	print("CASE: P1 available Quick Match: retained handler opens a group, and staging invitations follow the destination policy")
 	await _setup(test, "available-player")
 	test._check(Services.quick_match_available(), "with no reason from the service, Quick Match is available")
 	test._check(Services.quick_match_unavailable_reason().is_empty(),
@@ -1958,7 +1958,7 @@ func _p1_available_matchmaking_opens_a_group_from_the_row(test: Node) -> void:
 	app.set_script(Review.MainProbe)
 	test.add_child(app)
 	var menu: Variant = ScreenManager.push(ScreenManager.MAIN_MENU)
-	_check_matchmaking_row(test, menu, "available")
+	_check_matchmaking_hidden(test, menu, "available")
 	party.fake_block_create = true
 	if menu != null:
 		menu._on_matchmaking()
@@ -1967,7 +1967,7 @@ func _p1_available_matchmaking_opens_a_group_from_the_row(test: Node) -> void:
 			break
 		await test.get_tree().process_frame
 	test._check(party.fake_calls.has("create_staging"),
-		"pressing the row starts the flow: the owner entry reached staging creation")
+		"retained handler starts the flow: the owner entry reached staging creation")
 	test._check(party.fake_created_capacity == MatchmakingFlow.CAPACITY,
 		"for a group of %d slots: %d" % [MatchmakingFlow.CAPACITY, party.fake_created_capacity])
 	var flow: MatchmakingFlow = NetManager._flow
@@ -2036,9 +2036,7 @@ func _p1_available_matchmaking_opens_a_group_from_the_row(test: Node) -> void:
 	await _teardown(test)
 
 
-## The top-level rows as a player sees them: the one Matchmaking row directly above Host
-## Match, enabled and in the menu's focus loop, whether or not Quick Match is available.
-func _check_matchmaking_row(test: Node, menu: Variant, label: String) -> void:
+func _check_matchmaking_hidden(test: Node, menu: Variant, label: String) -> void:
 	var top := _row_labels(menu)
 	var matchmaking_rows := 0
 	for caption: String in top:
@@ -2048,14 +2046,10 @@ func _check_matchmaking_row(test: Node, menu: Variant, label: String) -> void:
 			matchmaking_rows += 1
 	test._check(top.has("Host Match") and top.has("Join Match"),
 		"%s: the shipped rows are still offered: %s" % [label, str(top)])
-	test._check(matchmaking_rows == 1,
-		"%s: exactly one matchmaking row is offered: %d in %s" % [label, matchmaking_rows, str(top)])
-	test._check(top.find("Matchmaking") >= 0 and top.find("Matchmaking") == top.find("Host Match") - 1,
-		"%s: the Matchmaking row sits directly above Host Match: %s" % [label, str(top)])
-	var row: Variant = menu._matchmaking_row if menu != null else null
-	test._check(row != null and not bool(row.disabled), "%s: the Matchmaking row is enabled" % label)
-	test._check(row != null and bool(menu._menu_list._is_focusable(row)),
-		"%s: and takes focus in the menu's loop" % label)
+	test._check(matchmaking_rows == 0,
+		"%s: no matchmaking row is offered: %d in %s" % [label, matchmaking_rows, str(top)])
+	test._check(not top.has("Leaderboards"),
+		"%s: Leaderboards is also absent from the main menu" % label)
 
 
 ## Takes down the real main scene a case opened and puts back the audio it silenced.

@@ -187,6 +187,9 @@ peer-disconnect and DESTROYED callbacks; cleanup recognizes that exact detached 
 and skips its redundant leave, including late operation results. FAILED/DISCONNECTED
 alone do not prove release, and genuine leave failures still escalate. Notifications
 from an old network cannot clear a replacement. Valid per-user chat remains retained.
+When Godot closes a client's peer after host loss, the addon shares that in-flight
+leave with the game's cleanup instead of issuing a second native leave. Late leave
+completions are checked against the live operation registry before reading their context.
 
 If cleanup stalls or leave fails, the caption changes to **Recovering multiplayer
 services**. The game awaits scoped Party and Lobby `shutdown_async()` operations, never
@@ -325,8 +328,13 @@ not PlayFab achievements.
 progress. Achievements Manager rejects already-unlocked achievements and equal/lower
 percentages, so the sample skips reports already satisfied by Xbox's cached state.
 Overlapping reports are serialized per Xbox user and coalesced to their highest percentage.
+Native query and update completions resume through a deferred signal connection. This lets
+`XboxAchievements` finish removing its completed request before the title reads the cache or
+submits another report; submitting inline can invalidate the addon's pending-request iterators
+and crash during an unlock on either PC or console.
 Account loss, resume and shutdown invalidate queued work; an in-flight call may finish but
-cannot start another report for the expired account context.
+cannot read the cache or start another report for the expired account context, including when
+invalidation occurs between native completion and its deferred continuation.
 
 | Id | Achievement | Rule |
 |---|---|---|

@@ -79,16 +79,20 @@ offline access to that folder. A cold offline launch is not guaranteed to resolv
 identity and store. PC and console use the same `GameSaveService` / `GDK.game_save`
 backend; historical shared files are never read, imported, moved or deleted.
 
-Hosted matches use **PlayFab Lobby discovery**. **Quick Match** uses **PlayFab Matchmaking**: the
-**Matchmaking** row above Host Match gathers a group of one to four in its own lobby. A group of
+The main menu offers **Host Match**, **Join Match**, **Practice**, **Match History** and
+**Options**, plus **Quit** on desktop. **Matchmaking** and **Leaderboards** are not exposed
+in the menu; their backing code and screens remain, including online-match score submission.
+
+Hosted matches use **PlayFab Lobby discovery**. The retained **Quick Match** implementation uses
+**PlayFab Matchmaking** to gather a group of one to four in its own lobby. A group of
 one to three readies up and searches the `godotnr_q` queue together for a match of two to four
 players (capacity four), then plays the matched game in a fresh private arranged session and stays
 together there for hosted rematches. The matched game starts with the players who have arrived;
 one who arrives after it has started cannot join that round. A full group of four does not search:
 when all four are ready it starts a private match in the same lobby and stays together there for
 rematches in the same way; see [Private Start](docs/matchmaking.md#private-start). When the queue,
-the PlayFab addon's matchmaking support or the four-player Deathmatch profile is missing, the row
-shows that reason and starts nothing. See
+the PlayFab addon's matchmaking support or the four-player Deathmatch profile is missing, its
+entry handler reports that reason and starts nothing. See
 [Known issues](docs/known-issues.md#a-full-group-of-four-starts-a-private-match) and
 [Matchmaking](docs/matchmaking.md).
 Voice mute and typed-text privacy are separate. Text is in-match only: four recent messages,

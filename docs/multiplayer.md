@@ -7,10 +7,9 @@
 **PlayFab Lobby** discovers sessions and carries the Party descriptor. **PlayFab Party**
 authenticates peers and carries Godot gameplay traffic plus its separate voice/text channel.
 **XBOX multiplayer activity** makes that Lobby session discoverable through friends and invites.
-The menu shows a focusable **Matchmaking** row for PlayFab tickets, automatic full-group Private
-Start and retained rematches; [Matchmaking](matchmaking.md) documents that lifecycle. The row
-opens a group when its service/profile dependencies are available and otherwise explains the
-exact denial.
+The retained **Matchmaking** implementation supports PlayFab tickets, automatic full-group
+Private Start and rematches; [Matchmaking](matchmaking.md) documents that lifecycle. Its main-menu
+entry is not exposed in the current build, but its backing code and screens remain.
 
 See also: [Architecture](architecture.md) · [Platform Services](platform-services.md) ·
 [Configuration](configuration.md) · [Matchmaking foundations](matchmaking.md) ·
