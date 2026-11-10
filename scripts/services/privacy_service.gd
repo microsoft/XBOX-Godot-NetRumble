@@ -19,7 +19,7 @@ extends RefCounted
 ## Verdicts are cached per XUID for the life of a session and re-used as the roster
 ## changes, so an eight-player lobby costs two service calls rather than sixteen.
 ##
-## Like ActivityService and PrivilegeService, everything here fails *open* when the GDK
+## Like ActivityService and PrivilegeService, checks are permissive when the GDK
 ## is missing, the runtime has not initialized, or there is no XboxUser — the state of
 ## every desktop dev machine and every --pf-user test client. is_available() reports
 ## which of the two worlds the caller is in, so a console session can fail *closed* on a
@@ -92,9 +92,14 @@ func refresh_lists(user: Variant) -> bool:
 func evaluate(user: Variant, xuids: PackedStringArray) -> Dictionary:
 	var verdicts: Dictionary = {}
 	var privacy: Variant = _privacy()
-	if privacy == null or user == null:
+	if not is_available(user):
 		for xuid in xuids:
 			verdicts[xuid] = allowed()
+		return verdicts
+	if privacy == null:
+		push_warning("[Privacy] Xbox privacy is unavailable; communication remains restricted.")
+		for xuid in xuids:
+			verdicts[xuid] = _verdict(false, false, true, "Chat permissions are unavailable.")
 		return verdicts
 
 	if not _lists_loaded:
@@ -121,9 +126,9 @@ func evaluate(user: Variant, xuids: PackedStringArray) -> Dictionary:
 			return {}
 		for xuid in pending:
 			var verdict := _verdict(
-				bool(voice.get(xuid, true)),
+				bool(voice.get(xuid, false)),
 				bool(text.get(xuid, false)),
-				not bool(voice.get(xuid, true)) or not bool(text.get(xuid, false)),
+				not bool(voice.get(xuid, false)) or not bool(text.get(xuid, false)),
 				"Xbox privacy settings limit chat with this player.",
 			)
 			if voice.has(xuid) and text.has(xuid):
@@ -137,12 +142,11 @@ func evaluate(user: Variant, xuids: PackedStringArray) -> Dictionary:
 	return verdicts
 
 
-## The cached verdict for one XUID, permissive when it has never been evaluated.
+## An unknown relationship cannot authorize communication.
 func verdict_for(xuid: String) -> Dictionary:
 	var trimmed := xuid.strip_edges()
-	if trimmed.is_empty():
-		return allowed()
-	return _apply_lists(trimmed, _verdicts.get(trimmed, allowed()))
+	return _apply_lists(trimmed, _verdicts.get(trimmed,
+		_verdict(false, false, true, "Chat permissions have not been resolved.")))
 
 
 func clear_cache() -> void:
@@ -163,28 +167,40 @@ func _apply_lists(xuid: String, verdict: Dictionary) -> Dictionary:
 	return verdict
 
 
-## A missing text answer does not authorize publishing or displaying text. The existing
-## voice fallback is independent; evaluate() chooses each channel's missing-answer policy.
+## Neither channel is authorized by a failed, missing or malformed answer.
 func _batch(privacy: Variant, user: Variant, permission: String, xuids: PackedStringArray) -> Dictionary:
 	var allowed_by_xuid: Dictionary = {}
 	var result: Variant = await privacy.batch_check_permission_async(user, permission, xuids)
-	if result == null or not result.ok or not (result.data is Array):
+	if result == null or not result.ok:
 		push_warning("[Privacy] Could not check %s: %s" % [permission, _reason(result)])
+		return allowed_by_xuid
+	if not (result.data is Array):
+		push_warning("[Privacy] Invalid %s permission response; unresolved players remain restricted." % permission)
 		return allowed_by_xuid
 
 	var rows: Array = result.data
-	for index in rows.size():
-		if not (rows[index] is Dictionary):
+	var invalid: Dictionary = {}
+	var malformed := false
+	for value: Variant in rows:
+		if not (value is Dictionary):
+			malformed = true
 			continue
-		var row: Dictionary = rows[index]
-		# The rows carry their own target_xuid; the request order is only the fallback
-		# for a service that ever stops echoing it.
+		var row: Dictionary = value
 		var xuid := String(row.get("target_xuid", "")).strip_edges()
-		if xuid.is_empty() and index < xuids.size():
-			xuid = String(xuids[index])
-		if xuid.is_empty():
+		if not xuids.has(xuid):
+			malformed = true
 			continue
-		allowed_by_xuid[xuid] = bool(row.get("allowed", permission == PERMISSION_VOICE))
+		if invalid.has(xuid):
+			continue
+		if allowed_by_xuid.has(xuid) or not (row.get("allowed") is bool) \
+				or String(row.get("permission", "")) != permission:
+			allowed_by_xuid.erase(xuid)
+			invalid[xuid] = true
+			malformed = true
+			continue
+		allowed_by_xuid[xuid] = row["allowed"]
+	if malformed or allowed_by_xuid.size() != xuids.size():
+		push_warning("[Privacy] Incomplete or malformed %s permission answers; unresolved players remain restricted." % permission)
 	return allowed_by_xuid
 
 

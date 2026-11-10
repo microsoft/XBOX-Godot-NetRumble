@@ -607,7 +607,7 @@ func _invalidate_chat_policy() -> void:
 	_chat_policy_queued = false
 	var chat := _chat()
 	if chat != null:
-		chat.invalidate_text_policy()
+		chat.invalidate_peer_policy()
 
 
 func _on_chat_account_changed() -> void:
@@ -651,7 +651,8 @@ func apply_chat_restrictions() -> void:
 	if NetManager.is_offline() or party == null or chat == null or not party.has_network() \
 			or not _chat_allowed:
 		return
-	if Services == null:
+	if Services == null or not Services.is_account_ready() or Services.is_shutting_down():
+		_invalidate_chat_policy()
 		return
 	var active_keys: Array[Dictionary] = []
 	for state: PlayerState in NetManager.players.values():
@@ -659,7 +660,7 @@ func apply_chat_restrictions() -> void:
 			var key := party.entity_key_for(state.peer_id)
 			if not key.is_empty():
 				active_keys.append(key)
-	chat.retain_text_peers(active_keys)
+	chat.retain_peers(active_keys)
 	if _chat_policy_running:
 		_chat_policy_queued = true
 		return
@@ -698,7 +699,7 @@ func apply_chat_restrictions() -> void:
 			continue
 		var verdict: Dictionary = verdicts.get(peer["xuid"], {})
 		# Custom-ID clients still admit only authenticated roster peers. Xbox sessions
-		# need a completed text verdict; an absent XUID or failed query grants no text.
+		# need completed per-channel verdicts; absent XUIDs and failed queries grant no chat.
 		await chat.set_peer_restrictions(
 			entity_key,
 			not platform_privacy or bool(verdict.get("voice", false)),
