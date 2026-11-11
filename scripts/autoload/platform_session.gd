@@ -323,7 +323,9 @@ func _write_activity() -> void:
 			if social.is_empty():
 				result = await activity.set_activity(
 					user,
-					party.lobby_connection_string(),
+					PartyService.connection_string_for_activity(
+						party.lobby_connection_string(),
+						NetManager.join_code),
 					_max_players(),
 					NetManager.players.size(),
 					NetManager.join_code,

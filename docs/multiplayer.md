@@ -60,10 +60,11 @@ alone or a lower-level unchecked privilege verdict cannot enable gameplay.
    expired sign-in, service error), falling back to "Could not look up that join code."
 3. If the selected result's `member_count` has reached its `max_member_count`, the join stops
    with **"That match is full."** before any Lobby or Party call. PlayFab documents no
-   lobby-full error, so the search counts are the only signal that can say so. They are a
-   snapshot, not a reservation: a lobby that fills after the search is still refused by
-   Lobby join, with the generic mapped message rather than "full". A capacity of 0 is treated
-   as unknown, never as full. The counts come from the same result the connection string does.
+   lobby-full error, so matching search counts are the only signal that can say so. They are
+   a snapshot, not a reservation: when Lobby join reports "not joinable", the title makes one
+   fresh search for the exact connection string. Only a full result changes the message to
+   "That match is full"; a locked, ended, uncounted or missing destination keeps the mapped
+   refusal. A capacity of 0 is treated as unknown, never as full.
 4. `PlayFab.multiplayer.join_lobby_async()` attaches the Lobby. The wrapper checks its protocol
    version before reading `party_descriptor` and joining Party.
 5. After ensuring a local chat control, `PlayFab.party.join_network_async()` uses that descriptor
@@ -153,9 +154,13 @@ can still refuse a valid-looking activation. See the [invite walkthrough](walkth
 
 Full sessions are left out of Join Friend (`ActivityService.joinable_activities()` drops an
 activity whose `current_players` has reached `max_players`), which is why its empty state speaks
-of *joinable* matches. The "That match is full." preflight above covers **code joins only**: the
-friend and invite path does no lobby search, so a session that fills after its activity was read
-is refused by Lobby join with the generic mapped message.
+of *joinable* matches. Hosted-match activities also carry the join code beside the opaque Lobby
+connection string in a versioned title-defined value (`nr1:<code>:<connection string>`), provided
+the complete value is under Xbox's 512-character limit. The invite path searches by that code
+but uses counts only when the returned connection string exactly matches the invitation; it
+always joins the connection string supplied by the activity. Older activities without the envelope still
+join as before, but cannot provide full-lobby diagnostics. The fresh lookup after a "not joinable"
+result covers a lobby that filled between the activity/search snapshot and Lobby admission.
 
 Both join paths reach the host through `_on_peer_connected()`, so both are refused the same
 way if the match has already started — see [Closing a match to newcomers](#closing-a-match-to-newcomers). The
