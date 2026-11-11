@@ -137,12 +137,18 @@ Party has no send-side text permission: `PartyChatPermissionOptions` is send/rec
 Removing a roster peer removes it from eligible text recipients immediately, even if Party
 has not removed its chat control yet.
 Inbound Party text is validated against the same per-peer **text** policy before `ChatService`
-emits `text_received`. XBOX peers awaiting a verdict, missing an XUID or denied text are not
-admitted for text. `PrivacyService` defaults missing/failed **text** permission answers to
-`false`, but does not cache those failures as permanent denials; a later evaluation can obtain
-a valid answer. The existing voice-query fallback is unchanged.
+emits `text_received`. Both voice and text stay closed for peers awaiting a verdict, missing
+an XUID or missing a valid answer for that channel. `PrivacyService` requires an explicit
+boolean permission answer tied to the requested XUID and permission; failed, incomplete,
+duplicate or malformed answers grant no communication on that channel and are not cached as
+permanent denials. A later evaluation can obtain a valid answer. This prevents a failed voice
+query from admitting a nonfriend when Xbox communication privacy is set to **Friends**.
 `PrivacyService` likewise owns invalidation generations for permission and mute/avoid-list
 queries; late responses cannot refill caches cleared for a different account/policy context.
+New Party chat controls receive no audio permissions until their per-player verdict arrives.
+Account/session policy invalidation and roster removal immediately revoke native audio
+permissions, including controls retained while refreshed checks are pending. Self-unmute
+and player-unmute cannot authorize a pending or platform-denied voice relationship.
 
 The player's own per-player mute is separate: occupied lobby roster rows are focusable, and
 activating one opens the **player actions** overlay: mute, report and view profile. A voice the
@@ -150,8 +156,8 @@ platform already silenced cannot be unmuted by the player, and the row says so. 
 are combined in one funnel, so lifting a restriction never unmutes someone the player muted.
 
 The in-match display removes newly text-restricted senders' retained rows and never replays
-discarded content after restoration. User/account-cache invalidation triggers text privacy
-re-evaluation and clears retained text while verdicts are pending.
+discarded content after restoration. User/account-cache invalidation triggers communication
+privacy re-evaluation and clears retained text while verdicts are pending.
 Identity/session changes invalidate asynchronous policy,
 moderation and send results. The local microphone starts muted without preventing permitted
 typed text. See [the text lifecycle](multiplayer.md#chat) and

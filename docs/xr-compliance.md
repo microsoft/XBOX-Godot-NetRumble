@@ -165,10 +165,12 @@ text independently grants `CHAT_PERMISSION_RECEIVE_TEXT`. Self-mute and player/p
 voice mute do not imply text denial. Text is addressed to an explicit eligible target list;
 `send_chat_text()` refuses when it is empty instead of triggering the addon's empty-list broadcast.
 
-`ChatService` also checks text eligibility/lifecycle at receive time. Pending, missing or failed
-XBOX text answers deny new text (`PrivacyService` defaults text to `false`, without changing
-the voice fallback). These query failures are not cached as permanent text denials.
-Roster removal immediately removes text-recipient eligibility, even if a chat control lingers.
+`ChatService` also checks text eligibility/lifecycle at receive time. Pending, missing, failed
+or malformed XBOX permission answers deny the corresponding channel. Voice requires an
+explicit affirmative verdict before Party audio permissions are granted; self-unmute cannot
+bypass that requirement. These query failures are not cached as permanent denials.
+Account/session invalidation and roster removal immediately revoke audio permissions and
+text-recipient eligibility, even if a chat control lingers.
 `NetManager` resolves senders through `PartyService.entity_key_for(peer_id)` and the current
 roster, not a replicated identity fallback. `NRChatLog` removes newly restricted senders' rows and clears on
 match/session/identity loss. No raw `original_text`, transcription or translation is displayed.
@@ -177,8 +179,8 @@ ReceiveText does not require speech features to be enabled.
 The chat flags in `PartyService._make_party_config()` are derived from the
 communications privilege (XR-045) rather than hardcoded. A peer with no XUID on a
 session where privacy is available fails closed.
-The existing voice-query fail-open behavior
-and account-event refresh coverage remain limitations to exercise, not certification guarantees.
+Account-event refresh coverage and live platform enforcement still require certification
+validation; automated service doubles are not evidence of a two-console privacy pass.
 
 **Code:** `scripts/services/privacy_service.gd`,
 `scripts/autoload/platform_session.gd` (`apply_chat_restrictions`, `toggle_peer_mute`),

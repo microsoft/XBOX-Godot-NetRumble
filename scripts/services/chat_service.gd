@@ -69,12 +69,12 @@ var _player_muted_ids: Dictionary = {}
 ## NetManager from the privacy verdicts; not toggleable from inside the title.
 var _restricted_voice: Dictionary = {}
 var _restricted_text: Dictionary = {}
-var _text_evaluated: Dictionary = {}
+var _evaluated_peers: Dictionary = {}
 var _control_generation := 0
 var _control_operation_pending := false
 var _service_epoch := 0
 var _service_reset_pending := false
-var _text_policy_generation := 0
+var _peer_policy_generation := 0
 var last_text_error := ""
 ## Whether this account may use voice and text chat at all (XR-045). Set before host or
 ## join; false builds the network with both chat flags off and never creates a chat
@@ -96,7 +96,7 @@ func set_chat_allowed(allowed: bool) -> void:
 	if _chat_allowed == allowed:
 		return
 	_chat_allowed = allowed
-	invalidate_text_policy()
+	invalidate_peer_policy()
 
 
 func is_chat_allowed() -> bool:
@@ -133,34 +133,41 @@ func finish_service_reset() -> void:
 
 func can_exchange_text(entity_key: Dictionary) -> bool:
 	var entity_id := String(entity_key.get("id", ""))
-	return _chat_allowed and _text_evaluated.has(entity_id) and not _restricted_text.has(entity_id)
+	return _chat_allowed and _evaluated_peers.has(entity_id) and not _restricted_text.has(entity_id)
 
 
-## Unknown text relationships stay closed until the current account's verdict arrives.
-func invalidate_text_policy() -> void:
-	_text_policy_generation += 1
-	_text_evaluated.clear()
+func can_exchange_voice(entity_key: Dictionary) -> bool:
+	var entity_id := String(entity_key.get("id", ""))
+	return _chat_allowed and _evaluated_peers.has(entity_id) and not _restricted_voice.has(entity_id)
+
+
+## Revoke native audio permissions before waiting for a replacement privacy verdict.
+func invalidate_peer_policy() -> void:
+	_peer_policy_generation += 1
+	_evaluated_peers.clear()
+	_refresh_peer_policy()
 	text_policy_changed.emit()
 
 
-func retain_text_peers(entity_keys: Array[Dictionary]) -> void:
+func retain_peers(entity_keys: Array[Dictionary]) -> void:
 	var present: Dictionary = {}
 	for entity_key in entity_keys:
 		present[String(entity_key.get("id", ""))] = true
 	var changed := false
-	for entity_id in _text_evaluated.keys():
+	for entity_id in _evaluated_peers.keys():
 		if not present.has(entity_id):
-			_text_evaluated.erase(entity_id)
+			_evaluated_peers.erase(entity_id)
 			changed = true
 	if changed:
-		_text_policy_generation += 1
+		_peer_policy_generation += 1
+		_refresh_peer_policy()
 		text_policy_changed.emit()
 
 
 ## Synchronous: called before any asynchronous session or account teardown.
 func invalidate_session() -> void:
 	_control_generation += 1
-	invalidate_text_policy()
+	invalidate_peer_policy()
 
 
 static func valid_text(text: String) -> bool:
@@ -175,8 +182,8 @@ func set_peer_restrictions(entity_key: Dictionary, allow_voice: bool, allow_text
 	var entity_id := String(entity_key.get("id", ""))
 	if entity_id.is_empty():
 		return
-	var changed := not _text_evaluated.has(entity_id)
-	_text_evaluated[entity_id] = true
+	var changed := not _evaluated_peers.has(entity_id)
+	_evaluated_peers[entity_id] = true
 	if allow_voice:
 		changed = _restricted_voice.erase(entity_id) or changed
 	elif not _restricted_voice.has(entity_id):
@@ -188,7 +195,7 @@ func set_peer_restrictions(entity_key: Dictionary, allow_voice: bool, allow_text
 		_restricted_text[entity_id] = true
 		changed = true
 	if changed:
-		_text_policy_generation += 1
+		_peer_policy_generation += 1
 		text_policy_changed.emit()
 		await _apply_peer_policy(entity_key)
 		chat_changed.emit()
@@ -199,7 +206,7 @@ func set_peer_restrictions(entity_key: Dictionary, allow_voice: bool, allow_text
 ## audible player must stay mutable.
 func is_peer_voice_restricted(entity_key: Dictionary) -> bool:
 	var entity_id := String(entity_key.get("id", ""))
-	return not entity_id.is_empty() and _restricted_voice.has(entity_id)
+	return not entity_id.is_empty() and not can_exchange_voice(entity_key)
 
 
 ## True when the player muted this entity themselves.
@@ -214,7 +221,7 @@ func clear_chat_restrictions() -> void:
 	_player_muted_ids.clear()
 	_restricted_voice.clear()
 	_restricted_text.clear()
-	invalidate_text_policy()
+	invalidate_peer_policy()
 
 
 ## The lobby is voice-only: microphone indicators on the roster and nothing else. Text
@@ -245,7 +252,7 @@ func chat_indicator_for(entity_key: Dictionary) -> ChatIndicator:
 	var control: Variant = chat.get_chat_control(entity_key)
 	if control == null:
 		return ChatIndicator.NONE
-	if _muted_ids.has(entity_id) or _player_muted_ids.has(entity_id) or _restricted_voice.has(entity_id):
+	if _muted_ids.has(entity_id) or _player_muted_ids.has(entity_id) or not can_exchange_voice(entity_key):
 		return ChatIndicator.MUTED
 	var indicator: int = chat.get_chat_indicator(entity_key, _chat_user)
 	if indicator == _chat_constant(&"CHAT_INDICATOR_TALKING"):
@@ -304,19 +311,21 @@ func _apply_peer_policy(entity_key: Dictionary) -> void:
 		return
 	var entity_id := String(entity_key.get("id", ""))
 	var generation := _control_generation
-	var policy_generation := _text_policy_generation
-	var muted := _player_muted_ids.has(entity_id) or _restricted_voice.has(entity_id)
+	var policy_generation := _peer_policy_generation
+	# SetPermissions takes effect before its completion signal. Close transport first,
+	# including when a later render-mute operation fails or yields.
+	_apply_peer_permissions(entity_key)
+	var muted := _player_muted_ids.has(entity_id) or not can_exchange_voice(entity_key)
 	var result: Variant = await chat.set_audio_muted_async(entity_key, muted)
-	if generation != _control_generation or policy_generation != _text_policy_generation:
+	if generation != _control_generation or policy_generation != _peer_policy_generation:
 		return
 	if result != null and not result.ok:
 		push_warning("[Party] Could not change mute state: %s" % _reason(result))
 	result = await chat.set_text_muted_async(entity_key, not can_exchange_text(entity_key))
-	if generation != _control_generation or policy_generation != _text_policy_generation:
+	if generation != _control_generation or policy_generation != _peer_policy_generation:
 		return
 	if result != null and not result.ok:
 		push_warning("[Party] Could not change text mute state: %s" % _reason(result))
-	await _apply_peer_permissions(entity_key)
 
 
 ## Voice and typed text have independent relationship permissions (XR-015).
@@ -326,7 +335,7 @@ func _apply_peer_permissions(entity_key: Dictionary) -> void:
 	if chat == null or _chat_user == null:
 		return
 	var permissions := 0
-	if _chat_allowed and not _restricted_voice.has(String(entity_key.get("id", ""))):
+	if can_exchange_voice(entity_key):
 		permissions = _chat_constant(&"CHAT_PERMISSION_RECEIVE_AUDIO")
 		if not _self_muted:
 			permissions |= _chat_constant(&"CHAT_PERMISSION_SEND_AUDIO")
@@ -360,9 +369,9 @@ func send_chat_text(message: String) -> bool:
 	if targets.is_empty():
 		return _text_failure("No players are currently available for text chat.")
 	var generation := _control_generation
-	var policy_generation := _text_policy_generation
+	var policy_generation := _peer_policy_generation
 	var result: Variant = await chat.send_text_async(message, targets)
-	if generation != _control_generation or policy_generation != _text_policy_generation:
+	if generation != _control_generation or policy_generation != _peer_policy_generation:
 		return _text_failure("The chat session or its permissions changed. Please try again.")
 	if result == null or not result.ok:
 		return _text_failure("Could not send the message: %s" % _reason(result))
@@ -516,7 +525,6 @@ func _on_text_message_received(entity_key: Dictionary, message: Variant) -> void
 
 
 func _on_chat_control_added(entity_key: Dictionary, _control: Variant) -> void:
-	await _apply_self_mute()
 	# A verdict may already be on file for this player — they were evaluated when the
 	# roster changed, which can happen before their chat control reaches the mesh.
 	await _apply_peer_policy(entity_key)
@@ -529,7 +537,7 @@ func _on_chat_control_removed(entity_key: Dictionary) -> void:
 	_player_muted_ids.erase(entity_id)
 	_restricted_voice.erase(entity_id)
 	_restricted_text.erase(entity_id)
-	_text_evaluated.erase(entity_id)
+	_evaluated_peers.erase(entity_id)
 	text_policy_changed.emit()
 	chat_changed.emit()
 
@@ -546,6 +554,15 @@ func _on_audio_muted_changed(entity_key: Dictionary, muted: bool) -> void:
 
 
 # --- Helpers ----------------------------------------------------------------
+
+func _refresh_peer_policy() -> void:
+	var chat: Variant = _chat()
+	if chat == null or _chat_user == null:
+		return
+	for entity_key: Dictionary in chat.get_remote_entity_keys():
+		# Start every native permission update before awaiting any completion.
+		_apply_peer_permissions(entity_key)
+
 
 ## Applies the current self-mute state to every remote control. Called whenever the
 ## mesh changes, so a player who joins while muted still cannot hear the local mic.

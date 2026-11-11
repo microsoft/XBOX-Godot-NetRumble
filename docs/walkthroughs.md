@@ -217,6 +217,12 @@ peers, compare text-denied/voice-allowed against voice-denied/text-allowed. Use 
 actions to mute, unmute, report or view a profile. Change authorized policy and trigger its
 account-state refresh/rejoin path; observe retained-row removal when text is revoked.
 Separately revoke communications privilege during a session, then restore it and leave/rejoin.
+For XR015-01, set one account's **Others can communicate with voice, text, or invites**
+to **Friends** and use a second account that is not its friend. Join by lobby code and
+generate speech on both devices: the restricted account must not hear the nonfriend.
+Repeat with both accounts joining a third device's hosted match. Compare against an
+authorized friend and the **Block** setting; invitations and typed text must remain
+restricted independently. Exercise a resolvable communications denial through the system UI.
 
 **Source / addon API:** `PrivilegeService.ensure()` wraps
 `gdk.users.check_privilege_async()` and `resolve_privilege_with_ui_async()`.
@@ -230,15 +236,17 @@ receive time. `ModerationService.report()` uses `gdk.social.submit_reputation_fe
 **Observable outcome:** Known multiplayer denial prevents all join entry points; communication
 denial does not falsely offer working chat. Voice mute does not deny typed text. Pending/unknown
 XBOX text policy admits no row; newly denied senders lose retained rows without later replay.
-Account-cache invalidation clears retained text while privacy is re-evaluated. Mid-session
+Pending or failed voice checks grant no Party audio. Unmuting cannot lift a pending or
+platform-denied relationship. Account-cache invalidation revokes audio and clears retained
+text while privacy is re-evaluated. Mid-session
 communications revocation destroys the control; restoration alone does not restore chat until
 the player leaves/rejoins.
 A refused outgoing string stays in entry with a reason. A successful report means the service
 accepted feedback, not that a moderation action occurred.
 
-**Unavailable / failure:** Privilege-query failure currently fails open; missing/failed XBOX text
-privacy answers fail closed without caching query failures as permanent denials; existing
-voice fallback is unchanged. XBOX string verification
+**Unavailable / failure:** Privilege-query failure currently fails open; missing, failed or
+malformed XBOX voice/text privacy answers fail closed without caching query failures as
+permanent denials. XBOX string verification
 failure with an available user/service blocks publication.
 Policy is refreshed through roster/account events, not a claimed continuous privacy feed.
 No live network reconfiguration is supplied for restored communications privilege.
