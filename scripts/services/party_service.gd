@@ -164,6 +164,8 @@ const LOBBY_CHANGE_DISCONNECTED := 6
 ## ephemeral port, -1 keeps the platform's own preferred multiplayer port.
 const UDP_PORT_EPHEMERAL := 0
 const UDP_PORT_PLATFORM_DEFAULT := -1
+const ACTIVITY_JOIN_PREFIX := "nr1:"
+const ACTIVITY_CONNECTION_STRING_MAX_LENGTH := 511
 
 ## Why a join failed, in the player's terms. These are the title's own strings, chosen
 ## by HRESULT below, and they are the only thing a failed join is allowed to put on
@@ -794,9 +796,8 @@ func join(user: Variant, code: String, deadline_msec: int = 0) -> Dictionary:
 	var connection_string := String(lookup.connection_string)
 	if connection_string.is_empty():
 		return _fail("No match found for code %s." % normalized)
-	# The count is a snapshot of the search, not a reservation. A lobby reported full is
-	# refused here without a join; one that fills after the search is still refused by
-	# the service below, and gets whatever message that refusal maps to -- not this one.
+	# Search counts are a snapshot, not a reservation. A later full refusal is checked
+	# against a fresh snapshot in _join_lobby_by_connection_string().
 	var members := int(lookup.member_count)
 	var capacity := int(lookup.max_member_count)
 	if _is_at_capacity(members, capacity):
@@ -808,9 +809,9 @@ func join(user: Variant, code: String, deadline_msec: int = 0) -> Dictionary:
 
 
 ## Joins straight from a lobby connection string, which is what an accepted Xbox invite
-## or a platform join carries. Unlike join() there is no code to search for, so the
-## five-character code is recovered from the lobby's search properties instead — it is
-## needed for more than the UI, see _join_attached_lobby.
+## or a platform join carries. New hosted-match activities include the join code beside
+## the opaque connection string for a capacity preflight; older activity values remain
+## direct connection strings.
 func join_by_connection_string(user: Variant, connection_string: String, deadline_msec: int = 0) -> Dictionary:
 	if not _user_is_ready(user):
 		return _fail("Sign in and load your saved data before joining.")
@@ -825,10 +826,55 @@ func join_by_connection_string(user: Variant, connection_string: String, deadlin
 		return _fail(ready_error)
 	if user == null:
 		return _fail("You must be signed in to join a match.")
+	var activity_join := join_target_from_activity_connection_string(connection_string)
+	connection_string = String(activity_join.connection_string)
+	var expected_code := String(activity_join.code)
 	if connection_string.is_empty():
 		return _fail("That invitation is no longer valid.")
 
-	return await _join_lobby_by_connection_string(user, connection_string, "", operation)
+	# Xbox activities only expose a title-defined connection string, so hosted-match
+	# activities carry the join code beside the opaque PlayFab credential. Search is
+	# diagnostic only here: never replace or redirect the invitation's destination.
+	if not expected_code.is_empty():
+		var lookup := await _find_lobby(user, expected_code, operation, connection_string)
+		if not _is_join_operation_current(operation):
+			return _fail("Join cancelled.")
+		if _is_at_capacity(int(lookup.member_count), int(lookup.max_member_count)):
+			push_warning("[Party] Not joining: the invited lobby search reported it full (%d/%d)." % [
+				int(lookup.member_count), int(lookup.max_member_count)])
+			return _fail(JOIN_FAILED_FULL)
+
+	return await _join_lobby_by_connection_string(user, connection_string, expected_code, operation)
+
+
+## Activities accept a title-defined connection string, but Xbox requires it to be
+## shorter than 512 characters. Keep PlayFab's connection string opaque and append the
+## join code only when the complete payload fits. Older/raw activities remain joinable.
+static func connection_string_for_activity(connection_string: String, code: String) -> String:
+	var normalized := code.strip_edges().to_upper()
+	if connection_string.is_empty() or normalized.length() != JOIN_CODE_LENGTH:
+		return connection_string
+	for character in normalized:
+		if not JOIN_CODE_ALPHABET.contains(character):
+			return connection_string
+	var packaged := ACTIVITY_JOIN_PREFIX + normalized + ":" + connection_string
+	return packaged if packaged.length() <= ACTIVITY_CONNECTION_STRING_MAX_LENGTH else connection_string
+
+
+## Unpacks this title's activity envelope; any other value is an older raw lobby
+## connection string and is passed through unchanged.
+static func join_target_from_activity_connection_string(value: String) -> Dictionary:
+	if not value.begins_with(ACTIVITY_JOIN_PREFIX) or value.length() <= 10 \
+			or value.substr(9, 1) != ":":
+		return {"connection_string": value, "code": ""}
+	var code := value.substr(4, JOIN_CODE_LENGTH)
+	for character in code:
+		if not JOIN_CODE_ALPHABET.contains(character):
+			return {"connection_string": value, "code": ""}
+	var connection_string := value.substr(10)
+	if connection_string.is_empty():
+		return {"connection_string": value, "code": ""}
+	return {"connection_string": connection_string, "code": code}
 
 
 ## Shared tail of both join paths: join the lobby, settle on the join code, then join
@@ -841,7 +887,17 @@ func _join_lobby_by_connection_string(user: Variant, connection_string: String, 
 			await _leave_lobby_instance(joined.data)
 		return _fail("Join cancelled.")
 	if joined == null or not joined.ok:
-		return _fail(_join_failure(joined, "Lobby join"))
+		var join_error := _join_failure(joined, "Lobby join")
+		if not expected_code.is_empty() \
+				and _normalized_result_hresult(joined) == 0x89236227:
+			# The Lobby service does not distinguish a full lobby in its join error.
+			# A fresh, destination-matched capacity snapshot can explain this one case.
+			var refreshed := await _find_lobby(user, expected_code, operation, connection_string)
+			if not _is_join_operation_current(operation):
+				return _fail("Join cancelled.")
+			if _is_at_capacity(int(refreshed.member_count), int(refreshed.max_member_count)):
+				return _fail(JOIN_FAILED_FULL)
+		return _fail(join_error)
 
 	var joined_lobby: Variant = joined.data
 	var search_value: Variant = _object_value(joined_lobby, &"search_properties", {})
@@ -1667,7 +1723,12 @@ func _make_search_config(code: String) -> Variant:
 ## counts taken from the same summary as the connection string. A search that worked and
 ## matched nothing leaves every field empty; a failed search sets only `error` to the
 ## player-facing reason, keeping service failure distinct from an empty result.
-func _find_lobby(user: Variant, code: String, operation: int = 0) -> Dictionary:
+func _find_lobby(
+	user: Variant,
+	code: String,
+	operation: int = 0,
+	expected_connection_string: String = ""
+) -> Dictionary:
 	var lookup := {"connection_string": "", "member_count": 0, "max_member_count": 0, "error": ""}
 	if not _is_join_operation_current(operation):
 		return lookup
@@ -1678,7 +1739,7 @@ func _find_lobby(user: Variant, code: String, operation: int = 0) -> Dictionary:
 	if found == null or not found.ok:
 		lookup["error"] = _join_failure(found, "Lobby search", JOIN_FAILED_SEARCH)
 		return lookup
-	var summary: Variant = _first_live_summary(found.data)
+	var summary: Variant = _first_live_summary(found.data, expected_connection_string)
 	if summary == null:
 		return lookup
 	var members := _summary_count(summary, "member_count")
@@ -1696,11 +1757,10 @@ func _find_lobby(user: Variant, code: String, operation: int = 0) -> Dictionary:
 ## on its `lobbies` array, not on `data` directly. Treating `data` as an Array silently
 ## yields zero matches rather than an error, which is a hard failure to diagnose.
 ##
-## Join codes are unique in practice, so the first live result wins. Tolerating extra
-## results rather than demanding exactly one keeps a stale duplicate lobby from blocking
-## an otherwise valid join. The capacity check reads this summary's counts and no other:
-## another result's counts say nothing about the lobby actually being joined.
-func _first_live_summary(result: Variant) -> Variant:
+## Join codes are unique in practice, so the first live result wins for code joins. An
+## invite may additionally require an exact connection-string match, so another result's
+## counts can never explain the invited destination's refusal.
+func _first_live_summary(result: Variant, expected_connection_string: String = "") -> Variant:
 	if result == null:
 		return null
 	var summaries: Variant = result.lobbies
@@ -1709,7 +1769,9 @@ func _first_live_summary(result: Variant) -> Variant:
 	for entry in summaries:
 		if entry == null:
 			continue
-		if not String(entry.connection_string).is_empty():
+		var connection_string := String(entry.connection_string)
+		if not connection_string.is_empty() \
+				and (expected_connection_string.is_empty() or connection_string == expected_connection_string):
 			return entry
 	return null
 

@@ -1,10 +1,7 @@
 extends RefCounted
 
-## Join failures say what actually went wrong. PlayFab has no "lobby full" error, so a
-## code join reads the member counts the lobby search already returned and refuses a full
-## lobby before any Lobby or Party join. A failed search is not reported as a search that
-## found nothing, and the friend list's empty state is worded around joinable matches
-## because full ones are filtered out of it.
+## PlayFab has no "lobby full" join error. Code and hosted-activity joins use matching
+## search counts to report full capacity without mislabeling other admission refusals.
 
 const Doubles := preload("res://tools/tests/doubles.gd")
 const CODE := "ABCDE"
@@ -45,6 +42,7 @@ class LobbySDK extends RefCounted:
 	signal released()
 	var block_search := false
 	var search_result: Variant = null
+	var search_results: Array[Variant] = []
 	var join_result: Variant = null
 	var searches := 0
 	var joins: Array[String] = []
@@ -53,6 +51,8 @@ class LobbySDK extends RefCounted:
 		searches += 1
 		if block_search:
 			await released
+		if not search_results.is_empty():
+			return search_results.pop_front()
 		return search_result
 
 	func join_lobby_async(_user: Variant, connection_string: String, _cfg: Variant) -> Variant:
@@ -128,6 +128,7 @@ func run(test: Node) -> void:
 	test._check(await Services.sign_in(), "join-failure account ready")
 	var user: Variant = Services.playfab_user()
 	await _full_lobbies(test, user)
+	await _activity_invites(test, user)
 	await _lobbies_with_room(test, user)
 	await _unknown_capacity(test, user)
 	await _selected_result(test, user)
@@ -165,6 +166,55 @@ func _full_lobbies(test: Node, user: Variant) -> void:
 		test._check(not result.ok and result.error == PartyService.JOIN_FAILED_FULL, "full lobby reports full: " + str(result))
 		test._check(party.searched_codes == [CODE] and party.lobby_sdk.searches == 1 and _no_join(party),
 			"full lobby is found by its normalized code and attempts no Lobby or Party join")
+
+
+func _activity_invites(test: Node, user: Variant) -> void:
+	print("CASE: hosted Xbox activity joins carry a code alongside the opaque Lobby connection string")
+	var connection_string := "cv2:opaque|key:with:colons"
+	var activity_value := PartyService.connection_string_for_activity(connection_string, CODE)
+	var target := PartyService.join_target_from_activity_connection_string(activity_value)
+	test._check(target == {"connection_string": connection_string, "code": CODE},
+		"activity envelope round-trips the code and opaque connection string")
+	test._check(PartyService.join_target_from_activity_connection_string("legacy-connection") == {
+		"connection_string": "legacy-connection", "code": "",
+	}, "older raw activity strings remain unchanged")
+
+	var full := _party(_found([Summary.new(connection_string, 4, 4)]))
+	var refused := await full.join_by_connection_string(user, activity_value)
+	test._check(not refused.ok and refused.error == PartyService.JOIN_FAILED_FULL,
+		"invite preflight gives a full-lobby reason: " + str(refused))
+	test._check(full.searched_codes == [CODE] and _no_join(full),
+		"invite only reports full for the exact searched destination")
+
+	print("CASE: invite capacity snapshots cannot redirect an invite to another lobby")
+	var open := _party(_found([Summary.new("different-lobby", 4, 4)]),
+		{"ok": true, "data": Lobby.new(CODE)})
+	var joined := await open.join_by_connection_string(user, activity_value)
+	test._check(joined.ok and open.lobby_sdk.joins == [connection_string],
+		"full search result for a different connection does not block the invite: " + str(joined))
+	await open._chat.destroy_control()
+
+	print("CASE: a lobby that fills during an invite gets a fresh capacity check")
+	var filling := _party(null, _error(LOBBY_NOT_JOINABLE, "lobby_join_failed"))
+	filling.lobby_sdk.search_results = [
+		_found([Summary.new(connection_string, 3, 4)]),
+		_found([Summary.new(connection_string, 4, 4)]),
+	]
+	refused = await filling.join_by_connection_string(user, activity_value)
+	test._check(not refused.ok and refused.error == PartyService.JOIN_FAILED_FULL
+			and filling.lobby_sdk.searches == 2,
+		"fresh exact-destination count explains a race-to-full refusal: " + str(refused))
+
+	print("CASE: ambiguous invite refusals stay generic without fresh full-capacity evidence")
+	var still_open := _party(null, _error(LOBBY_NOT_JOINABLE, "lobby_join_failed"))
+	still_open.lobby_sdk.search_results = [
+		_found([Summary.new(connection_string, 3, 4)]),
+		_found([Summary.new(connection_string, 3, 4)]),
+	]
+	refused = await still_open.join_by_connection_string(user, activity_value)
+	test._check(not refused.ok and refused.error == PartyService.JOIN_FAILED_NOT_JOINABLE
+			and still_open.lobby_sdk.searches == 2,
+		"non-full or locked refusal is not mislabeled full: " + str(refused))
 
 
 func _lobbies_with_room(test: Node, user: Variant) -> void:
