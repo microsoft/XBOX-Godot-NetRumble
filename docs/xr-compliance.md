@@ -228,7 +228,8 @@ features, and must not invent names for system components.
   the official XBOX button name on console (`X Ready  Y Mute  B Leave`), falling back to
   keyboard labels on desktop. A Godot title that ships the default `ui_accept` glyphs
   will fail this.
-- `MicrosoftGame.config` `PublisherDisplayName` is `Xbox Advanced Technology Group`.
+- `MicrosoftGame.config` `PublisherDisplayName` is `Xbox ATG`, matching the Partner
+  Center seller display name required for package acceptance.
 - Documentation uses "XBOX network" for the service and "XBOX services" for the APIs.
 
 **Code:** `scripts/ui/screens/lobby_screen.gd` (`_prompt_for`), `MicrosoftGame.config`.
