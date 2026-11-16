@@ -69,6 +69,8 @@ func run(test: Node) -> void:
 	await _loss_during_world_init()
 	await _session_end_during_world_init()
 	await _loss_during_countdown()
+	await _client_host_loss()
+	await _lobby_notice_continuity()
 	await _dispose()
 	NetManager.server_disconnected.disconnect(_disconnected)
 	NetManager._clock = Time.get_ticks_msec
@@ -320,3 +322,102 @@ func _loss_during_countdown() -> void:
 			"countdown %s: the match reached its start countdown" % kind[2])
 		_pull(kind)
 		await _expect_menu("countdown " + String(kind[2]))
+
+
+func _guest_screen(state: NRTypes.MatchState) -> Variant:
+	_check(await _join(), "guest session established")
+	_party._lobby.members.append({
+		"entity_key": {"id": "2", "type": "title_player_account"},
+		"connection_status": 1, "properties": {},
+	})
+	var host := PlayerState.new()
+	host.peer_id = NetManager.HOST_PEER_ID
+	host.display_name = "Fixture Host"
+	host.in_game = true
+	NetManager.players[host.peer_id] = host
+	NetManager.multiplayer.multiplayer_peer.peer_connected.emit(host.peer_id)
+	if state == NRTypes.MatchState.LOADING:
+		return ScreenManager.replace_all(ScreenManager.LOBBY)
+	var gameplay: Variant = ScreenManager.replace_all(ScreenManager.GAMEPLAY)
+	NetManager._set_match_state(state)
+	if state == NRTypes.MatchState.STARTING:
+		NetManager._receive_countdown(3)
+		_check(gameplay._countdown_label.text == "3", "guest displays the host countdown")
+	return gameplay
+
+
+func _client_host_loss() -> void:
+	print("CASE: lobby and network host departures return guests to the menu during lobby, loading, countdown and play")
+	for state: NRTypes.MatchState in [NRTypes.MatchState.LOADING, NRTypes.MatchState.PLAYERS_JOINING,
+			NRTypes.MatchState.STARTING, NRTypes.MatchState.RUNNING]:
+		for loss: String in ["transport", "network_peer", "owner_removed", "owner_changed", "owner_cleared", "owner_disconnected"]:
+			await _fixture()
+			await _guest_screen(state)
+			var label := "guest state=%d loss=%s" % [state, loss]
+			_check(not NetManager.is_host(), label + ": this is a client, not the host")
+			match loss:
+				"transport":
+					NetManager.multiplayer.multiplayer_peer.peer_disconnected.emit(NetManager.HOST_PEER_ID)
+				"network_peer":
+					_party._network.state_changed.emit({
+						"kind": PartyService.NETWORK_CHANGE_PEER_LEFT,
+						"network": _party._network, "peer_id": NetManager.HOST_PEER_ID,
+					})
+				_:
+					match loss:
+						"owner_removed":
+							_party._lobby.members.remove_at(0)
+						"owner_changed":
+							_party._lobby.owner_entity_key = {"id": "2", "type": "title_player_account"}
+						"owner_cleared":
+							_party._lobby.owner_entity_key = {}
+						"owner_disconnected":
+							_party._lobby.members[0]["connection_status"] = 0
+					_party._lobby.state_changed.emit({"kind": PartyService.LOBBY_CHANGE_OWNER_CHANGED})
+			_check(NetManager.has_session() and _disconnects == 0,
+				label + ": teardown waits for the native notice")
+			await _expect_menu(label)
+
+	print("CASE: a guest in the countdown also returns on every terminal network notice or server disconnect")
+	for kind: Array in _terminal_kinds():
+		await _fixture()
+		await _guest_screen(NRTypes.MatchState.STARTING)
+		_pull(kind)
+		await _expect_menu("guest countdown " + String(kind[2]))
+	await _fixture()
+	await _guest_screen(NRTypes.MatchState.STARTING)
+	NetManager.multiplayer.server_disconnected.emit()
+	await _expect_menu("guest countdown server disconnect")
+
+
+func _lobby_notice_continuity() -> void:
+	print("CASE: healthy lobby updates and a local-only lobby drop preserve a countdown; host loss behind a popup is deduplicated")
+	await _fixture()
+	await _guest_screen(NRTypes.MatchState.STARTING)
+	ScreenManager.push(ScreenManager.GAME_MENU)
+	var lobby: MP.Lobby = _party._lobby
+	lobby.state_changed.emit({"kind": PartyService.LOBBY_CHANGE_OWNER_CHANGED})
+	await _frames()
+	_check(NetManager.has_session() and _disconnects == 0, "a healthy host survives a lobby update")
+	lobby.disconnected = true
+	lobby.state_changed.emit({"kind": PartyService.LOBBY_CHANGE_DISCONNECTED})
+	await _frames()
+	_check(NetManager.has_session() and _disconnects == 0,
+		"an admitted client losing only its lobby connection preserves its Party session")
+	lobby.members[0]["connection_status"] = 0
+	lobby.state_changed.emit({"kind": PartyService.LOBBY_CHANGE_OWNER_CHANGED})
+	var network: MP.Network = _party._network
+	network.state_changed.emit({
+		"kind": PartyService.NETWORK_CHANGE_PEER_LEFT, "network": network,
+		"peer_id": NetManager.HOST_PEER_ID,
+	})
+	NetManager.multiplayer.multiplayer_peer.peer_disconnected.emit(NetManager.HOST_PEER_ID)
+	await _expect_menu("host loss behind countdown popup from lobby and both peer notices")
+	_check(not lobby.state_changed.is_connected(_party._on_lobby_changed.bind(lobby)),
+		"leaving disconnects the lobby observer")
+	await _poll()
+	_check(await _join(), "a replacement session can be joined")
+	lobby.state_changed.emit({"kind": PartyService.LOBBY_CHANGE_OWNER_CHANGED})
+	await _frames()
+	_check(NetManager.has_session() and _disconnects == 1,
+		"the retired lobby cannot end its replacement session")

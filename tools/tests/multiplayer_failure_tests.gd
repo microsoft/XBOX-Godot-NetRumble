@@ -267,6 +267,7 @@ class Network extends RefCounted:
 
 
 class Lobby extends RefCounted:
+	signal state_changed(change: Variant)
 	var backend: Backend
 	var connection_string := "fixture-connection"
 	var properties := {PartyService.DESCRIPTOR_KEY: "fixture-descriptor"}
