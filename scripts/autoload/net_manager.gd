@@ -355,6 +355,10 @@ func _note_network_rx(kind: StringName) -> void:
 
 ## Binds PartyService's notices. Idempotent, so a party bound twice is still told once.
 func _connect_party(party: PartyService) -> void:
+	if not party.peer_left.is_connected(_on_transport_peer_left):
+		party.peer_left.connect(_on_transport_peer_left)
+	if not party.lobby_updated.is_connected(_on_party_lobby_updated):
+		party.lobby_updated.connect(_on_party_lobby_updated)
 	# Party losing the network is the other way a session can end. The transport route
 	# only fires when a *peer* goes away; if Party itself drops the network -- the relay
 	# becomes unreachable, the service fails the session, the console loses its
@@ -4180,6 +4184,17 @@ func _on_party_network_lost(reason: String, context: Variant = null) -> void:
 		_on_context_transport_lost.call_deferred(context, reason)
 		return
 	_end_lost_network.call_deferred(reason, _entry_epoch, _active_join_request)
+
+
+## Hosted lobbies have no scoped context. Recheck their pinned host after the
+## native notice returns, without carrying an old lobby's update into a new session.
+func _on_party_lobby_updated() -> void:
+	_recheck_lobby_authority.call_deferred(_session_generation)
+
+
+func _recheck_lobby_authority(session: int) -> void:
+	if session != 0 and session == _session_generation:
+		_recheck_authority()
 
 
 func _end_lost_network(reason: String, epoch: int, join: JoinRequest) -> void:

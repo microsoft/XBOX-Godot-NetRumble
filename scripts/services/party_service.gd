@@ -51,6 +51,7 @@ signal party_failed(message: String, context: Variant)
 signal cleanup_status_changed(message: String)
 ## Level-triggered notice that cleanup readiness may have changed; consumers re-query.
 signal cleanup_state_changed()
+signal lobby_updated()
 signal context_updated(context: Variant)
 signal context_lost(reason: String, context: Variant)
 signal multiplayer_invalidated(recovery_epoch: int)
@@ -1795,9 +1796,16 @@ func _attach_lobby(lobby: Variant) -> void:
 	var owner_value: Variant = _object_value(lobby, &"owner_entity_key", {})
 	_legacy_owner_key = _copy_entity_key(owner_value as Dictionary) \
 		if typeof(owner_value) == TYPE_DICTIONARY else {}
+	var callback := _on_lobby_changed.bind(lobby)
+	if lobby != null and lobby.has_signal("state_changed") and not lobby.is_connected("state_changed", callback):
+		lobby.connect("state_changed", callback)
 
 
 func _detach_lobby() -> void:
+	if _lobby != null:
+		var callback := _on_lobby_changed.bind(_lobby)
+		if _lobby.has_signal("state_changed") and _lobby.is_connected("state_changed", callback):
+			_lobby.disconnect("state_changed", callback)
 	# A membership update posted against the lobby being dropped is unobservable and
 	# must not answer for the next lobby.
 	_lock_operation += 1
@@ -1805,6 +1813,11 @@ func _detach_lobby() -> void:
 	_lock_result = {}
 	_lobby = null
 	_legacy_owner_key = {}
+
+
+func _on_lobby_changed(_change: Variant, lobby: Variant) -> void:
+	if lobby == _lobby:
+		lobby_updated.emit()
 
 
 # --- Network ----------------------------------------------------------------
@@ -4577,7 +4590,8 @@ func _on_context_network_state_changed(change: Variant, context: LobbyContext) -
 		&"NETWORK_CHANGE_PEER_JOINED":
 			peer_joined.emit(int(_object_value(change, &"peer_id", 0)))
 		&"NETWORK_CHANGE_PEER_LEFT":
-			peer_left.emit(int(_object_value(change, &"peer_id", 0)))
+			if context == _attached_context:
+				peer_left.emit(int(_object_value(change, &"peer_id", 0)))
 		&"NETWORK_CHANGE_DESCRIPTOR_UPDATED":
 			if context.active_permit > 0 and context.local_creator:
 				_republish_context_descriptor(context)

@@ -181,6 +181,11 @@ Host loss ends clients' sessions and returns them to the **main menu**; a comple
 returns to the lobby. Suspend abandons local state synchronously rather than awaiting these calls.
 See [lifecycle](architecture.md#process-lifecycle) and [terminal loss](architecture.md#how-a-match-ends-badly).
 
+Host departure is observed through both Party's peer-left notification and Godot's transport
+notification. Hosted-lobby state changes also recheck the pinned host's ownership and connection
+status, even when no further gameplay message arrives. These routes stay active during loading,
+the countdown and behind popups; teardown is deferred until the native notice returns.
+
 An already-admitted ordinary hosted/code/invite session may continue when only that client's
 local Lobby notification connection is lost while its Party transport, session identity and
 pinned host remain unchanged. This is continuity of an established session, not fresh Lobby
