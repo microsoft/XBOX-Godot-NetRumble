@@ -11,7 +11,7 @@ These repository text checks need no engine, SDK or secrets, and run as hard gat
 
 ```powershell
 .\tools\check-deport.ps1 -Detailed     # sample voice
-.\tools\check-game-config.ps1          # MicrosoftGame.config validity
+.\tools\check-game-config.ps1          # PC and Xbox MicrosoftGame.config validity
 ```
 
 For script/resource changes, follow with the existing Godot parse/import sequence **in order**:
@@ -103,6 +103,23 @@ worth a dedicated check:
 
 Every rule the script enforces mirrors a hazard already documented in the
 config's own comment block: well-formed XML, `TitleId` / `MSAAppId` /
-`Identity` present, the PC entry first in `ExecutableList`, unique executable
-ids, no `Executable` start-tag spelled inside the comment, and nothing
-following the closing `</Game>` tag.
+`Identity` present, no `Executable` start-tag spelled inside a comment, and
+nothing following the closing `</Game>` tag.
+
+It runs those rules on both configs: `MicrosoftGame.config` at the root (PC) and
+`xbox/MicrosoftGame.config` (Xbox Series X|S). The script also checks that:
+
+- each config declares exactly one executable, for its own device family;
+- `DesktopRegistration` appears only in the PC config and names the PC executable;
+- every other top-level element (identity, store, title, display and service
+  values) matches between the two, with logo paths compared by file name;
+- every logo resolves: PC logo paths from the project root, console logos as bare
+  names in `storelogos/`;
+- the console preset names `xbox/MicrosoftGame.config` and `storelogos`, and its
+  `application/` identity values match the console config;
+- both committed presets produce loose builds and name no key file, and the
+  `XBOX on PC` preset is present (a console-fork editor drops it when it saves).
+
+`-Path <file>` checks one config on its own, for example a config for another
+title. It reads the device family from the file's `Executable`, runs only the
+single-file rules, and skips the shared-value and `export_presets.cfg` checks.

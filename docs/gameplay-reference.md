@@ -19,8 +19,9 @@ schemas and [gameplay regression](manual-test-plan.md#secondary-gameplay-regress
 ```
 addons/          godot_gdk, godot_playfab, godot_gdk_editortools (build output; see docs/addon-maintenance.md)
 external/        xbox-godot-sample submodule, the addon source
-MicrosoftGame.config   GDK identity (project root)
-storelogos/      store tiles referenced by MicrosoftGame.config (.gdignore'd)
+MicrosoftGame.config   GDK identity for XBOX on PC (project root)
+xbox/            MicrosoftGame.config for Xbox Series X|S (.gdignore'd)
+storelogos/      store tiles referenced by both configs (.gdignore'd)
 assets/
   textures/      51 sprites
   audio/         16 sound effects and music tracks

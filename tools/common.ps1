@@ -3,9 +3,10 @@
 # Dot-source this from the sibling scripts:
 #     . (Join-Path $PSScriptRoot 'common.ps1')
 #
-# Nothing here runs a build; it only locates tooling and reads the two files
-# that define what a NetRumble package is — export_presets.cfg and
-# MicrosoftGame.config — so the scripts never hard-code a name that lives there.
+# Nothing here runs a build; it only locates tooling and reads the files that
+# define what a NetRumble package is — export_presets.cfg and the two
+# MicrosoftGame.config files — so the scripts never hard-code a name that lives
+# there.
 
 $ErrorActionPreference = 'Stop'
 
@@ -19,6 +20,13 @@ $script:ConsolePresetName = 'Xbox Series X|S'
 # _gdk_staging folder beside the preset's export_path, then hands that folder to
 # `wdapp register`. See addons/godot_gdk/editor/gdk_export_platform.gd.
 $script:PcStagingFolderName = '_gdk_staging'
+
+# File extension of the package each target's makepkg step writes into the
+# preset's output folder when the preset is set to package output.
+$script:PackageExtensions = @{
+    PC       = '.msixvc'
+    Scarlett = '.xvc'
+}
 
 $script:GdkBinDirCache = $null
 $script:GdkEditionDirCache = @{}
@@ -303,13 +311,97 @@ function Get-ExportPreset {
     return $found
 }
 
+# Returns a preset option as a plain string: quotes removed, '' when unset.
+function Get-PresetOption {
+    param(
+        [Parameter(Mandatory)]$Preset,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if (-not $Preset.Options.ContainsKey($Name)) { return '' }
+    return ([string]$Preset.Options[$Name]).Trim('"')
+}
+
+# 'Loose' or 'Package'. The developer picks this in the editor's Export dialog;
+# the committed presets are Loose. Defaults follow each platform's own default
+# for an option the file does not set.
+function Get-ExportPresetMode {
+    param([Parameter(Mandatory)]$Preset)
+
+    switch ($Preset.Name) {
+        $script:PcPresetName {
+            # godot_gdk addon: dev/register_loose defaults to false (package).
+            if ((Get-PresetOption -Preset $Preset -Name 'dev/register_loose') -eq 'true') { return 'Loose' }
+            return 'Package'
+        }
+        $script:ConsolePresetName {
+            if ((Get-PresetOption -Preset $Preset -Name 'packaging/package_type') -eq '0') { return 'Package' }
+            return 'Loose'
+        }
+    }
+    Fail "Unknown export preset '$($Preset.Name)'."
+}
+
+# Turns a path from export_presets.cfg into an absolute filesystem path.
+# Relative and res:// paths resolve against the project root.
+function Resolve-ProjectPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $value = $Path.Trim('"')
+    if ($value.StartsWith('res://')) { $value = $value.Substring('res://'.Length) }
+    return [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::Combine($script:RepoRoot, $value.Replace('/', '\')))
+}
+
+
+# ── Packages ────────────────────────────────────────────────────────────────
+
+# Returns the newest package of the given extension in a folder, or $null.
+# With -Since, a package written before that time does not count: an export
+# that fails can leave an older package from an earlier run in place.
+function Find-NewestPackage {
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Extension,
+        [datetime]$Since = [datetime]::MinValue
+    )
+
+    if (-not (Test-Path -LiteralPath $Directory)) { return $null }
+
+    # -Filter alone also matches longer extensions that begin the same way.
+    return Get-ChildItem -LiteralPath $Directory -Filter "*$Extension" -File |
+        Where-Object { $_.Extension -eq $Extension -and $_.LastWriteTime -ge $Since } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
+
 
 # ── MicrosoftGame.config ────────────────────────────────────────────────────
 
+# Each target has its own config.
+#   PC        the project root, where the "XBOX on PC" platform always reads it.
+#   Scarlett  the file the console preset names in application/game_config.
+function Get-GameConfigPath {
+    param([Parameter(Mandatory)][ValidateSet('PC', 'Scarlett')][string]$DeviceFamily)
+
+    if ($DeviceFamily -eq 'PC') {
+        return (Join-Path $script:RepoRoot 'MicrosoftGame.config')
+    }
+
+    $preset = Get-ExportPreset -Name $script:ConsolePresetName
+    $configured = Get-PresetOption -Preset $preset -Name 'application/game_config'
+    if (-not $configured) {
+        Fail "The '$($script:ConsolePresetName)' preset does not set application/game_config."
+    }
+    return (Resolve-ProjectPath -Path $configured)
+}
+
 function Get-GameConfig {
-    $configPath = Join-Path $script:RepoRoot 'MicrosoftGame.config'
+    param([Parameter(Mandatory)][ValidateSet('PC', 'Scarlett')][string]$DeviceFamily)
+
+    $configPath = Get-GameConfigPath -DeviceFamily $DeviceFamily
     if (-not (Test-Path -LiteralPath $configPath)) {
-        Fail "MicrosoftGame.config not found at $configPath."
+        Fail "MicrosoftGame.config for $DeviceFamily not found at $configPath."
     }
     return [xml](Get-Content -LiteralPath $configPath -Raw)
 }
@@ -319,12 +411,13 @@ function Get-GameConfig {
 function Get-GameConfigExecutable {
     param([Parameter(Mandatory)][ValidateSet('PC', 'Scarlett')][string]$DeviceFamily)
 
-    $executable = (Get-GameConfig).Game.ExecutableList.Executable |
+    $executable = (Get-GameConfig -DeviceFamily $DeviceFamily).Game.ExecutableList.Executable |
         Where-Object { $_.TargetDeviceFamily -eq $DeviceFamily } |
         Select-Object -First 1
 
     if (-not $executable) {
-        Fail "MicrosoftGame.config declares no <Executable> with TargetDeviceFamily=`"$DeviceFamily`"."
+        Fail ("$(Get-GameConfigPath -DeviceFamily $DeviceFamily) declares no <Executable> with " +
+            "TargetDeviceFamily=`"$DeviceFamily`".")
     }
 
     return [pscustomobject]@{
@@ -333,8 +426,9 @@ function Get-GameConfigExecutable {
     }
 }
 
+# Both configs carry the same identity; tools\check-game-config.ps1 enforces it.
 function Get-GameConfigIdentityName {
-    return (Get-GameConfig).Game.Identity.Name
+    return (Get-GameConfig -DeviceFamily 'PC').Game.Identity.Name
 }
 
 
@@ -390,7 +484,7 @@ function Invoke-ToolOrFail {
 
 # ── wdapp helpers ───────────────────────────────────────────────────────────
 
-# Returns the registered package matching MicrosoftGame.config's Identity/@Name,
+# Returns the registered package matching the PC config's Identity/@Name,
 # or $null. wdapp pads its output with blank lines, so the JSON is sliced out.
 function Get-RegisteredPcPackage {
     $wdapp = Get-GdkTool 'wdapp.exe'

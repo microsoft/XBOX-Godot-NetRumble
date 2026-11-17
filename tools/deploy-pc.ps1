@@ -13,6 +13,9 @@
     itself if it did not. With -SkipExport it registers the previously staged
     folder without rebuilding.
 
+    The script stops when the preset is set to package output; build the
+    .msixvc with export.ps1 and install it with the GDK tools instead.
+
 .PARAMETER Configuration
     debug or release. Defaults to release.
 
@@ -58,6 +61,14 @@ $wdapp = Get-GdkTool 'wdapp.exe'
 $preset = Get-ExportPreset -Name $script:PcPresetName
 $stagingDir = Join-Path $preset.OutputDir $script:PcStagingFolderName
 $pcExecutable = Get-GameConfigExecutable -DeviceFamily 'PC'
+
+# In package mode the export writes an .msixvc; registering the staging folder
+# afterward would replace the package the developer asked for with a loose build.
+if (-not $Unregister -and (Get-ExportPresetMode -Preset $preset) -eq 'Package') {
+    Fail ("The '$($script:PcPresetName)' preset is set to package output (dev/register_loose is off). " +
+        'Build the .msixvc with .\tools\export.ps1 and install it with the GDK tools, or turn ' +
+        "dev/register_loose back on in the editor's Export dialog.")
+}
 
 
 function Register-StagedPackage {

@@ -50,6 +50,7 @@ $targets = @(
     'README.md'
     'project.godot'
     'MicrosoftGame.config'
+    'xbox\MicrosoftGame.config'
 )
 $targetDirs = @('scripts', 'docs', 'tools')
 

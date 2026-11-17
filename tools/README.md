@@ -19,6 +19,10 @@ location.
 .\tools\export.ps1 -Target both       # export only, no deployment
 ```
 
+The deploy scripts work with the committed loose presets. `export.ps1` also builds packages
+after you set a preset to package output in the editor; see
+[the four build outputs](../docs/configuration.md#the-four-build-outputs).
+
 Every export/deploy script takes `-Configuration debug|release` (default
 `release`) and `-Clean`. All of them support `-?` for full help.
 
@@ -121,6 +125,8 @@ Middleware console fork of Godot. Complete the
 The script exports NetRumble to `scarlett_build`, validates the sample layout, deploys it to the
 selected or default development console, and optionally launches it. Use `-SyncExact` when stale
 files must be removed from the target layout. `-Clean` rebuilds the layout from scratch.
+It stops when the preset is set to Package output, because `xbapp deploy` needs a loose layout.
+`deploy-pc.ps1` likewise stops when the PC preset is set to package output.
 
 The `Xbox Series X|S` export platform is absent from stock Godot. Console Godot resolution is
 `-ConsoleGodotExe` → `$env:GODOT_CONSOLE`; set `GODOT_CONSOLE` to the Middleware fork's
@@ -140,6 +146,18 @@ For console deployment syntax, console selection and troubleshooting, see the
 
 Note that `-Target pc` still registers, because that is what the preset's
 `dev/register_loose` option does during export.
+
+The script exports whatever each preset says and checks for the matching output:
+
+| Preset mode | PC checks for | Console checks for |
+|---|---|---|
+| Loose (committed) | `build\_gdk_staging\NetRumblePC.exe` | `scarlett_build\NetRumbleConsole.exe` and the staged config |
+| Package | an `.msixvc` in `build\` | an `.xvc` in `scarlett_build\` |
+
+In package mode only a package written during this run counts, so a failed `makepkg` cannot
+pass on an older package left in the folder. Choose the mode and the key in the editor's Export
+dialog, and never commit that change; see
+[Build a package](../docs/configuration.md#build-a-package).
 
 ### The build stamp
 
@@ -197,11 +215,13 @@ Both debug and release are affected; this is unrelated to build configuration.
 ## `common.ps1`
 
 Shared helpers, dot-sourced by the others. Nothing in it builds anything. It
-locates tooling and reads the two files that define what a NetRumble package is,
+locates tooling and reads the files that define what a NetRumble package is,
 so no script hard-codes a name that lives in them:
 
-- `export_presets.cfg` → preset names, export paths, options
-- `MicrosoftGame.config` → package identity, executable names, AUMID suffixes
+- `export_presets.cfg` → preset names, export paths, options, Loose or Package mode
+- `MicrosoftGame.config` (PC) and the file the console preset names in
+  `application/game_config` (`xbox/MicrosoftGame.config`) → package identity,
+  executable names, AUMID suffixes
 
 The GDK bin directory is resolved the same way the `godot_gdk_editortools`
 addon does it: `$env:GDK_BIN` → `%GameDK%\bin` →
@@ -221,9 +241,9 @@ merge.
 
 `addons\godot_gdk_editortools\gdkpkg.cmd` is a lower-level runner from the GDK
 addon with verbs for `makepkg` packaging (`pack`, `genmap`, `validate`), package
-installation (`install`, `uninstall`), and the sandbox (`sandbox`). Reach for it
-when you need a real `.msixvc` rather than the loose-registration dev loop these
-scripts drive.
+installation (`install`, `uninstall`), and the sandbox (`sandbox`). `export.ps1`
+builds the packages this sample uses; reach for `gdkpkg` to install a PC package
+or for other `makepkg` work.
 
 ```powershell
 addons\godot_gdk_editortools\gdkpkg.cmd --help
