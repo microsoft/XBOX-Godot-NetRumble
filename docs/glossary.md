@@ -66,7 +66,7 @@ You do not need to read this page front to back. Skim it once, then come back to
 
 | Term | Meaning |
 |---|---|
-| **`MicrosoftGame.config`** | The GDK manifest at the repository root declaring package identity, the executables, the XBOX services identifiers and the Store identity. A malformed file disables every platform service at runtime without an obvious error. |
+| **`MicrosoftGame.config`** | The GDK manifest declaring package identity, the executable, the XBOX services identifiers and the Store identity. The PC config sits at the repository root; the Xbox Series X\|S config is `xbox/MicrosoftGame.config`. A malformed file disables every platform service at runtime without an obvious error. |
 | **package identity** | The Windows-level identity an installed app has, which XBOX sign-in requires. Running the project from the Godot editor does not give it package identity. |
 | **loose registration** | Registering an exported build directory with Windows so it gains package identity without being packed into an installer. It is the fast development loop; `dev/register_loose` on the PC preset turns it on. |
 | **registered build** | An export that has been through loose registration or installation, so Windows knows it as an app. XBOX sign-in needs one. |

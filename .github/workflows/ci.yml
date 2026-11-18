@@ -35,8 +35,10 @@ jobs:
   # below cannot catch it. The export-time hazards are just as quiet, producing
   # a mis-named binary or an aborted package rather than an error.
   #
-  # Each rule this runs mirrors a hazard documented in the config's own comment
-  # block, so the warnings there are enforced rather than merely written down.
+  # There are two configs: the PC config at the root and the Xbox Series X|S
+  # config in xbox/. The check validates both, fails when their shared identity,
+  # store, title, display or service values drift apart, and fails when a
+  # committed export preset is set to package output or names a key file.
   #
   # Pure text analysis: no engine, no SDK, no secrets. It is a hard gate.
   # ---------------------------------------------------------------------------
@@ -46,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Validate MicrosoftGame.config
+      - name: Validate PC and Xbox MicrosoftGame.config
         shell: pwsh
         run: .\tools\check-game-config.ps1
 

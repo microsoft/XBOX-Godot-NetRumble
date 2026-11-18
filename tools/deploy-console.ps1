@@ -4,9 +4,12 @@
 
 .DESCRIPTION
     The console export produces a loose layout — executable, .pck, GDK/PlayFab
-    DLLs, gameos.xvd and the staged MicrosoftGame.config — in the preset's
-    output directory. `xbapp deploy` syncs that folder to the devkit and
+    DLLs, gameos.xvd and the staged console MicrosoftGame.config — in the
+    preset's output directory. `xbapp deploy` syncs that folder to the devkit and
     registers the apps declared in the config it finds at the folder root.
+
+    The script stops when the preset is set to Package output; build the
+    package with export.ps1 and install it with the GDK tools instead.
 
     The "Xbox Series X|S" export platform ships only in a Middleware console
     fork of Godot, so -ConsoleGodotExe (or $env:GODOT_CONSOLE) must point at
@@ -66,6 +69,14 @@ $preset = Get-ExportPreset -Name $script:ConsolePresetName
 $layoutDir = $preset.OutputDir
 $consoleExecutable = Get-GameConfigExecutable -DeviceFamily 'Scarlett'
 
+# `xbapp deploy` pushes a loose layout. A preset set to package output writes a
+# package instead.
+if ((Get-ExportPresetMode -Preset $preset) -eq 'Package') {
+    Fail ("The '$($script:ConsolePresetName)' preset is set to Package output, but xbapp deploy " +
+        "needs a loose layout. Build the package with .\tools\export.ps1 and install it with the " +
+        "GDK tools, or set packaging/package_type back to Loose in the editor's Export dialog.")
+}
+
 # `xbapp` takes its connection options *before* the command name.
 $globalArgs = @()
 if ($ConsoleAddress) { $globalArgs += @('/X', $ConsoleAddress) }
@@ -92,13 +103,14 @@ foreach ($required in @($preset.ExportPath, (Join-Path $layoutDir 'MicrosoftGame
 }
 
 # The exporter names the binary after the preset's export_path, while the
-# console registers whatever MicrosoftGame.config declares. A mismatch deploys
-# fine and then fails to launch, so catch it here.
+# console registers whatever the console MicrosoftGame.config declares. A
+# mismatch deploys fine and then fails to launch, so catch it here.
 $exportedName = Split-Path -Leaf $preset.ExportPath
 if ($exportedName -ne $consoleExecutable.Name) {
     Fail ("Layout mismatch: the '$($script:ConsolePresetName)' preset exports " +
-        "'$exportedName' but MicrosoftGame.config declares '$($consoleExecutable.Name)' " +
-        "for TargetDeviceFamily=`"Scarlett`". Align export_presets.cfg with the config.")
+        "'$exportedName' but $(Get-GameConfigPath -DeviceFamily 'Scarlett') declares " +
+        "'$($consoleExecutable.Name)' for TargetDeviceFamily=`"Scarlett`". " +
+        'Align export_presets.cfg with the config.')
 }
 
 $stale = Get-ChildItem -LiteralPath $layoutDir -Filter '*.exe' -File |

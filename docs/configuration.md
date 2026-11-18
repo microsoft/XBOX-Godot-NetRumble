@@ -246,13 +246,20 @@ See [Game Saves behavior](platform-services.md#game-saves) and
 
 ## Running with GDK identity
 
-`MicrosoftGame.config` is committed at the project root, the location the GDK addon and its
-samples expect, so the GDK initializes when you press F5 or run `godot.exe --path .`.
+Each target has its own `MicrosoftGame.config`:
 
-Sign-in additionally needs a **registered** build, which means exporting, and the PC in the
-**XDKS.1** sandbox; see [Set the sandbox to XDKS.1](#set-the-sandbox-to-xdks1). Both presets are
-committed in `export_presets.cfg` (`XBOX on PC` and `Xbox Series X|S`), and `tools/` wraps the
-export and deployment steps for each:
+| Target | Config | Executable |
+|---|---|---|
+| XBOX on PC | `MicrosoftGame.config` at the project root | `NetRumblePC.exe` |
+| Xbox Series X\|S | `xbox/MicrosoftGame.config` | `NetRumbleConsole.exe` |
+
+The root config sits where the GDK addon and its samples expect it, so the GDK initializes when
+you press F5 or run `godot.exe --path .`. See [Two configs](#two-configs) for why there are two.
+
+Sign-in additionally needs a **registered** or installed build, which means exporting, and the PC
+in the **XDKS.1** sandbox; see [Set the sandbox to XDKS.1](#set-the-sandbox-to-xdks1). Both
+presets are committed in `export_presets.cfg` (`XBOX on PC` and `Xbox Series X|S`), set to loose
+output, and `tools/` wraps the export, deploy and install steps for each:
 
 ```powershell
 # PC: export, then `wdapp register` the loose package so it has an identity.
@@ -284,6 +291,52 @@ deliverable. Export also stages the config and the `storelogos/` tiles next to t
 `deploy-pc.ps1` checks `wdapp list`, registers explicitly if needed, and uses `wdapp launch`
 with the resolved AUMID for `-Launch`. Running a loose executable directly is not this launch path.
 
+### The four build outputs
+
+| Output | Preset setting | Command | Result |
+|---|---|---|---|
+| PC loose | `dev/register_loose` on (committed) | `.\tools\deploy-pc.ps1 -Clean -Launch` | `build\_gdk_staging`, registered with `wdapp` |
+| PC package | `dev/register_loose` off, key in `packaging/ekb_file` | `.\tools\export.ps1 -Target pc -Clean` | `.msixvc` in `build\` |
+| Xbox loose | `packaging/package_type` = Loose (committed) | `.\tools\deploy-console.ps1 -Clean -Launch` | layout in `scarlett_build\`, deployed with `xbapp` |
+| Xbox package | `packaging/package_type` = Package, key in `packaging/secret_key` | `.\tools\export.ps1 -Target console -Clean` | `.xvc` in `scarlett_build\` |
+
+`export.ps1` reads the mode from the preset and checks for the matching output. In package mode
+it accepts only a package written during that run, so an older package left in the folder does
+not hide a failed `makepkg`. The deploy scripts stop when their preset is set to package output.
+You can also export any of the four from the editor's **Project > Export** dialog.
+
+#### Build a package
+
+1. Create a local test key outside the repository, once:
+
+   ```powershell
+   New-Item -ItemType Directory -Force C:\keys | Out-Null
+   & "${env:GameDK}bin\makepkg.exe" genkey /ekb C:\keys\NetRumbleTest.lekb
+   ```
+
+   Use a key from your own Partner Center product for anything you submit.
+2. Open the project in the editor that has the target's export platform: the PC editor for
+   `XBOX on PC`, the Middleware console fork for `Xbox Series X|S`. Open **Project > Export**
+   and select the preset.
+   - PC: turn off **Dev > Register Loose** and set **Packaging > Ekb File** to the key.
+   - Xbox: set **Packaging > Package Type** to **Package** and **Packaging > Secret Key** to the
+     key.
+3. Close the editor, then export with the command in the table, or click **Export Project** in
+   the same dialog.
+4. Install the package with the GDK tools. A loose build of the title shares the package
+   identity, so remove it first; on PC, run `.\tools\deploy-pc.ps1 -Unregister`.
+
+**Never commit a preset set to package output or naming a key file.** A key path is specific to
+one machine, and the scripts and docs assume the committed presets produce loose builds.
+`tools\check-game-config.ps1` fails on either, and CI runs it. Saving `export_presets.cfg` from
+the console-fork editor also drops the `XBOX on PC` preset; see
+[the export trap below](#close-the-console-fork-editor-before-touching-export_presetscfg).
+
+`makepkg` runs the Submission Validator on every package and writes its log,
+`Validator_<package name>.xml`, beside the package. The PC exporter also prints the findings as
+`Failure:` lines in the export output. A finding does not stop the package from being written;
+`export.ps1` reports the package it found. Read the log before you submit a package.
+
 ---
 
 ## Export traps
@@ -313,9 +366,12 @@ An empty `_cl_` is valid and must not be discarded as a temporary build file.
 ### Close the console-fork editor before touching `export_presets.cfg`
 
 A Middleware console fork only registers the `Xbox Series X|S` platform. Saving
-`export_presets.cfg` from that editor silently deletes the `XBOX on PC` preset.
+`export_presets.cfg` from that editor silently deletes the `XBOX on PC` preset. Setting the
+console preset to package output in that editor saves the file, so the PC preset disappears
+then too.
 
 Check `git diff export_presets.cfg` if a PC export suddenly reports an undefined preset.
+`tools\check-game-config.ps1` also fails while the PC preset is missing.
 
 ### Discard the `config/features` downgrade after a console export
 
@@ -347,19 +403,35 @@ One code consequence: the simplified model supplies the launching user and rejec
 adds with `E_INVALIDARG`. Sign-in must come from `XBOX.users.add_default_user_async()`.
 `IdentityService`'s interactive fallback is unavailable under this model.
 
-### `Executable` entries
+### Two configs
 
-The two `Executable` entries must match the exported `.exe` names: `NetRumblePC.exe` (`PC`) and
-`NetRumbleConsole.exe` (`Scarlett`). Having two entries means no hand-editing between a PC and a
-console export.
+Each target has its own file:
 
-**The PC entry must stay first.** The GDK "XBOX on PC" export platform derives the staged
-executable name by regex-searching the raw file text for the first `Executable` element's `Name`
-attribute, and that search is not XML-aware; it reads comments too. Consequences:
+- **`MicrosoftGame.config`** (root) declares only `NetRumblePC.exe` (`TargetDeviceFamily="PC"`)
+  and keeps the PC-only `DesktopRegistration` element for multiplayer protocol activation. The
+  `XBOX on PC` export platform always reads this file. Its logo paths are relative to the
+  project root (`storelogos\StoreLogo.png`), and the platform stages each logo at that path.
+- **`xbox/MicrosoftGame.config`** declares only `NetRumbleConsole.exe`
+  (`TargetDeviceFamily="Scarlett"`) and has no `DesktopRegistration`. The console preset names
+  it in `application/game_config`. Its logo paths are bare file names (`StoreLogo.png`): the
+  preset's `packaging/metadata_folder` is `storelogos`, and the console exporter places these
+  logos beside the config at the package root. The folder carries a
+  `.gdignore`, so Godot does not import the file.
 
-- The PC entry must be first in `ExecutableList`.
-- Never write an `Executable` start-tag with a `Name` attribute inside a comment in this file:
-  the regex will pick it up as the executable name.
+Both configs must carry the same `Identity`, `StoreId`, `TitleId`, `MSAAppId`, `ShellVisuals`
+and `AdvancedUserModel` values; edit both when you change one. `tools\check-game-config.ps1`
+fails when they drift, when a logo does not resolve, and when either config declares more than
+one executable or the wrong device family.
+
+The executable names must match the exported `.exe` names. The console exporter names the binary
+after the preset's `export_path`, and `deploy-console.ps1` stops when that differs from the
+console config.
+
+**Never spell an `Executable` start-tag with a `Name` attribute inside a comment.** The GDK
+"XBOX on PC" export platform derives the staged executable name by regex-searching the raw file
+text for the first `Executable` element's `Name` attribute, and that search is not XML-aware; it
+reads comments too, and would pick the comment up as the executable name. The check applies the
+rule to both configs.
 
 ---
 
@@ -407,17 +479,18 @@ sample's provisioned services.
 | Setting | File | Value |
 |---|---|---|
 | PlayFab title id | `project.godot`, `[playfab]` → `runtime/title_id` | `186CDB` |
-| Package identity name | `MicrosoftGame.config`, `Identity/@Name` | `41336MicrosoftATG.GodotNetRumble` |
-| XBOX services title id | `MicrosoftGame.config`, `<TitleId>` | `7C84AA93` |
-| MSA app id | `MicrosoftGame.config`, `<MSAAppId>` | `84983aff-dc3c-4cbb-8e88-aa51c4b0f5d9` |
-| Store id | `MicrosoftGame.config`, `<StoreId>` | `9P7KW6GFS17X` |
+| Package identity name | both `MicrosoftGame.config` files, `Identity/@Name` | `41336MicrosoftATG.GodotNetRumble` |
+| XBOX services title id | both `MicrosoftGame.config` files, `<TitleId>` | `7C84AA93` |
+| MSA app id | both `MicrosoftGame.config` files, `<MSAAppId>` | `84983aff-dc3c-4cbb-8e88-aa51c4b0f5d9` |
+| Store id | both `MicrosoftGame.config` files, `<StoreId>` | `9P7KW6GFS17X` |
 
 > The **XBOX services** `TitleId` and the **PlayFab** title id (`runtime/title_id`) are separate
 > identifiers for separate services. Do not conflate them.
 
-> `export_presets.cfg` carries its own copies of the package identity, MSA app id, XBOX
-> services title id and store id, under `application/`. They must match the values above —
-> the export packages what is written there, not what is in `MicrosoftGame.config`.
+> The console preset in `export_presets.cfg` carries its own copies of the package identity,
+> MSA app id, XBOX services title id and store id, under `application/`. The console exporter
+> uses them only when no game config is set, but `tools\check-game-config.ps1` requires them to
+> match `xbox/MicrosoftGame.config` so the two never disagree.
 
 ### Set the sandbox to XDKS.1
 
@@ -461,4 +534,6 @@ Treat unavailable title access, accounts or hardware as blocked walkthroughs, no
 ### Store tiles
 
 Store tiles live in `storelogos/` (carrying a `.gdignore` so Godot doesn't import them as game
-textures).
+textures). Both configs use the same files: the PC config by path, the console config by bare
+file name through the console preset's `packaging/metadata_folder`. Keep one copy of each tile
+there; do not copy them into `xbox/`.

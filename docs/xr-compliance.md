@@ -20,8 +20,8 @@ requirement coverage. Use the [README environment matrix](../README.md#what-work
 what can be demonstrated from what was actually observed. Local persistence alone is not
 PC/console save-roaming evidence.
 
-Scope is the game code under `scripts/`, plus `project.godot`, `MicrosoftGame.config`
-and `export_presets.cfg`. The `addons/` tree (`godot_gdk`, `godot_playfab`) is a
+Scope is the game code under `scripts/`, plus `project.godot`, both `MicrosoftGame.config`
+files (root for PC, `xbox/` for console) and `export_presets.cfg`. The `addons/` tree (`godot_gdk`, `godot_playfab`) is a
 dependency; it is cited to show which platform API a service wraps.
 
 [xr-index]: https://learn.microsoft.com/en-us/gaming/gdk/docs/store/policies/console/certification-requirements
@@ -53,7 +53,7 @@ dependency; it is cited to show which platform API a service wraps.
 | [112](#xr-112-controller-association) | Controller association (partial) | `scripts/services/device_service.gd` |
 | [115](#xr-115-controller-and-user-removal) | Controller and user removal (partial) | `scripts/main.gd`, `scripts/autoload/services.gd` |
 | [124](#xr-124-game-invitations) | Game Invitations | `scripts/services/activity_service.gd` |
-| [130](#xr-130-xbox-console-families-and-generations) | XBOX Console Families and Generations | `MicrosoftGame.config` |
+| [130](#xr-130-xbox-console-families-and-generations) | XBOX Console Families and Generations | `xbox/MicrosoftGame.config` |
 
 ---
 
@@ -228,11 +228,12 @@ features, and must not invent names for system components.
   the official XBOX button name on console (`X Ready  Y Mute  B Leave`), falling back to
   keyboard labels on desktop. A Godot title that ships the default `ui_accept` glyphs
   will fail this.
-- `MicrosoftGame.config` `PublisherDisplayName` is `Xbox ATG`, matching the Partner
+- Both `MicrosoftGame.config` files set `PublisherDisplayName` to `Xbox ATG`, matching the Partner
   Center seller display name required for package acceptance.
 - Documentation uses "XBOX network" for the service and "XBOX services" for the APIs.
 
-**Code:** `scripts/ui/screens/lobby_screen.gd` (`_prompt_for`), `MicrosoftGame.config`.
+**Code:** `scripts/ui/screens/lobby_screen.gd` (`_prompt_for`), `MicrosoftGame.config`,
+`xbox/MicrosoftGame.config`.
 
 ---
 
@@ -650,5 +651,5 @@ across the console family. Test both device coverage and synchronization before 
 This XR becomes a hard blocker if an XBOX One SKU is ever added, and the store listing
 must match the decision.
 
-**Code:** `MicrosoftGame.config`, `export_presets.cfg`,
+**Code:** `MicrosoftGame.config`, `xbox/MicrosoftGame.config`, `export_presets.cfg`,
 `scripts/ui/screens/screen.gd` (focus restoration).
