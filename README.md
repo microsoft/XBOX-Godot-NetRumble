@@ -5,6 +5,7 @@
   </picture>
 </p>
 
+[![Latest release][badge-release]][link-release]
 [![License: MIT][badge-license]][link-license]
 [![Godot 4.6+][badge-godot]][link-godot]
 [![Microsoft GDK supported][badge-gdk]][link-gdk]
@@ -106,13 +107,36 @@ multiplayer bug that can cost you control of your ship in three-player matches, 
 leaving a match that used voice or typed text. See [Known issues](docs/known-issues.md) before
 you file a bug.
 
+## Compatibility
+
+The versions below are read from the files CI uses, so they update when those files change.
+
+### Godot Engine
+
+[![Godot version tested in CI][badge-godot-ci]][link-godot-ci]
+
+Source: `GODOT_VERSION` in [`.github/workflows/ci.yml`][link-godot-ci], the version CI imports
+and parses the project with. NetRumble needs Godot 4.6 or later, because `project.godot` declares
+the `4.6` feature tag. The addons on their own support a wider range, starting at 4.5; see the
+[XBOX Godot Sample compatibility list][link-sample-compat].
+
+### Microsoft GDK
+
+[![Supported Microsoft GDK editions][badge-gdk-editions]][link-gdk-editions]
+
+Source: the XBOX Godot Sample's [`.github/gdk-versions.json`][link-gdk-editions], which lists the
+editions that sample supports. NetRumble builds its GDK and PlayFab addons from that sample:
+`tools\sync_addons.ps1` builds them against the edition vcpkg restores for the
+`external/xbox-godot-sample` pin, and copies the XBOX Series X|S redistributables from an
+installed edition. See [Addon maintenance](docs/addon-maintenance.md).
+
 ## Requirements
 
 - **Godot 4.6 or later**, tested with 4.6.2. A standard build is enough; the GDK addons are
   GDExtensions and need no custom engine.
 - **Windows**, for the GDK and PlayFab addons to load.
-- **Visual Studio 2022** with the vcpkg component, and a **Microsoft GDK** edition. These are
-  needed once, to build the addons.
+- **Visual Studio 2022** with the vcpkg component, and a **Microsoft GDK** edition (see
+  [Compatibility](#compatibility)). These are needed once, to build the addons.
 - Exporting to XBOX Series X|S additionally requires GDKX through an NDA XBOX developer
   program, an authorized devkit and a Middleware console fork of Godot. Complete the
   [XBOX Development Kit setup](https://learn.microsoft.com/en-us/gaming/gdk/docs/gdk-dev/console-dev/dev-kits/setup/setting-up-your-devkit?view=gdk-2604)
@@ -258,12 +282,19 @@ Use of Microsoft trademarks or logos in modified versions of this project must n
 or imply Microsoft sponsorship. Any use of third-party trademarks or logos is subject to those
 third-party's policies.
 
+[badge-release]: https://img.shields.io/github/v/release/microsoft/XBOX-Godot-NetRumble?label=release&color=107C10
+[link-release]: https://github.com/microsoft/XBOX-Godot-NetRumble/releases
 [badge-license]: https://img.shields.io/badge/license-MIT-107C10
 [link-license]: LICENSE
 [badge-godot]: https://img.shields.io/badge/Godot-4.6%2B-478CBF?logo=godotengine&logoColor=white
 [link-godot]: https://godotengine.org/
+[badge-godot-ci]: https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmicrosoft%2FXBOX-Godot-NetRumble%2Fmain%2F.github%2Fworkflows%2Fci.yml&query=%24..GODOT_VERSION&label=Godot&logo=godotengine&logoColor=white&color=478CBF
+[link-godot-ci]: .github/workflows/ci.yml
+[link-sample-compat]: https://github.com/microsoft/XBOX-Godot-Sample#compatibility
 [badge-gdk]: https://img.shields.io/badge/Microsoft%20GDK-%E2%9C%93-107C10
 [link-gdk]: https://github.com/microsoft/GDK/releases
+[badge-gdk-editions]: https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmicrosoft%2FXBOX-Godot-Sample%2Fmain%2F.github%2Fgdk-versions.json&query=%24.supported%5B*%5D.edition&label=Microsoft%20GDK&color=107C10
+[link-gdk-editions]: https://github.com/microsoft/XBOX-Godot-Sample/blob/main/.github/gdk-versions.json
 [badge-playfab]: https://img.shields.io/badge/PlayFab-%E2%9C%93-107C10
 [link-playfab]: docs/platform-services.md
 [badge-gameinput]: https://img.shields.io/badge/GameInput-%E2%9C%93-107C10
